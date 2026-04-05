@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from typing import Optional, Dict, Any
 
-from fastapi import APIRouter, Request, BackgroundTasks, Depends, HTTPException, status
+from fastapi import APIRouter, Query, Request, BackgroundTasks, Depends, HTTPException, status
 from fastapi.responses import PlainTextResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 import redis.asyncio as redis
@@ -47,9 +47,9 @@ auth_router = APIRouter(
 
 @router.get("/webhook", response_class=PlainTextResponse)
 async def verify_webhook(
-    hub_mode: Optional[str] = None,
-    hub_challenge: Optional[str] = None,
-    hub_verify_token: Optional[str] = None,
+    hub_mode: Optional[str] = Query(None, alias="hub.mode"),
+    hub_challenge: Optional[str] = Query(None, alias="hub.challenge"),
+    hub_verify_token: Optional[str] = Query(None, alias="hub.verify_token"),
 ) -> str:
     """
     Webhook verification endpoint for Meta Cloud API.
@@ -99,7 +99,7 @@ async def verify_webhook(
         )
 
     logger.info("webhook_verified")
-    return PlainTextResponse(content=hub_challenge, status_code=200)
+    return hub_challenge
 
 
 @router.post("/webhook")
