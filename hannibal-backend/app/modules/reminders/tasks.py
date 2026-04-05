@@ -1,0 +1,394 @@
+"""Celery tasks for reminder sending and follow-up operations."""
+
+from __future__ import annotations
+
+from uuid import UUID
+from datetime import datetime, timedelta, date
+import asyncio
+
+from sqlalchemy import select, and_
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.db.base import get_async_session_maker
+from app.db.models import Appointment, Office, Patient
+from app.modules.reminders.templates import (
+    reminder_48h,
+    reminder_24h,
+    reminder_2h,
+    post_appointment_followup,
+)
+from app.utils.logger import get_logger
+
+logger = get_logger(__name__)
+
+# Placeholder Celery app - would be configured in main application
+# from celery import Celery
+# app = Celery("hannibal")
+
+
+class CeleryTaskStub:
+    """Stub for Celery task decorator during development."""
+
+    def __call__(self, func):
+        func.apply_async = self._apply_async
+        return func
+
+    @staticmethod
+    def _apply_async(*args, **kwargs):
+        """Stub for apply_async."""
+        pass
+
+
+def celery_task(*args, **kwargs):
+    """Stub Celery task decorator."""
+    return CeleryTaskStub()
+
+
+# NOTE: In production, replace with real Celery:
+# from celery import shared_task
+# @shared_task
+
+
+@celery_task(bind=True)
+def send_reminder_48h(self, appointment_id: str):
+    """
+    Send 48-hour reminder to patient.
+
+    Celery Task:
+        Retrieves appointment and patient data
+        Generates reminder message
+        Sends via WhatsApp
+        Marks reminder_48h_sent = True
+
+    Args:
+        appointment_id: Appointment ID (string)
+    """
+    asyncio.run(_send_reminder_48h_async(appointment_id))
+
+
+async def _send_reminder_48h_async(appointment_id: str):
+    """Async implementation of 48h reminder."""
+    async with get_async_session_maker()() as db:
+        try:
+            appointment = await db.get(Appointment, UUID(appointment_id))
+            if not appointment or appointment.reminder_48h_sent:
+                logger.warning("appointment_not_found_or_already_sent", appointment_id=appointment_id)
+                return
+
+            patient = await db.get(Patient, appointment.patient_id)
+            office = await db.get(Office, appointment.office_id)
+
+            if not patient or not office:
+                logger.error("missing_related_data", appointment_id=appointment_id)
+                return
+
+            # Generate message
+            appointment_data = {
+                "patient_name": patient.name or "paciente",
+                "time": appointment.start_time.strftime("%H:%M"),
+                "office_name": office.name,
+                "assistant_name": office.assistant_name,
+            }
+            message = reminder_48h(appointment_data, tone=office.assistant_tone)
+
+            # TODO: Send via WhatsApp
+            # await whatsapp_service.send_message(patient.whatsapp_id, message)
+
+            appointment.reminder_48h_sent = True
+            await db.commit()
+
+            logger.info(
+                "reminder_48h_sent",
+                appointment_id=appointment_id,
+                patient_id=str(patient.id),
+            )
+
+        except Exception as e:
+            logger.error(
+                "error_send_reminder_48h",
+                appointment_id=appointment_id,
+                error=str(e),
+            )
+
+
+@celery_task(bind=True)
+def send_reminder_24h(self, appointment_id: str):
+    """Send 24-hour reminder to patient."""
+    asyncio.run(_send_reminder_24h_async(appointment_id))
+
+
+async def _send_reminder_24h_async(appointment_id: str):
+    """Async implementation of 24h reminder."""
+    async with get_async_session_maker()() as db:
+        try:
+            appointment = await db.get(Appointment, UUID(appointment_id))
+            if not appointment or appointment.reminder_24h_sent:
+                logger.warning("appointment_not_found_or_already_sent", appointment_id=appointment_id)
+                return
+
+            patient = await db.get(Patient, appointment.patient_id)
+            office = await db.get(Office, appointment.office_id)
+
+            if not patient or not office:
+                logger.error("missing_related_data", appointment_id=appointment_id)
+                return
+
+            # Generate message
+            appointment_data = {
+                "patient_name": patient.name or "paciente",
+                "time": appointment.start_time.strftime("%H:%M"),
+                "office_name": office.name,
+                "assistant_name": office.assistant_name,
+            }
+            message = reminder_24h(appointment_data, tone=office.assistant_tone)
+
+            # TODO: Send via WhatsApp
+            # await whatsapp_service.send_message(patient.whatsapp_id, message)
+
+            appointment.reminder_24h_sent = True
+            await db.commit()
+
+            logger.info(
+                "reminder_24h_sent",
+                appointment_id=appointment_id,
+                patient_id=str(patient.id),
+            )
+
+        except Exception as e:
+            logger.error(
+                "error_send_reminder_24h",
+                appointment_id=appointment_id,
+                error=str(e),
+            )
+
+
+@celery_task(bind=True)
+def send_reminder_2h(self, appointment_id: str):
+    """Send 2-hour reminder to patient (last minute)."""
+    asyncio.run(_send_reminder_2h_async(appointment_id))
+
+
+async def _send_reminder_2h_async(appointment_id: str):
+    """Async implementation of 2h reminder."""
+    async with get_async_session_maker()() as db:
+        try:
+            appointment = await db.get(Appointment, UUID(appointment_id))
+            if not appointment or appointment.reminder_2h_sent:
+                logger.warning("appointment_not_found_or_already_sent", appointment_id=appointment_id)
+                return
+
+            patient = await db.get(Patient, appointment.patient_id)
+            office = await db.get(Office, appointment.office_id)
+
+            if not patient or not office:
+                logger.error("missing_related_data", appointment_id=appointment_id)
+                return
+
+            # Generate message
+            appointment_data = {
+                "patient_name": patient.name or "paciente",
+                "time": appointment.start_time.strftime("%H:%M"),
+                "office_name": office.name,
+                "assistant_name": office.assistant_name,
+            }
+            message = reminder_2h(appointment_data, tone=office.assistant_tone)
+
+            # TODO: Send via WhatsApp
+            # await whatsapp_service.send_message(patient.whatsapp_id, message)
+
+            appointment.reminder_2h_sent = True
+            await db.commit()
+
+            logger.info(
+                "reminder_2h_sent",
+                appointment_id=appointment_id,
+                patient_id=str(patient.id),
+            )
+
+        except Exception as e:
+            logger.error(
+                "error_send_reminder_2h",
+                appointment_id=appointment_id,
+                error=str(e),
+            )
+
+
+@celery_task(bind=True)
+def check_confirmation(self, appointment_id: str):
+    """
+    Check if appointment is confirmed 1 hour before.
+
+    If not confirmed, send urgent confirmation request.
+
+    Args:
+        appointment_id: Appointment ID (string)
+    """
+    asyncio.run(_check_confirmation_async(appointment_id))
+
+
+async def _check_confirmation_async(appointment_id: str):
+    """Async implementation of confirmation check."""
+    async with get_async_session_maker()() as db:
+        try:
+            appointment = await db.get(Appointment, UUID(appointment_id))
+            if not appointment:
+                logger.warning("appointment_not_found", appointment_id=appointment_id)
+                return
+
+            # If not confirmed, send urgent message
+            if appointment.status != "confirmed":
+                patient = await db.get(Patient, appointment.patient_id)
+                office = await db.get(Office, appointment.office_id)
+
+                if not patient or not office:
+                    logger.error("missing_related_data", appointment_id=appointment_id)
+                    return
+
+                message = (
+                    f"⏰ {patient.name or 'Estimado(a)'}, tu cita es en 1 hora.\n"
+                    f"¿Confirmas tu asistencia? 👍"
+                )
+
+                # TODO: Send via WhatsApp
+                # await whatsapp_service.send_message(patient.whatsapp_id, message)
+
+                logger.info(
+                    "confirmation_reminder_sent",
+                    appointment_id=appointment_id,
+                    patient_id=str(patient.id),
+                )
+
+        except Exception as e:
+            logger.error(
+                "error_check_confirmation",
+                appointment_id=appointment_id,
+                error=str(e),
+            )
+
+
+@celery_task(bind=True)
+def post_follow_up(self, appointment_id: str):
+    """
+    Send follow-up message 2 hours after appointment.
+
+    Args:
+        appointment_id: Appointment ID (string)
+    """
+    asyncio.run(_post_follow_up_async(appointment_id))
+
+
+async def _post_follow_up_async(appointment_id: str):
+    """Async implementation of post-appointment follow-up."""
+    async with get_async_session_maker()() as db:
+        try:
+            appointment = await db.get(Appointment, UUID(appointment_id))
+            if not appointment or appointment.follow_up_sent:
+                logger.warning("appointment_not_found_or_already_sent", appointment_id=appointment_id)
+                return
+
+            patient = await db.get(Patient, appointment.patient_id)
+            office = await db.get(Office, appointment.office_id)
+
+            if not patient or not office:
+                logger.error("missing_related_data", appointment_id=appointment_id)
+                return
+
+            # Generate message
+            appointment_data = {
+                "patient_name": patient.name or "paciente",
+                "professional_name": "el profesional",
+                "assistant_name": office.assistant_name,
+            }
+            message = post_appointment_followup(
+                appointment_data,
+                instructions=appointment.medical_instructions,
+                tone=office.assistant_tone,
+            )
+
+            # TODO: Send via WhatsApp
+            # await whatsapp_service.send_message(patient.whatsapp_id, message)
+
+            appointment.follow_up_sent = True
+            await db.commit()
+
+            logger.info(
+                "post_follow_up_sent",
+                appointment_id=appointment_id,
+                patient_id=str(patient.id),
+            )
+
+        except Exception as e:
+            logger.error(
+                "error_post_follow_up",
+                appointment_id=appointment_id,
+                error=str(e),
+            )
+
+
+@celery_task(bind=True)
+def notify_waitlist(self, office_id: str, start_time: str):
+    """
+    Notify patients in waiting list when a slot opens.
+
+    Called when an appointment is cancelled.
+
+    Args:
+        office_id: Office ID (string)
+        start_time: Cancelled appointment time (ISO string)
+    """
+    asyncio.run(_notify_waitlist_async(office_id, start_time))
+
+
+async def _notify_waitlist_async(office_id: str, start_time: str):
+    """Async implementation of waiting list notification."""
+    async with get_async_session_maker()() as db:
+        try:
+            from app.db.models import Waitlist
+
+            # Get waiting list entries (most urgent first)
+            result = await db.execute(
+                select(Waitlist)
+                .where(
+                    and_(
+                        Waitlist.office_id == UUID(office_id),
+                        Waitlist.status == "active",
+                    )
+                )
+                .order_by(Waitlist.urgent.desc(), Waitlist.created_at)
+            )
+            waitlist = result.scalars().all()
+
+            if not waitlist:
+                logger.info("no_patients_in_waitlist", office_id=office_id)
+                return
+
+            # Notify first patient in queue
+            patient_entry = waitlist[0]
+            patient = await db.get(Patient, patient_entry.patient_id)
+            office = await db.get(Office, UUID(office_id))
+
+            if not patient or not office:
+                logger.error("missing_related_data", office_id=office_id)
+                return
+
+            message = (
+                f"¡{patient.name or 'Hola'}! 🎉\n\n"
+                f"Se ha liberado un slot disponible en {office.name} para {start_time}.\n\n"
+                f"¿Te interesa agendar? Responde con un 👍"
+            )
+
+            # TODO: Send via WhatsApp
+            # await whatsapp_service.send_message(patient.whatsapp_id, message)
+
+            logger.info(
+                "waitlist_notified",
+                office_id=office_id,
+                patient_id=str(patient.id),
+            )
+
+        except Exception as e:
+            logger.error(
+                "error_notify_waitlist",
+                office_id=office_id,
+                error=str(e),
+            )

@@ -1,0 +1,73 @@
+from __future__ import annotations
+
+from pydantic import computed_field
+from pydantic_settings import BaseSettings
+
+
+class Settings(BaseSettings):
+    """Application configuration loaded from environment variables."""
+
+    # Database
+    database_url: str
+
+    # Supabase
+    supabase_url: str = ""
+    supabase_service_key: str = ""
+
+    # Redis
+    redis_url: str = "redis://localhost:6379"
+
+    # Anthropic
+    anthropic_api_key: str = ""
+
+    # OpenAI
+    open_ai_key: str = ""
+
+    # Meta/WhatsApp
+    meta_verify_token: str = ""
+    meta_app_secret: str = ""
+    meta_app_id: str = ""
+
+    # Twilio
+    twilio_account_sid: str = ""
+    twilio_auth_token: str = ""
+
+    # Google OAuth
+    google_client_id: str = ""
+    google_client_secret: str = ""
+    google_redirect_uri: str = ""
+
+    # Security
+    encryption_key: str = "0" * 64  # 64-char hex for AES-256
+    jwt_secret: str = ""
+
+    # Error tracking (optional)
+    sentry_dsn: str | None = None
+
+    # Celery
+    celery_broker_url: str = "redis://localhost:6379/0"
+    celery_result_backend: str = "redis://localhost:6379/1"
+
+    # Frontend
+    frontend_url: str = "http://localhost:3000"
+
+    @computed_field
+    @property
+    def async_database_url(self) -> str:
+        """Ensure the database URL always uses the asyncpg driver."""
+        url = self.database_url
+        if url.startswith("postgres://"):
+            url = url.replace("postgres://", "postgresql+asyncpg://", 1)
+        elif url.startswith("postgresql://"):
+            url = url.replace("postgresql://", "postgresql+asyncpg://", 1)
+        elif not url.startswith("postgresql+asyncpg://"):
+            url = f"postgresql+asyncpg://{url}"
+        return url
+
+    model_config = {
+        "env_file": ".env",
+        "case_sensitive": False,
+    }
+
+
+settings = Settings()
