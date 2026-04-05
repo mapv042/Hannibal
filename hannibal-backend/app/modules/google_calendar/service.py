@@ -55,7 +55,9 @@ async def get_freebusy(
                     status_code=response.status_code,
                     response=response.text,
                 )
-                return []
+                raise GoogleCalendarError(
+                    f"Google Calendar freebusy query failed (status {response.status_code})"
+                )
 
             data = response.json()
             busy_periods = data.get("calendars", {}).get(calendar_id, {}).get("busy", [])
@@ -68,13 +70,15 @@ async def get_freebusy(
 
             return busy_periods
 
+    except GoogleCalendarError:
+        raise
     except Exception as e:
         logger.error(
             "error_get_freebusy",
             office_id=str(office_id),
             error=str(e),
         )
-        return []
+        raise GoogleCalendarError(f"Failed to query Google Calendar: {e}")
 
 
 async def create_calendar_event(

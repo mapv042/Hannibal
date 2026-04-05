@@ -15,8 +15,11 @@ from app.db.models import (
     AvailabilitySchedule,
     Appointment,
     TimeBlock,
+    Office,
 )
 from app.modules.scheduling.schemas import AvailableSlot
+from app.modules.google_calendar.service import get_freebusy
+from app.core.exceptions import GoogleCalendarError
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -147,6 +150,34 @@ async def get_available_slots(
     blocks = blocks_result.scalars().all()
     block_times = [(b.start_date, b.end_date) for b in blocks]
 
+    # Step 5.5: Get Google Calendar busy periods (required if configured)
+    google_busy_times = []
+    office = await db.get(Office, office_id)
+    if office and office.google_calendar_token:
+        # Google Calendar is configured — freebusy query is mandatory
+        busy_periods = await get_freebusy(
+            office_id=office_id,
+            time_min=day_start,
+            time_max=day_end,
+            db=db,
+        )
+        for period in busy_periods:
+            busy_start = datetime.fromisoformat(period["start"].replace("Z", "+00:00")).replace(tzinfo=None)
+            busy_end = datetime.fromisoformat(period["end"].replace("Z", "+00:00")).replace(tzinfo=None)
+            google_busy_times.append((busy_start, busy_end))
+
+        logger.info(
+            "google_freebusy_applied",
+            office_id=str(office_id),
+            date=str(date_),
+            busy_count=len(google_busy_times),
+        )
+    else:
+        raise GoogleCalendarError(
+            "Google Calendar is not configured for this office. "
+            "Please connect Google Calendar before scheduling."
+        )
+
     # Filter available slots
     available_slots = []
     for start, end in all_slots:
@@ -162,7 +193,13 @@ async def get_available_slots(
             for block_start, block_end in block_times
         )
 
-        if not has_appointment_overlap and not has_block_overlap:
+        # Check overlap with Google Calendar busy periods
+        has_google_overlap = any(
+            not (end <= busy_start or start >= busy_end)
+            for busy_start, busy_end in google_busy_times
+        )
+
+        if not has_appointment_overlap and not has_block_overlap and not has_google_overlap:
             available_slots.append(AvailableSlot(start_time=start, end_time=end))
 
     # Step 6: Cache the result (5 minute TTL)
