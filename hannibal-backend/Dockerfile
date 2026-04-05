@@ -24,8 +24,8 @@ RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app
 USER appuser
 
 # Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
-    CMD curl -f http://localhost:${PORT:-8000}/health || exit 1
+HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=5 \
+    CMD sh -c 'curl -f http://localhost:${PORT:-8000}/health || exit 1'
 
 # Run migrations and start FastAPI
-CMD ["./start.sh"]
+CMD ["/bin/bash", "./start.sh"]
