@@ -16,6 +16,7 @@ from app.modules.reminders.templates import (
     reminder_24h,
     reminder_2h,
     post_appointment_followup,
+    confirmation_request,
 )
 from app.utils.logger import get_logger
 
@@ -321,6 +322,193 @@ async def _post_follow_up_async(appointment_id: str):
             logger.error(
                 "error_post_follow_up",
                 appointment_id=appointment_id,
+                error=str(e),
+            )
+
+
+@celery_task(bind=True)
+def send_confirmation_requests(self):
+    """
+    Daily task (8 AM Mexico City) to send confirmation requests for tomorrow's appointments.
+
+    Queries all "scheduled" appointments for the next day that haven't had
+    a confirmation request sent. For each:
+    1. Sends WhatsApp confirmation request message
+    2. Sets patient's session status to "waiting_appointment_confirmation"
+    3. Marks confirmation_request_sent = True
+    """
+    asyncio.run(_send_confirmation_requests_async())
+
+
+async def _send_confirmation_requests_async():
+    """Async implementation of day-before confirmation requests."""
+    from app.modules.whatsapp.meta_client import MetaCloudClient
+    from app.modules.conversation.session_store import SessionStore
+    from app.modules.conversation.schemas import SessionContext
+    from app.db.models import Conversation
+
+    async with get_async_session_maker()() as db:
+        try:
+            today = date.today()
+            tomorrow = today + timedelta(days=1)
+
+            start_of_tomorrow = datetime.combine(tomorrow, datetime.min.time())
+            end_of_tomorrow = datetime.combine(tomorrow, datetime.max.time())
+
+            # Get all scheduled appointments for tomorrow without confirmation request
+            result = await db.execute(
+                select(Appointment).where(
+                    and_(
+                        Appointment.start_datetime >= start_of_tomorrow,
+                        Appointment.start_datetime <= end_of_tomorrow,
+                        Appointment.status == "scheduled",
+                        Appointment.confirmation_request_sent == False,
+                    )
+                )
+            )
+            appointments = result.scalars().all()
+
+            if not appointments:
+                logger.info("no_appointments_for_confirmation", tomorrow=str(tomorrow))
+                return
+
+            logger.info(
+                "confirmation_requests_starting",
+                count=len(appointments),
+                target_date=str(tomorrow),
+            )
+
+            meta_client = MetaCloudClient()
+            session_store = SessionStore()
+
+            try:
+                for appointment in appointments:
+                    try:
+                        patient = await db.get(Patient, appointment.patient_id)
+                        office = await db.get(Office, appointment.office_id)
+
+                        if not patient or not office:
+                            logger.error(
+                                "missing_related_data_confirmation",
+                                appointment_id=str(appointment.id),
+                            )
+                            continue
+
+                        if not office.whatsapp_phone_id or not office.whatsapp_token:
+                            logger.warning(
+                                "office_missing_whatsapp_config",
+                                office_id=str(office.id),
+                            )
+                            continue
+
+                        if not patient.whatsapp_id:
+                            logger.warning(
+                                "patient_missing_whatsapp_id",
+                                patient_id=str(patient.id),
+                            )
+                            continue
+
+                        # Format date for display
+                        day_names = [
+                            "lunes", "martes", "miércoles", "jueves",
+                            "viernes", "sábado", "domingo",
+                        ]
+                        formatted_date = (
+                            f"{day_names[tomorrow.weekday()]} "
+                            f"{tomorrow.strftime('%d/%m/%Y')}"
+                        )
+
+                        appointment_data = {
+                            "patient_name": patient.name or "paciente",
+                            "time": appointment.start_datetime.strftime("%H:%M"),
+                            "date": formatted_date,
+                            "office_name": office.name,
+                            "assistant_name": office.assistant_name,
+                        }
+                        message = confirmation_request(
+                            appointment_data, tone=office.assistant_tone
+                        )
+
+                        # Send WhatsApp message
+                        await meta_client.send_text_message(
+                            phone_number_id=office.whatsapp_phone_id,
+                            token=office.whatsapp_token,
+                            to=patient.whatsapp_id,
+                            text=message,
+                        )
+
+                        # Set up session so the patient's reply routes correctly
+                        session = await session_store.get_session(
+                            patient.whatsapp_id, str(office.id)
+                        )
+                        if not session:
+                            # Find or create a conversation record
+                            conv_result = await db.execute(
+                                select(Conversation).where(
+                                    and_(
+                                        Conversation.office_id == office.id,
+                                        Conversation.whatsapp_id == patient.whatsapp_id,
+                                        Conversation.status != "archived",
+                                    )
+                                )
+                            )
+                            conversation = conv_result.scalar_one_or_none()
+                            if not conversation:
+                                import uuid as uuid_mod
+                                conversation = Conversation(
+                                    id=uuid_mod.uuid4(),
+                                    office_id=office.id,
+                                    whatsapp_id=patient.whatsapp_id,
+                                    status="active",
+                                )
+                                db.add(conversation)
+                                await db.flush()
+
+                            session = SessionContext(
+                                conversation_id=conversation.id,
+                                office_id=office.id,
+                                whatsapp_id=patient.whatsapp_id,
+                                patient_id=patient.id,
+                                status="active",
+                                claude_history=[],
+                                collected_data={},
+                            )
+
+                        session.status = "waiting_appointment_confirmation"
+                        session.active_appointment_id = appointment.id
+
+                        await session_store.save_session(
+                            patient.whatsapp_id, str(office.id), session
+                        )
+
+                        # Mark as sent
+                        appointment.confirmation_request_sent = True
+                        await db.commit()
+
+                        logger.info(
+                            "confirmation_request_sent",
+                            appointment_id=str(appointment.id),
+                            patient_id=str(patient.id),
+                            office_id=str(office.id),
+                        )
+
+                    except Exception as e:
+                        logger.error(
+                            "error_sending_confirmation_request",
+                            appointment_id=str(appointment.id),
+                            error=str(e),
+                        )
+                        await db.rollback()
+                        continue
+
+            finally:
+                await session_store.close()
+
+            logger.info("confirmation_requests_completed", count=len(appointments))
+
+        except Exception as e:
+            logger.error(
+                "error_send_confirmation_requests",
                 error=str(e),
             )
 

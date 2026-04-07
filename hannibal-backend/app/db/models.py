@@ -416,6 +416,7 @@ class Appointment(Base):
     reminder_24h_sent: Mapped[bool] = mapped_column(Boolean, default=False)
     reminder_2h_sent: Mapped[bool] = mapped_column(Boolean, default=False)
     follow_up_sent: Mapped[bool] = mapped_column(Boolean, default=False)
+    confirmation_request_sent: Mapped[bool] = mapped_column(Boolean, default=False)
 
     # Google Calendar Integration
     google_event_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)

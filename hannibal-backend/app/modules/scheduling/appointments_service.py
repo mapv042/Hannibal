@@ -224,6 +224,7 @@ async def reschedule_appointment(
         appointment.reminder_48h_sent = False
         appointment.reminder_24h_sent = False
         appointment.reminder_2h_sent = False
+        appointment.confirmation_request_sent = False
 
         # Invalidate new cache
         await invalidate_availability_cache(

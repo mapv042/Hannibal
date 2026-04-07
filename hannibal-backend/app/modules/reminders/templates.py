@@ -101,6 +101,47 @@ def reminder_2h(appointment_data: dict, tone: str = "formal") -> str:
         )
 
 
+def confirmation_request(appointment_data: dict, tone: str = "formal") -> str:
+    """
+    Generate day-before confirmation request message.
+
+    Sent at 8 AM the day before the appointment asking the patient
+    to confirm or cancel their attendance.
+
+    Args:
+        appointment_data: Appointment data (patient_name, date, time, office_name, assistant_name)
+        tone: Message tone (formal|informal)
+
+    Returns:
+        Formatted confirmation request message
+    """
+    patient_name = appointment_data.get("patient_name", "estimado cliente")
+    time = appointment_data.get("time", "la hora programada")
+    date = appointment_data.get("date", "mañana")
+    office_name = appointment_data.get("office_name", "nuestro consultorio")
+    assistant_name = appointment_data.get("assistant_name", "Asistente")
+
+    if tone == "informal":
+        return (
+            f"¡Hola {patient_name}! 📋\n\n"
+            f"Te escribo para confirmar tu cita de mañana {date} a las {time} en {office_name}.\n\n"
+            f"Por favor responde:\n"
+            f"  *Sí* para confirmar tu asistencia\n"
+            f"  *No* si necesitas cancelar\n\n"
+            f"— {assistant_name}"
+        )
+    else:  # formal
+        return (
+            f"Estimado(a) {patient_name},\n\n"
+            f"Le contactamos para confirmar su cita programada para mañana {date} a las {time} "
+            f"en {office_name}.\n\n"
+            f"Por favor responda:\n"
+            f"  *Sí* para confirmar su asistencia\n"
+            f"  *No* si necesita cancelar\n\n"
+            f"Atentamente,\n{assistant_name}"
+        )
+
+
 def post_appointment_followup(
     appointment_data: dict, instructions: Optional[str] = None, tone: str = "formal"
 ) -> str:

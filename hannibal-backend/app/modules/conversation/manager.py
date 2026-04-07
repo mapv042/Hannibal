@@ -20,7 +20,7 @@ from app.modules.ai.response_gen import generate_response
 from app.modules.conversation.session_store import SessionStore
 from app.modules.conversation.schemas import SessionContext
 from app.modules.whatsapp.meta_client import MetaCloudClient
-from app.modules.google_calendar.service import get_freebusy, create_calendar_event
+from app.modules.google_calendar.service import get_freebusy, create_calendar_event, update_event_color
 from app.modules.google_calendar.sync import cancel_appointment_in_calendar
 
 if TYPE_CHECKING:
@@ -274,6 +274,17 @@ class ConversationManager:
         data = intent_details.get("extracted_data", {})
         action_result = None  # Feedback for the LLM
         available_slots = []
+
+        # Day-before appointment confirmation: intercept all replies unless
+        # the patient explicitly starts a new flow (SCHEDULE, RESCHEDULE, URGENT)
+        if session.status == "waiting_appointment_confirmation":
+            if intent in (Intent.SCHEDULE, Intent.RESCHEDULE, Intent.URGENT):
+                session.status = "active"
+                session.active_appointment_id = None
+            else:
+                return await self._handle_appointment_confirmation(
+                    office, intent, session, message_text, db
+                )
 
         # If patient is in a waiting state, route responses to the correct intent
         # unless they explicitly start a completely new intent
@@ -690,6 +701,97 @@ class ConversationManager:
                 payload_keys=list(payload.keys()),
             )
             raise ConversationError(f"Invalid message payload: {str(e)}") from e
+
+    async def _handle_appointment_confirmation(
+        self,
+        office: Office,
+        intent: Intent,
+        session: SessionContext,
+        message_text: str,
+        db: AsyncSession,
+    ) -> str:
+        """
+        Handle patient reply to a day-before appointment confirmation request.
+
+        Uses the AI-detected intent to determine if the patient is confirming
+        or cancelling. Confirmation is atomic: both Supabase status and Google
+        Calendar color must update, or neither does.
+        """
+        appt_id = session.active_appointment_id
+
+        if not appt_id:
+            session.status = "active"
+            return "Disculpa, no encontré la cita asociada. ¿En qué puedo ayudarte?"
+
+        appointment = await db.get(Appointment, appt_id)
+        if not appointment or appointment.status == "cancelled":
+            session.status = "active"
+            session.active_appointment_id = None
+            return "Disculpa, no encontré la cita. ¿En qué puedo ayudarte?"
+
+        if intent == Intent.CONFIRM:
+            # Atomic: update DB status + Google Calendar, or rollback both
+            appointment.status = "confirmed"
+
+            if appointment.google_event_id:
+                try:
+                    await update_event_color(
+                        office.id, appointment.google_event_id, "10", db
+                    )
+                except Exception as e:
+                    # Google Calendar failed — rollback DB status
+                    appointment.status = "scheduled"
+                    logger.error(
+                        "confirm_gcal_failed_rollback",
+                        appointment_id=str(appointment.id),
+                        error=str(e),
+                    )
+                    return (
+                        "Hubo un problema al confirmar tu cita. "
+                        "Por favor intenta de nuevo en unos minutos respondiendo *sí*."
+                    )
+
+            await db.commit()
+
+            appt_str = self._format_appointment_for_display(appointment)
+            session.active_appointment_id = None
+            session.status = "active"
+
+            return (
+                f"✅ ¡Perfecto! Tu cita del {appt_str} queda confirmada.\n\n"
+                f"📍 {office.name}"
+                f"{(' - ' + office.address) if office.address else ''}\n\n"
+                "¡Te esperamos!"
+            )
+
+        elif intent == Intent.CANCEL:
+            # Transition to existing cancellation flow — ask for reason
+            session.status = "waiting_cancel_reason"
+            appt_str = self._format_appointment_for_display(appointment)
+            return (
+                f"Entendido. Vamos a cancelar tu cita del {appt_str}.\n\n"
+                "¿Podrías indicarme el motivo de la cancelación?"
+            )
+
+        elif intent == Intent.QUESTION:
+            # Patient asks about the appointment — answer naturally with details
+            appt_str = self._format_appointment_for_display(appointment)
+            address_line = f"\n📍 Dirección: {office.address}" if office.address else ""
+            return (
+                f"¡Claro! Aquí están los datos de tu cita:\n\n"
+                f"📅 {appt_str}\n"
+                f" {office.name}{address_line}\n\n"
+                "¿Confirmas tu asistencia?"
+            )
+
+        else:
+            # GREETING, OTHER — respond naturally and remind about confirmation
+            appt_str = self._format_appointment_for_display(appointment)
+            return (
+                f"¡Hola! Te recuerdo que tienes una cita programada: "
+                f"{appt_str} en {office.name}.\n\n"
+                "¿Confirmas tu asistencia o necesitas cancelar?"
+            )
 
     async def _get_or_create_conversation(
         self,

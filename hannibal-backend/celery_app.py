@@ -40,6 +40,11 @@ celery_app.conf.update(
             "schedule": crontab(minute=0, hour=1),  # Daily at 1:00 AM
             "options": {"queue": "default"},
         },
+        "send-confirmation-requests": {
+            "task": "app.modules.reminders.tasks.send_confirmation_requests",
+            "schedule": crontab(minute=0, hour=settings.confirmation_request_hour),
+            "options": {"queue": "default"},
+        },
     },
 )
 
