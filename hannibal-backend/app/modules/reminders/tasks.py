@@ -22,35 +22,10 @@ from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-# Placeholder Celery app - would be configured in main application
-# from celery import Celery
-# app = Celery("hannibal")
+from celery import shared_task
 
 
-class CeleryTaskStub:
-    """Stub for Celery task decorator during development."""
-
-    def __call__(self, func):
-        func.apply_async = self._apply_async
-        return func
-
-    @staticmethod
-    def _apply_async(*args, **kwargs):
-        """Stub for apply_async."""
-        pass
-
-
-def celery_task(*args, **kwargs):
-    """Stub Celery task decorator."""
-    return CeleryTaskStub()
-
-
-# NOTE: In production, replace with real Celery:
-# from celery import shared_task
-# @shared_task
-
-
-@celery_task(bind=True)
+@shared_task(bind=True)
 def send_reminder_48h(self, appointment_id: str):
     """
     Send 48-hour reminder to patient.
@@ -112,7 +87,7 @@ async def _send_reminder_48h_async(appointment_id: str):
             )
 
 
-@celery_task(bind=True)
+@shared_task(bind=True)
 def send_reminder_24h(self, appointment_id: str):
     """Send 24-hour reminder to patient."""
     asyncio.run(_send_reminder_24h_async(appointment_id))
@@ -163,7 +138,7 @@ async def _send_reminder_24h_async(appointment_id: str):
             )
 
 
-@celery_task(bind=True)
+@shared_task(bind=True)
 def send_reminder_2h(self, appointment_id: str):
     """Send 2-hour reminder to patient (last minute)."""
     asyncio.run(_send_reminder_2h_async(appointment_id))
@@ -214,7 +189,7 @@ async def _send_reminder_2h_async(appointment_id: str):
             )
 
 
-@celery_task(bind=True)
+@shared_task(bind=True)
 def check_confirmation(self, appointment_id: str):
     """
     Check if appointment is confirmed 1 hour before.
@@ -267,7 +242,7 @@ async def _check_confirmation_async(appointment_id: str):
             )
 
 
-@celery_task(bind=True)
+@shared_task(bind=True)
 def post_follow_up(self, appointment_id: str):
     """
     Send follow-up message 2 hours after appointment.
@@ -326,7 +301,7 @@ async def _post_follow_up_async(appointment_id: str):
             )
 
 
-@celery_task(bind=True)
+@shared_task(bind=True)
 def send_confirmation_requests(self):
     """
     Daily task (8 AM Mexico City) to send confirmation requests for tomorrow's appointments.
@@ -513,7 +488,7 @@ async def _send_confirmation_requests_async():
             )
 
 
-@celery_task(bind=True)
+@shared_task(bind=True)
 def notify_waitlist(self, office_id: str, start_time: str):
     """
     Notify patients in waiting list when a slot opens.
