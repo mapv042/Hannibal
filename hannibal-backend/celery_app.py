@@ -33,17 +33,17 @@ celery_app.conf.update(
         "renew-google-watches": {
             "task": "app.modules.google_calendar.tasks.renew_google_watches",
             "schedule": crontab(minute=0, hour="*/24"),  # Every 24 hours
-            "options": {"queue": "default"},
+            "options": {"queue": "celery"},
         },
         "reconcile-reminders": {
             "task": "app.modules.reminders.tasks.reconcile_reminders",
             "schedule": crontab(minute=0, hour=1),  # Daily at 1:00 AM
-            "options": {"queue": "default"},
+            "options": {"queue": "celery"},
         },
         "send-confirmation-requests": {
             "task": "app.modules.reminders.tasks.send_confirmation_requests",
             "schedule": crontab(minute=settings.confirmation_request_minute, hour=settings.confirmation_request_hour),
-            "options": {"queue": "default"},
+            "options": {"queue": "celery"},
         },
     },
 )
