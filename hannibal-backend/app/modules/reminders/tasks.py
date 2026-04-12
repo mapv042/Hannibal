@@ -347,7 +347,7 @@ async def _send_confirmation_requests_async():
 
                     appointment_data = {
                         "patient_name": patient.name or "paciente",
-                        "time": appointment.start_datetime.strftime("%H:%M"),
+                        "time": appointment.start_datetime.astimezone(MX_TZ).strftime("%H:%M"),
                         "date": formatted_date,
                         "office_name": office.name,
                         "assistant_name": office.assistant_name,
