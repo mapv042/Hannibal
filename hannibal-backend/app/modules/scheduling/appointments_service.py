@@ -211,9 +211,10 @@ async def reschedule_appointment(
         appointment.end_time = new_start_time + timedelta(minutes=appointment.duration_min)
 
         # Reset reminder flags
-        appointment.reminder_48h_sent = False
-        appointment.reminder_24h_sent = False
-        appointment.reminder_2h_sent = False
+        appointment.reminder_morning_sent = False
+        appointment.reminder_4h_sent = False
+        appointment.reminder_1h_sent = False
+        appointment.reminder_15m_sent = False
         appointment.confirmation_request_sent = False
 
         # Invalidate new cache

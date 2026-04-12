@@ -67,9 +67,10 @@ class AppointmentResponse(BaseModel):
     medical_instructions: Optional[str]
     cancelled_by: Optional[str]
     cancellation_reason: Optional[str]
-    reminder_48h_sent: bool
-    reminder_24h_sent: bool
-    reminder_2h_sent: bool
+    reminder_morning_sent: bool
+    reminder_4h_sent: bool
+    reminder_1h_sent: bool
+    reminder_15m_sent: bool
     follow_up_sent: bool
     google_event_id: Optional[str]
     created_at: datetime

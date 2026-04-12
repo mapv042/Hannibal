@@ -37,7 +37,7 @@ celery_app.conf.update(
         },
         "reconcile-reminders": {
             "task": "app.modules.reminders.tasks.reconcile_reminders",
-            "schedule": crontab(minute=0, hour=1),  # Daily at 1:00 AM
+            "schedule": crontab(minute=0, hour=7),  # Daily at 7:00 AM (before 8 AM morning reminders)
             "options": {"queue": "celery"},
         },
         "send-confirmation-requests": {

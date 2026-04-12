@@ -412,9 +412,10 @@ class Appointment(Base):
     )
 
     # Reminders & Follow-ups
-    reminder_48h_sent: Mapped[bool] = mapped_column(Boolean, default=False)
-    reminder_24h_sent: Mapped[bool] = mapped_column(Boolean, default=False)
-    reminder_2h_sent: Mapped[bool] = mapped_column(Boolean, default=False)
+    reminder_morning_sent: Mapped[bool] = mapped_column(Boolean, default=False)
+    reminder_4h_sent: Mapped[bool] = mapped_column(Boolean, default=False)
+    reminder_1h_sent: Mapped[bool] = mapped_column(Boolean, default=False)
+    reminder_15m_sent: Mapped[bool] = mapped_column(Boolean, default=False)
     follow_up_sent: Mapped[bool] = mapped_column(Boolean, default=False)
     confirmation_request_sent: Mapped[bool] = mapped_column(Boolean, default=False)
 
