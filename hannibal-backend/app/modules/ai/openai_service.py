@@ -16,12 +16,11 @@ from app.modules.ai.prompts.intent import INTENT_DETECTION_PROMPT
 logger = get_logger(__name__)
 
 
-class ClaudeService:
+class OpenAIService:
     """
     Service for LLM interactions via OpenAI async SDK.
 
-    Keeps the ClaudeService name for backward compatibility across the codebase.
-    Currently uses OpenAI o4-mini as the underlying model.
+    Uses OpenAI o4-mini as the underlying model.
     """
 
     def __init__(self, timeout: int = 30, max_retries: int = 2):
@@ -30,7 +29,8 @@ class ClaudeService:
             timeout=timeout,
         )
         self.max_retries = max_retries
-        self.model = "o4-mini"
+        #self.model = "o4-mini"
+        self.model = "gpt-4.1-mini"
 
     async def chat(
         self,

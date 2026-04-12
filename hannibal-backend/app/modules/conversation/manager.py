@@ -14,7 +14,7 @@ from app.utils.logger import get_logger
 from app.core.constants import Intent, MX_TIMEZONE
 from app.core.exceptions import ConversationError
 from app.db.models import Office, Patient, Conversation, Message, Appointment
-from app.modules.ai.claude_service import ClaudeService
+from app.modules.ai import get_ai_service
 from app.modules.ai.intent_detector import detect_intent
 from app.modules.ai.response_gen import generate_response
 from app.modules.conversation.session_store import SessionStore
@@ -49,7 +49,7 @@ class ConversationManager:
         self,
         session_store: SessionStore,
         meta_client: MetaCloudClient,
-        claude_service: ClaudeService | None = None,
+        ai_service=None,
     ):
         """
         Initialize conversation manager.
@@ -57,11 +57,11 @@ class ConversationManager:
         Args:
             session_store: Redis session store
             meta_client: Meta Cloud API client for sending messages
-            claude_service: Claude service instance (creates new if None)
+            ai_service: AI service instance (creates new via factory if None)
         """
         self.session_store = session_store
         self.meta_client = meta_client
-        self.claude_service = claude_service or ClaudeService()
+        self.ai_service = ai_service or get_ai_service()
 
     async def process(
         self,
@@ -157,7 +157,7 @@ class ConversationManager:
                 intent, intent_details = await detect_intent(
                     message=message_text,
                     history=session.claude_history,
-                    claude_service=self.claude_service,
+                    ai_service=self.ai_service,
                 )
             except Exception as e:
                 logger.warning(
@@ -634,7 +634,7 @@ class ConversationManager:
                 patient_appointments=patient_appt_strings or None,
                 user_message=message_text + action_context,
                 conversation_history=session.claude_history,
-                claude_service=self.claude_service,
+                ai_service=self.ai_service,
             )
         except Exception as e:
             logger.warning("response_generation_failed_fallback", error=str(e), intent=intent.value)

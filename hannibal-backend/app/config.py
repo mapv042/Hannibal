@@ -17,6 +17,9 @@ class Settings(BaseSettings):
     # Redis
     redis_url: str = "redis://localhost:6379"
 
+    # AI provider: "openai" or "anthropic"
+    ai_provider: str = "openai"
+
     # Anthropic
     anthropic_api_key: str = ""
 

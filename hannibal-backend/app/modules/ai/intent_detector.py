@@ -7,7 +7,7 @@ from typing import Any
 from app.core.constants import Intent
 from app.utils.logger import get_logger
 from app.core.exceptions import IntentDetectionError
-from app.modules.ai.claude_service import ClaudeService
+from app.modules.ai import get_ai_service
 
 logger = get_logger(__name__)
 
@@ -15,15 +15,15 @@ logger = get_logger(__name__)
 async def detect_intent(
     message: str,
     history: list[dict[str, str]] | None = None,
-    claude_service: ClaudeService | None = None,
+    ai_service=None,
 ) -> tuple[Intent, dict[str, Any]]:
     """
-    Detect user intent from message using Claude.
+    Detect user intent from message using LLM.
 
     Args:
         message: User's message text
         history: Conversation history for context
-        claude_service: ClaudeService instance (creates new if not provided)
+        ai_service: AI service instance (creates new via factory if not provided)
 
     Returns:
         Tuple of (Intent enum, extracted data dict)
@@ -31,12 +31,12 @@ async def detect_intent(
     Raises:
         IntentDetectionError: If intent cannot be determined
     """
-    if claude_service is None:
-        claude_service = ClaudeService()
+    if ai_service is None:
+        ai_service = get_ai_service()
 
     try:
         # Get intent from Claude
-        intent_response = await claude_service.detect_intent(
+        intent_response = await ai_service.detect_intent(
             message=message,
             conversation_history=history,
         )

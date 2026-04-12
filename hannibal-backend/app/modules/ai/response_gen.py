@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 
 from app.utils.logger import get_logger
 from app.core.exceptions import AIServiceError
-from app.modules.ai.claude_service import ClaudeService
+from app.modules.ai import get_ai_service
 from app.modules.ai.prompts.base import build_system_prompt
 
 if TYPE_CHECKING:
@@ -26,7 +26,7 @@ async def generate_response(
     patient_appointments: list[str] | None = None,
     user_message: str = "",
     conversation_history: list[dict[str, str]] | None = None,
-    claude_service: ClaudeService | None = None,
+    ai_service=None,
 ) -> str:
     """
     Generate a conversational response for user message.
@@ -37,7 +37,7 @@ async def generate_response(
         slots: Available appointment slots to offer
         user_message: Current user message
         conversation_history: Previous messages in conversation
-        claude_service: ClaudeService instance (creates new if not provided)
+        ai_service: AI service instance (creates new via factory if not provided)
 
     Returns:
         Response text optimized for WhatsApp
@@ -45,8 +45,8 @@ async def generate_response(
     Raises:
         AIServiceError: If response generation fails
     """
-    if claude_service is None:
-        claude_service = ClaudeService()
+    if ai_service is None:
+        ai_service = get_ai_service()
 
     if conversation_history is None:
         conversation_history = []
@@ -60,7 +60,7 @@ async def generate_response(
         )
 
         # Generate response from Claude
-        response = await claude_service.generate_response(
+        response = await ai_service.generate_response(
             system_prompt=system_prompt,
             conversation_history=conversation_history,
             user_message=user_message,
