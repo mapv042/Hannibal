@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from zoneinfo import ZoneInfo
 
 from celery import shared_task
+from app.core.constants import DAYS_ES
 
 from app.db.base import get_async_session_maker
 from app.db.models import Appointment, Office, Patient
@@ -44,10 +45,7 @@ FLAG_MAP = {
     "15m": "reminder_15m_sent",
 }
 
-DAY_NAMES = [
-    "lunes", "martes", "miércoles", "jueves",
-    "viernes", "sábado", "domingo",
-]
+DAY_NAMES = DAYS_ES
 
 
 def _log(msg: str):

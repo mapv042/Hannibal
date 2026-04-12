@@ -35,11 +35,15 @@ PISTAS PARA DETECTAR INTENCIONES:
 - SCHEDULE: palabras como "agendar", "cita", "quiero ir", "¿cuándo puedo?", "tengo que ir"
 - CANCEL: "cancelar", "no puedo ir", "anular", "no vengo"
 - RESCHEDULE: "cambiar", "otra fecha", "otro horario", "postergue"
-- CONFIRM: "confirmo", "sí", "dale", respuesta positiva a propuesta
+- CONFIRM: "confirmo", "sí", "dale", respuesta positiva a propuesta, selección de un horario de una lista ofrecida (ej: "el 1", "9:40", "a las 10")
 - QUESTION: "¿cuál es?", "¿a qué hora?", "¿dónde?", "información"
 - URGENT: "emergencia", "dolor", "hospital", "ambulancia", "ahora", "ya"
 - GREETING: "hola", "buenos días", "¿qué tal?"
 - OTHER: mensajes ambiguos o no relacionados
+
+IMPORTANTE SOBRE "MISMA HORA":
+- Si el paciente dice "misma hora", "mismo horario", "a la misma hora", etc., y en el historial de conversación se mencionó una cita con hora específica (ej: "a las 09:40"), extrae esa hora como proposed_time.
+- Si el asistente acaba de mostrar opciones de horario y el paciente elige una (ej: "9:40", "la 2", "esa"), la intención es CONFIRM, NO RESCHEDULE.
 
 CONTEXTO DE CONVERSACIÓN:
 {conversation_history}

@@ -4,13 +4,11 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from app.core.constants import DAYS_ES
 from app.utils.dates import now_mx
 
 if TYPE_CHECKING:
     from app.db.models import Office
-
-# Day names in Spanish for system prompt
-_DAYS_ES = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
 
 
 def build_system_prompt(
@@ -88,7 +86,7 @@ INSTRUCCIONES PERSONALIZADAS DEL CONSULTORIO:
     # Current date/time in Mexico City
     now = now_mx()
     today_str = now.strftime("%Y-%m-%d")
-    day_name = _DAYS_ES[now.weekday()]
+    day_name = DAYS_ES[now.weekday()]
 
     # Build the main system prompt
     prompt = f"""Eres {office.assistant_name}, asistente de citas médicas para {office.name}.

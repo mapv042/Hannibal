@@ -133,3 +133,6 @@ class Intent(str, Enum):
 
 # Mexico City Timezone
 MX_TIMEZONE = ZoneInfo("America/Mexico_City")
+
+# Spanish day names (Monday=0 … Sunday=6, matching datetime.weekday())
+DAYS_ES = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]

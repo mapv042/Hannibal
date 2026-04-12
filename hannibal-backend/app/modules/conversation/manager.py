@@ -11,7 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.utils.logger import get_logger
-from app.core.constants import Intent, MX_TIMEZONE
+from app.core.constants import DAYS_ES, Intent, MX_TIMEZONE
 from app.core.exceptions import ConversationError
 from app.db.models import Office, Patient, Conversation, Message, Appointment
 from app.modules.ai import get_ai_service
@@ -300,6 +300,14 @@ class ConversationManager:
         ):
             intent = Intent.RESCHEDULE
 
+        # When in scheduling flow (after reschedule transition or direct schedule),
+        # keep user in the flow unless they explicitly start a new one
+        if (
+            session.status == "waiting_confirmation"
+            and intent not in (Intent.CANCEL, Intent.GREETING, Intent.URGENT, Intent.CONFIRM)
+        ):
+            intent = Intent.SCHEDULE
+
         if intent == Intent.SCHEDULE:
             session.status = "waiting_confirmation"
             if data.get("name"):
@@ -441,16 +449,73 @@ class ConversationManager:
                         session.collected_data["proposed_date"] = data["proposed_date"]
                     if data.get("proposed_time"):
                         session.collected_data["proposed_time"] = data["proposed_time"]
+                    elif old_appt and old_appt.start_datetime:
+                        # "misma hora" fallback: use old appointment's time
+                        old_dt = old_appt.start_datetime
+                        if old_dt.tzinfo is None:
+                            old_dt = old_dt.replace(tzinfo=MX_TIMEZONE)
+                        else:
+                            old_dt = old_dt.astimezone(MX_TIMEZONE)
+                        session.collected_data["proposed_time"] = old_dt.strftime("%H:%M")
+                    # Pre-fill patient name from DB to avoid re-asking during reschedule
+                    patient_id = session.patient_id or (old_appt.patient_id if old_appt else None)
                     if data.get("name"):
                         session.collected_data["name"] = data["name"]
+                    elif patient_id:
+                        try:
+                            patient = await db.get(Patient, patient_id)
+                            if patient and patient.name:
+                                session.collected_data["name"] = patient.name
+                        except Exception:
+                            pass
 
                     target_date = data.get("proposed_date") or session.collected_data.get("proposed_date")
                     if target_date:
                         available_slots = await self._get_available_slots(office, db, target_date=target_date)
-                    action_result = (
-                        f"CITA_ANTERIOR_CANCELADA_PARA_REAGENDAR: La cita del {old_appt_str} fue cancelada. "
-                        "El horario anterior queda libre. Ahora ayuda al paciente a elegir un nuevo horario."
+
+                    # If we already have date + time (e.g. "misma hora"), check slot
+                    # is available and skip straight to confirmation
+                    has_all = (
+                        session.collected_data.get("proposed_date")
+                        and session.collected_data.get("proposed_time")
+                        and session.collected_data.get("name")
+                        and session.collected_data.get("reason")
                     )
+                    requested_time = session.collected_data.get("proposed_time")
+                    if has_all and available_slots and requested_time:
+                        # Verify the requested time is actually available
+                        time_available = any(requested_time in slot for slot in available_slots)
+                        if time_available:
+                            session.collected_data["summary_shown"] = True
+                            from datetime import date as date_cls
+                            day_names = DAYS_ES
+                            try:
+                                d = date_cls.fromisoformat(session.collected_data["proposed_date"])
+                                formatted_date = f"{day_names[d.weekday()]} {d.strftime('%d/%m/%Y')}"
+                            except Exception:
+                                formatted_date = session.collected_data["proposed_date"]
+                            return (
+                                f"Perfecto, vamos a reagendar tu cita.\n\n"
+                                f"📋 Nuevos datos de tu cita:\n\n"
+                                f"👤 Nombre: {session.collected_data['name']}\n"
+                                f"📅 Fecha: {formatted_date}\n"
+                                f"🕐 Hora: {requested_time}\n"
+                                f"📝 Motivo: {session.collected_data['reason']}\n\n"
+                                "¿Los datos son correctos? Responde *sí* para confirmar."
+                            )
+                        else:
+                            # Requested time not available on new date
+                            session.collected_data.pop("proposed_time", None)
+                            action_result = (
+                                f"CITA_ANTERIOR_CANCELADA_PARA_REAGENDAR: La cita del {old_appt_str} fue cancelada. "
+                                f"El horario de las {requested_time} no está disponible para ese día. "
+                                "Muestra las opciones disponibles al paciente."
+                            )
+                    else:
+                        action_result = (
+                            f"CITA_ANTERIOR_CANCELADA_PARA_REAGENDAR: La cita del {old_appt_str} fue cancelada. "
+                            "El horario anterior queda libre. Ahora ayuda al paciente a elegir un nuevo horario."
+                        )
                 else:
                     session.status = "active"
                     return "Disculpa, hubo un error al procesar el reagendamiento. ¿Podrías intentarlo de nuevo?"
@@ -512,6 +577,16 @@ class ConversationManager:
                     return "No tienes citas próximas agendadas. ¿Te gustaría agendar una nueva cita?"
 
         elif intent == Intent.CONFIRM:
+            # Collect any new data from this message before checking completeness
+            if data.get("name") and not session.collected_data.get("name"):
+                session.collected_data["name"] = data["name"]
+            if data.get("reason") and not session.collected_data.get("reason"):
+                session.collected_data["reason"] = data["reason"]
+            if data.get("proposed_date") and not session.collected_data.get("proposed_date"):
+                session.collected_data["proposed_date"] = data["proposed_date"]
+            if data.get("proposed_time") and not session.collected_data.get("proposed_time"):
+                session.collected_data["proposed_time"] = data["proposed_time"]
+
             has_date = session.collected_data.get("proposed_date")
             has_time = session.collected_data.get("proposed_time")
             has_name = session.collected_data.get("name")
@@ -543,7 +618,7 @@ class ConversationManager:
                     from datetime import date as date_cls
                     try:
                         d = date_cls.fromisoformat(has_date)
-                        day_names = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
+                        day_names = DAYS_ES
                         formatted_date = f"{day_names[d.weekday()]} {d.strftime('%d/%m/%Y')}"
                     except Exception:
                         formatted_date = has_date
@@ -572,7 +647,7 @@ class ConversationManager:
                         from datetime import date as date_cls
                         try:
                             d = date_cls.fromisoformat(date_str)
-                            day_names = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
+                            day_names = DAYS_ES
                             formatted_date = f"{day_names[d.weekday()]} {d.strftime('%d/%m/%Y')}"
                         except Exception:
                             formatted_date = date_str
@@ -922,7 +997,7 @@ class ConversationManager:
 
         # Generate available slots
         available = []
-        day_names = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"]
+        day_names = [d.capitalize() for d in DAYS_ES]
         current_day = now.date()
 
         for day_offset in range(num_days):
@@ -1009,7 +1084,7 @@ class ConversationManager:
     @staticmethod
     def _build_appointment_list(appointments: list[Appointment]) -> str:
         """Build a numbered list of appointments for display."""
-        day_names = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
+        day_names = DAYS_ES
         lines = []
         for i, appt in enumerate(appointments, 1):
             dt = appt.start_datetime
@@ -1051,7 +1126,7 @@ class ConversationManager:
                 return appointments[idx]
 
         # Match by day name
-        day_names_lower = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
+        day_names_lower = DAYS_ES
         for appt in appointments:
             dt = appt.start_datetime
             if dt.tzinfo is None:
@@ -1077,7 +1152,7 @@ class ConversationManager:
     @staticmethod
     def _format_appointment_for_display(appointment: Appointment) -> str:
         """Format an appointment as a human-readable string for WhatsApp."""
-        day_names = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
+        day_names = DAYS_ES
         dt = appointment.start_datetime
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=MX_TIMEZONE)
