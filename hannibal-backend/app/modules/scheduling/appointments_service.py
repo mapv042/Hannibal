@@ -97,12 +97,6 @@ async def create_appointment(
             office_id, data.start_time.date(), redis_client
         )
 
-        # Step 6: Schedule reminders (placeholder - should call reminders service)
-        # TODO: Call reminders.scheduler.schedule_reminders(appointment.id, appointment.start_time)
-
-        # Step 7: Trigger Google Calendar sync (placeholder)
-        # TODO: Call google_calendar.sync.sync_appointment(appointment)
-
         await db.commit()
         await db.refresh(appointment)
 
@@ -157,10 +151,6 @@ async def cancel_appointment(
     await invalidate_availability_cache(
         office_id, appointment.start_time.date(), redis_client
     )
-
-    # TODO: Cancel scheduled reminders
-    # TODO: Remove from Google Calendar
-    # TODO: Notify waitlist (notify_waitlist task)
 
     await db.commit()
     await db.refresh(appointment)
@@ -230,9 +220,6 @@ async def reschedule_appointment(
         await invalidate_availability_cache(
             office_id, new_start_time.date(), redis_client
         )
-
-        # TODO: Cancel old reminders and schedule new ones
-        # TODO: Update Google Calendar event
 
         await db.commit()
         await db.refresh(appointment)
