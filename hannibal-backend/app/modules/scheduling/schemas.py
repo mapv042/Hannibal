@@ -40,7 +40,7 @@ class UpdateAppointmentRequest(BaseModel):
     post_consultation_notes: Optional[str] = Field(
         None, description="Post-consultation notes", max_length=2000
     )
-    medical_instructions: Optional[str] = Field(
+    instructions: Optional[str] = Field(
         None, description="Medical instructions", max_length=2000
     )
     cancelled_by: Optional[str] = Field(
@@ -57,14 +57,14 @@ class AppointmentResponse(BaseModel):
     id: UUID
     office_id: UUID
     patient_id: UUID
-    start_time: datetime
-    end_time: datetime
-    duration_min: int
-    appointment_type: str
+    start_datetime: datetime
+    end_datetime: datetime
+    duration_minutes: int
+    type: str
     consultation_reason: Optional[str]
     status: str
     post_consultation_notes: Optional[str]
-    medical_instructions: Optional[str]
+    instructions: Optional[str]
     cancelled_by: Optional[str]
     cancellation_reason: Optional[str]
     reminder_morning_sent: bool
@@ -111,7 +111,7 @@ class CompleteAppointmentRequest(BaseModel):
     post_consultation_notes: Optional[str] = Field(
         None, description="Post-consultation notes", max_length=2000
     )
-    medical_instructions: Optional[str] = Field(
+    instructions: Optional[str] = Field(
         None, description="Medical instructions", max_length=2000
     )
 

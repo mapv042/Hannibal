@@ -267,7 +267,7 @@ async def complete_appointment_endpoint(
         appointment_id=appointment_id,
         office_id=office.id,
         notes=request.post_consultation_notes,
-        instructions=request.medical_instructions,
+        instructions=request.instructions,
         db=db,
     )
 

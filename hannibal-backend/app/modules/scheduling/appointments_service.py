@@ -77,14 +77,14 @@ async def create_appointment(
 
     try:
         # Step 4: Create appointment
-        end_time = data.start_time + timedelta(minutes=data.duration_min)
+        end_datetime = data.start_time + timedelta(minutes=data.duration_min)
         appointment = Appointment(
             office_id=office_id,
             patient_id=data.patient_id,
-            start_time=data.start_time,
-            end_time=end_time,
-            duration_min=data.duration_min,
-            appointment_type=data.appointment_type,
+            start_datetime=data.start_time,
+            end_datetime=end_datetime,
+            duration_minutes=data.duration_min,
+            type=data.appointment_type,
             consultation_reason=data.consultation_reason,
             status="scheduled",
         )
@@ -149,7 +149,7 @@ async def cancel_appointment(
 
     # Invalidate cache
     await invalidate_availability_cache(
-        office_id, appointment.start_time.date(), redis_client
+        office_id, appointment.start_datetime.date(), redis_client
     )
 
     await db.commit()
@@ -203,12 +203,12 @@ async def reschedule_appointment(
     try:
         # Invalidate old cache
         await invalidate_availability_cache(
-            office_id, appointment.start_time.date(), redis_client
+            office_id, appointment.start_datetime.date(), redis_client
         )
 
         # Update appointment
-        appointment.start_time = new_start_time
-        appointment.end_time = new_start_time + timedelta(minutes=appointment.duration_min)
+        appointment.start_datetime = new_start_time
+        appointment.end_datetime = new_start_time + timedelta(minutes=appointment.duration_minutes)
 
         # Reset reminder flags
         appointment.reminder_morning_sent = False
@@ -228,7 +228,7 @@ async def reschedule_appointment(
         logger.info(
             "appointment_rescheduled",
             appointment_id=str(appointment_id),
-            old_start_time=str(appointment.start_time),
+            old_start_time=str(appointment.start_datetime),
             new_start_time=str(new_start_time),
         )
 
@@ -306,7 +306,7 @@ async def complete_appointment(
 
     appointment.status = "completed"
     appointment.post_consultation_notes = notes
-    appointment.medical_instructions = instructions
+    appointment.instructions = instructions
 
     # TODO: Schedule follow-up (post_follow_up task)
 
@@ -345,15 +345,15 @@ async def get_appointments(
     query = select(Appointment).where(Appointment.office_id == office_id)
 
     if start_date:
-        query = query.where(Appointment.start_time >= start_date)
+        query = query.where(Appointment.start_datetime >= start_date)
 
     if end_date:
-        query = query.where(Appointment.start_time <= end_date)
+        query = query.where(Appointment.start_datetime <= end_date)
 
     if status:
         query = query.where(Appointment.status == status)
 
-    result = await db.execute(query.order_by(Appointment.start_time))
+    result = await db.execute(query.order_by(Appointment.start_datetime))
     return result.scalars().all()
 
 

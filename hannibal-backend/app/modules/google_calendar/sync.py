@@ -55,8 +55,8 @@ async def sync_appointment(
                 office_id=office_id,
                 google_event_id=google_event.google_event_id,
                 title=f"Appointment - {appointment.patient.name or 'Patient'}",
-                start_time=appointment.start_time,
-                end_time=appointment.end_time,
+                start_time=appointment.start_datetime,
+                end_time=appointment.end_datetime,
                 description=appointment.reason or "",
                 db=db,
             )
@@ -70,8 +70,8 @@ async def sync_appointment(
             google_event_id = await create_calendar_event(
                 office_id=office_id,
                 title=f"Appointment - {appointment.patient.name or 'Patient'}",
-                start_time=appointment.start_time,
-                end_time=appointment.end_time,
+                start_time=appointment.start_datetime,
+                end_time=appointment.end_datetime,
                 description=appointment.reason or "",
                 db=db,
             )
@@ -82,8 +82,8 @@ async def sync_appointment(
                 appointment_id=appointment_id,
                 google_event_id=google_event_id,
                 title=f"Appointment - {appointment.patient.name or 'Patient'}",
-                start_time=appointment.start_time,
-                end_time=appointment.end_time,
+                start_time=appointment.start_datetime,
+                end_time=appointment.end_datetime,
                 is_time_block=False,
             )
             db.add(google_event)

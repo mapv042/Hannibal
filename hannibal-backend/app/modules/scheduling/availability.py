@@ -124,14 +124,14 @@ async def get_available_slots(
         select(Appointment).where(
             and_(
                 Appointment.office_id == office_id,
-                Appointment.start_time >= day_start,
-                Appointment.start_time <= day_end,
+                Appointment.start_datetime >= day_start,
+                Appointment.start_datetime <= day_end,
                 Appointment.status.in_(["scheduled", "confirmed"]),
             )
         )
     )
     appointments = appointments_result.scalars().all()
-    appointment_times = [(a.start_time, a.end_time) for a in appointments]
+    appointment_times = [(a.start_datetime, a.end_datetime) for a in appointments]
 
     # Step 5: Get time_blocks for that day
     blocks_result = await db.execute(
