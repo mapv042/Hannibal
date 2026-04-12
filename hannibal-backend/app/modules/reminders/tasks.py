@@ -295,8 +295,6 @@ async def _send_confirmation_requests_async():
         start_of_tomorrow = datetime.combine(tomorrow, datetime.min.time(), tzinfo=MX_TZ)
         end_of_tomorrow = datetime.combine(tomorrow, datetime.max.time(), tzinfo=MX_TZ)
 
-        _log(f"query_range: now_mx={now_mx}, tomorrow={tomorrow}, start={start_of_tomorrow}, end={end_of_tomorrow}")
-
         # Get all scheduled appointments for tomorrow without confirmation request
         result = await db.execute(
             select(Appointment).where(
@@ -310,10 +308,11 @@ async def _send_confirmation_requests_async():
         )
         appointments = result.scalars().all()
 
-        _log(f"found {len(appointments)} appointments for confirmation")
-
         if not appointments:
+            _log(f"send_confirmation_requests: no appointments for {tomorrow}")
             return
+
+        _log(f"send_confirmation_requests: {len(appointments)} appointments for {tomorrow}")
 
         meta_client = MetaCloudClient()
         session_store = SessionStore()
@@ -357,8 +356,6 @@ async def _send_confirmation_requests_async():
                         appointment_data, tone=office.assistant_tone
                     )
 
-                    _log(f"sending confirmation to patient={patient.whatsapp_id} for appointment={appointment.id}")
-
                     # Send WhatsApp message
                     await meta_client.send_text_message(
                         phone_number_id=office.whatsapp_phone_id,
@@ -366,8 +363,6 @@ async def _send_confirmation_requests_async():
                         to=patient.whatsapp_id,
                         text=message,
                     )
-
-                    _log(f"whatsapp sent, setting up session for patient={patient.whatsapp_id}")
 
                     # Set up session so the patient's reply routes correctly
                     session = await session_store.get_session(

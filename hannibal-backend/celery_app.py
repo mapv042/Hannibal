@@ -57,13 +57,5 @@ celery_app.autodiscover_tasks([
     "app.modules.google_calendar",
 ])
 
-# Explicitly import tasks to ensure they are registered
-import sys
-try:
-    import app.modules.reminders.tasks  # noqa: F401
-    print("[CELERY_APP] reminders.tasks imported OK", file=sys.stderr, flush=True)
-    print(f"[CELERY_APP] registered tasks: {list(celery_app.tasks.keys())}", file=sys.stderr, flush=True)
-except Exception as e:
-    print(f"[CELERY_APP] FAILED to import reminders.tasks: {e}", file=sys.stderr, flush=True)
-    import traceback
-    traceback.print_exc(file=sys.stderr)
+# Ensure task modules are imported so Celery registers them
+import app.modules.reminders.tasks  # noqa: F401
