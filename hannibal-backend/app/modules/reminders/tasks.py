@@ -317,18 +317,30 @@ def send_confirmation_requests(self):
 
 async def _send_confirmation_requests_async():
     """Async implementation of day-before confirmation requests."""
+    from zoneinfo import ZoneInfo
     from app.modules.whatsapp.meta_client import MetaCloudClient
     from app.modules.conversation.session_store import SessionStore
     from app.modules.conversation.schemas import SessionContext
     from app.db.models import Conversation
 
+    MX_TZ = ZoneInfo("America/Mexico_City")
+
     async with get_async_session_maker()() as db:
         try:
-            today = date.today()
-            tomorrow = today + timedelta(days=1)
+            # Use Mexico City timezone to determine "tomorrow"
+            now_mx = datetime.now(MX_TZ)
+            tomorrow = (now_mx + timedelta(days=1)).date()
 
-            start_of_tomorrow = datetime.combine(tomorrow, datetime.min.time())
-            end_of_tomorrow = datetime.combine(tomorrow, datetime.max.time())
+            start_of_tomorrow = datetime.combine(tomorrow, datetime.min.time(), tzinfo=MX_TZ)
+            end_of_tomorrow = datetime.combine(tomorrow, datetime.max.time(), tzinfo=MX_TZ)
+
+            logger.info(
+                "confirmation_query_range",
+                now_mx=str(now_mx),
+                tomorrow=str(tomorrow),
+                start=str(start_of_tomorrow),
+                end=str(end_of_tomorrow),
+            )
 
             # Get all scheduled appointments for tomorrow without confirmation request
             result = await db.execute(

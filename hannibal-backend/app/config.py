@@ -48,6 +48,7 @@ class Settings(BaseSettings):
     celery_broker_url: str = "redis://localhost:6379/0"
     celery_result_backend: str = "redis://localhost:6379/1"
     confirmation_request_hour: int = 8  # Hour (0-23) to send confirmation requests (Mexico City TZ)
+    confirmation_request_minute: int = 0  # Minute (0-59) to send confirmation requests
 
     # Frontend
     frontend_url: str = "http://localhost:3000"
