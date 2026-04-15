@@ -358,6 +358,7 @@ class ConversationManager:
                                 f"📝 Motivo: {session.collected_data['reason']}\n\n"
                                 "¿Los datos son correctos? Responde *sí* para confirmar o indícame qué dato deseas cambiar."
                             )
+                    # Not all data yet — fall through to LLM with slots context
 
         elif intent == Intent.CANCEL:
             # Multi-step cancellation flow (all critical steps are direct messages):
