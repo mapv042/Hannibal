@@ -2,14 +2,10 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from app.modules.ai.openai_service import OpenAIService
-    from app.modules.ai.anthropic_service import AnthropicService
+from app.modules.ai.base_service import BaseAIService
 
 
-def get_ai_service() -> OpenAIService | AnthropicService:
+def get_ai_service() -> BaseAIService:
     """Factory that returns the AI service based on the ai_provider setting."""
     from app.config import settings
 

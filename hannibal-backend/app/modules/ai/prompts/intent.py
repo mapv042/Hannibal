@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-INTENT_DETECTION_PROMPT = """Analiza el siguiente mensaje de usuario y su historial de conversación para detectar su intención.
+INTENT_DETECTION_SYSTEM_PROMPT = """Eres un experto en procesamiento de lenguaje natural. Analiza la conversación para detectar la intención del último mensaje del usuario.
 
 FECHA DE HOY: {today_date}
 IMPORTANTE: Cuando el usuario mencione días de la semana (ej: "martes", "jueves"), calcula la fecha del próximo día más cercano usando la fecha de hoy como referencia. El año actual es {current_year}.
@@ -44,11 +44,5 @@ PISTAS PARA DETECTAR INTENCIONES:
 IMPORTANTE SOBRE "MISMA HORA":
 - Si el paciente dice "misma hora", "mismo horario", "a la misma hora", etc., y en el historial de conversación se mencionó una cita con hora específica (ej: "a las 09:40"), extrae esa hora como proposed_time.
 - Si el asistente acaba de mostrar opciones de horario y el paciente elige una (ej: "9:40", "la 2", "esa"), la intención es CONFIRM, NO RESCHEDULE.
-
-CONTEXTO DE CONVERSACIÓN:
-{conversation_history}
-
-MENSAJE ACTUAL DEL USUARIO:
-{user_message}
 
 Responde SOLO el JSON, sin texto adicional."""
