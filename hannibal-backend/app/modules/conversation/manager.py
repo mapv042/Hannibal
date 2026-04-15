@@ -330,6 +330,15 @@ class ConversationManager:
                         f"SIN_DISPONIBILIDAD: No hay horarios disponibles para el {target_date}. "
                         "Informa al paciente que ese día no hay servicio y pregúntale si prefiere otro día."
                     )
+                elif available_slots and available_slots[0].startswith("ERROR_CALENDARIO"):
+                    # Google Calendar failed — tell patient to retry
+                    session.collected_data.pop("proposed_date", None)
+                    session.collected_data.pop("proposed_time", None)
+                    available_slots = []
+                    return (
+                        "Disculpa, tuve un problema al consultar la disponibilidad. "
+                        "¿Podrías intentarlo de nuevo en unos minutos?"
+                    )
                 else:
                     # Check if all required data is now present — show summary directly
                     has_all = (
@@ -1018,11 +1027,19 @@ class ConversationManager:
         # Get busy periods from Google Calendar
         busy_ranges = []
         if office.google_calendar_token:
-            busy_periods = await get_freebusy(office.id, now, time_max, db)
-            for bp in busy_periods:
-                start = datetime.fromisoformat(bp["start"].replace("Z", "+00:00")).astimezone(MX_TIMEZONE)
-                end = datetime.fromisoformat(bp["end"].replace("Z", "+00:00")).astimezone(MX_TIMEZONE)
-                busy_ranges.append((start, end))
+            for attempt in range(2):
+                try:
+                    busy_periods = await get_freebusy(office.id, now, time_max, db)
+                    for bp in busy_periods:
+                        start = datetime.fromisoformat(bp["start"].replace("Z", "+00:00")).astimezone(MX_TIMEZONE)
+                        end = datetime.fromisoformat(bp["end"].replace("Z", "+00:00")).astimezone(MX_TIMEZONE)
+                        busy_ranges.append((start, end))
+                    break
+                except Exception as e:
+                    logger.warning("google_freebusy_attempt_failed", office_id=str(office.id), attempt=attempt + 1, error=str(e))
+                    if attempt == 1:
+                        logger.error("google_freebusy_failed_all_retries", office_id=str(office.id), error=str(e))
+                        return ["ERROR_CALENDARIO: No pudimos consultar la disponibilidad en este momento. Por favor intenta de nuevo en unos minutos."]
 
         # Generate available slots
         available = []
