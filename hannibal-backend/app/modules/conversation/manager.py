@@ -286,17 +286,18 @@ class ConversationManager:
                     office, intent, session, message_text, db
                 )
 
-        # If patient is in a waiting state, route responses to the correct intent
-        # unless they explicitly start a completely new intent
+        # If patient is in cancel flow, keep them there unless they explicitly
+        # start a different action. URGENT and GREETING are NOT excluded because
+        # medical-sounding cancellation reasons get misclassified as URGENT.
         if (
             session.status in ("waiting_cancel_selection", "waiting_cancel_reason")
-            and intent not in (Intent.SCHEDULE, Intent.GREETING, Intent.URGENT, Intent.RESCHEDULE)
+            and intent not in (Intent.SCHEDULE, Intent.RESCHEDULE, Intent.QUESTION)
         ):
             intent = Intent.CANCEL
 
         if (
             session.status in ("waiting_reschedule_selection", "waiting_reschedule_new_datetime")
-            and intent not in (Intent.SCHEDULE, Intent.GREETING, Intent.URGENT, Intent.CANCEL)
+            and intent not in (Intent.SCHEDULE, Intent.CANCEL)
         ):
             intent = Intent.RESCHEDULE
 
@@ -304,7 +305,7 @@ class ConversationManager:
         # keep user in the flow unless they explicitly start a new one
         if (
             session.status == "waiting_confirmation"
-            and intent not in (Intent.CANCEL, Intent.GREETING, Intent.URGENT, Intent.CONFIRM)
+            and intent not in (Intent.CANCEL, Intent.RESCHEDULE, Intent.CONFIRM)
         ):
             intent = Intent.SCHEDULE
 
