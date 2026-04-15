@@ -330,6 +330,34 @@ class ConversationManager:
                         f"SIN_DISPONIBILIDAD: No hay horarios disponibles para el {target_date}. "
                         "Informa al paciente que ese día no hay servicio y pregúntale si prefiere otro día."
                     )
+                else:
+                    # Check if all required data is now present — show summary directly
+                    has_all = (
+                        session.collected_data.get("proposed_date")
+                        and session.collected_data.get("proposed_time")
+                        and session.collected_data.get("name")
+                        and session.collected_data.get("reason")
+                    )
+                    requested_time = session.collected_data.get("proposed_time")
+                    if has_all and requested_time:
+                        time_available = any(requested_time in slot for slot in available_slots)
+                        if time_available:
+                            session.collected_data["summary_shown"] = True
+                            from datetime import date as date_cls
+                            day_names = DAYS_ES
+                            try:
+                                d = date_cls.fromisoformat(session.collected_data["proposed_date"])
+                                formatted_date = f"{day_names[d.weekday()]} {d.strftime('%d/%m/%Y')}"
+                            except Exception:
+                                formatted_date = session.collected_data["proposed_date"]
+                            return (
+                                f"📋 Estos son los datos de tu cita:\n\n"
+                                f"👤 Nombre: {session.collected_data['name']}\n"
+                                f"📅 Fecha: {formatted_date}\n"
+                                f"🕐 Hora: {requested_time}\n"
+                                f"📝 Motivo: {session.collected_data['reason']}\n\n"
+                                "¿Los datos son correctos? Responde *sí* para confirmar o indícame qué dato deseas cambiar."
+                            )
 
         elif intent == Intent.CANCEL:
             # Multi-step cancellation flow (all critical steps are direct messages):
