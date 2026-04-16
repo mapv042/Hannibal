@@ -447,6 +447,18 @@ class ConversationManager:
                         "¿Podrías indicarme el motivo de la cancelación?"
                     )
                 elif len(appointments) > 1:
+                    # Try to match from the user's original message first
+                    matched = self._match_appointment_from_message(
+                        message_text, appointments
+                    )
+                    if matched:
+                        session.active_appointment_id = matched.id
+                        appt_str = self._format_appointment_for_display(matched)
+                        session.status = "waiting_cancel_reason"
+                        return (
+                            f"Entendido, la cita del {appt_str}.\n\n"
+                            "¿Podrías indicarme el motivo de la cancelación?"
+                        )
                     appt_lines = self._build_appointment_list(appointments)
                     session.status = "waiting_cancel_selection"
                     return (
@@ -605,6 +617,17 @@ class ConversationManager:
                         "¿Para qué día y horario te gustaría cambiarla?"
                     )
                 elif len(appointments) > 1:
+                    matched = self._match_appointment_from_message(
+                        message_text, appointments
+                    )
+                    if matched:
+                        session.active_appointment_id = matched.id
+                        appt_str = self._format_appointment_for_display(matched)
+                        session.status = "waiting_reschedule_new_datetime"
+                        return (
+                            f"Entendido, la cita del {appt_str}.\n\n"
+                            "¿Para qué día y horario te gustaría cambiarla?"
+                        )
                     appt_lines = self._build_appointment_list(appointments)
                     session.status = "waiting_reschedule_selection"
                     return (

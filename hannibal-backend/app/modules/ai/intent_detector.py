@@ -35,7 +35,6 @@ async def detect_intent(
         ai_service = get_ai_service()
 
     try:
-        # Get intent from Claude
         intent_response = await ai_service.detect_intent(
             message=message,
             conversation_history=history,
