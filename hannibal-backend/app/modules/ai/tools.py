@@ -1,0 +1,628 @@
+"""Tool definitions and executor for LLM tool-use based conversation."""
+
+from __future__ import annotations
+
+import uuid
+from datetime import datetime, timedelta, date as date_cls
+from typing import Any, Optional
+from zoneinfo import ZoneInfo
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.constants import DAYS_ES, MX_TIMEZONE
+from app.db.models import (
+    Appointment, Office, Patient, AvailabilitySchedule,
+)
+from app.modules.google_calendar.service import (
+    get_freebusy, create_calendar_event, update_event_color,
+)
+from app.modules.google_calendar.sync import cancel_appointment_in_calendar
+from app.utils.logger import get_logger
+
+logger = get_logger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Tool definitions (Anthropic format — OpenAIService converts automatically)
+# ---------------------------------------------------------------------------
+
+TOOL_DEFINITIONS = [
+    {
+        "name": "get_available_slots",
+        "description": (
+            "Consulta los horarios disponibles para agendar una cita en una o varias fechas. "
+            "Usa esta herramienta cuando el paciente quiera saber qué horarios hay disponibles "
+            "o cuando necesites verificar disponibilidad antes de agendar. "
+            "Si el paciente dice 'mañana', un día de la semana, o una fecha, calcula la fecha "
+            "correcta en formato YYYY-MM-DD antes de llamar."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "date": {
+                    "type": "string",
+                    "description": "Fecha en formato YYYY-MM-DD.",
+                },
+            },
+            "required": ["date"],
+        },
+    },
+    {
+        "name": "get_patient_appointments",
+        "description": (
+            "Obtiene las citas próximas del paciente. Usa esta herramienta cuando el paciente "
+            "quiera cancelar, reagendar, confirmar asistencia, o preguntar sobre sus citas. "
+            "No requiere parámetros — el paciente se identifica automáticamente."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+        },
+    },
+    {
+        "name": "create_appointment",
+        "description": (
+            "Crea una nueva cita. SOLO llama esta herramienta DESPUÉS de que el paciente haya "
+            "confirmado explícitamente todos los datos (nombre, fecha, hora, motivo). "
+            "Primero presenta un resumen y espera que el paciente diga 'sí', 'correcto', 'dale', etc. "
+            "NUNCA llames esta herramienta sin confirmación explícita del paciente."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "patient_name": {
+                    "type": "string",
+                    "description": "Nombre completo del paciente.",
+                },
+                "date": {
+                    "type": "string",
+                    "description": "Fecha en formato YYYY-MM-DD.",
+                },
+                "time": {
+                    "type": "string",
+                    "description": "Hora en formato HH:MM (24 horas).",
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Motivo de la consulta.",
+                },
+            },
+            "required": ["patient_name", "date", "time", "reason"],
+        },
+    },
+    {
+        "name": "cancel_appointment",
+        "description": (
+            "Cancela una cita existente. El paciente debe haber identificado cuál cita "
+            "cancelar y proporcionado un motivo de cancelación."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "appointment_id": {
+                    "type": "string",
+                    "description": "ID de la cita a cancelar (obtenido de get_patient_appointments).",
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Motivo de la cancelación proporcionado por el paciente.",
+                },
+            },
+            "required": ["appointment_id", "reason"],
+        },
+    },
+    {
+        "name": "reschedule_appointment",
+        "description": (
+            "Reagenda una cita existente a un nuevo horario. Cancela la cita anterior "
+            "y crea una nueva. El paciente debe haber confirmado el nuevo horario."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "appointment_id": {
+                    "type": "string",
+                    "description": "ID de la cita original a reagendar.",
+                },
+                "new_date": {
+                    "type": "string",
+                    "description": "Nueva fecha en formato YYYY-MM-DD.",
+                },
+                "new_time": {
+                    "type": "string",
+                    "description": "Nueva hora en formato HH:MM (24 horas).",
+                },
+            },
+            "required": ["appointment_id", "new_date", "new_time"],
+        },
+    },
+    {
+        "name": "confirm_appointment",
+        "description": (
+            "Confirma la asistencia del paciente a una cita programada. "
+            "Usa cuando el paciente responde afirmativamente a un recordatorio de cita."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "appointment_id": {
+                    "type": "string",
+                    "description": "ID de la cita a confirmar.",
+                },
+            },
+            "required": ["appointment_id"],
+        },
+    },
+]
+
+
+# ---------------------------------------------------------------------------
+# Tool execution context
+# ---------------------------------------------------------------------------
+
+class ToolContext:
+    """Context passed to tool handlers with DB, office, and patient info."""
+
+    def __init__(
+        self,
+        db: AsyncSession,
+        office: Office,
+        patient_id: Optional[uuid.UUID],
+        whatsapp_id: str,
+    ):
+        self.db = db
+        self.office = office
+        self.patient_id = patient_id
+        self.whatsapp_id = whatsapp_id
+
+
+# ---------------------------------------------------------------------------
+# Tool executor (dispatcher)
+# ---------------------------------------------------------------------------
+
+_HANDLERS: dict[str, Any] = {}
+
+
+def _handler(name: str):
+    """Decorator to register a tool handler."""
+    def decorator(fn):
+        _HANDLERS[name] = fn
+        return fn
+    return decorator
+
+
+async def execute_tool(
+    tool_name: str,
+    arguments: dict,
+    ctx: ToolContext,
+) -> dict:
+    """
+    Execute a tool by name and return a JSON-serializable result dict.
+
+    Returns an error dict if the tool fails, so the LLM can communicate
+    the issue to the patient naturally.
+    """
+    handler = _HANDLERS.get(tool_name)
+    if not handler:
+        return {"error": f"Herramienta desconocida: {tool_name}"}
+
+    try:
+        return await handler(arguments, ctx)
+    except Exception as e:
+        logger.error("tool_execution_error", tool=tool_name, error=str(e), exc_info=True)
+        return {"error": f"Error al ejecutar {tool_name}: {str(e)}"}
+
+
+# ---------------------------------------------------------------------------
+# Individual tool handlers
+# ---------------------------------------------------------------------------
+
+@_handler("get_available_slots")
+async def _handle_get_available_slots(args: dict, ctx: ToolContext) -> dict:
+    date_str = args.get("date", "")
+    try:
+        target_date = date_cls.fromisoformat(date_str)
+    except ValueError:
+        return {"error": f"Fecha inválida: {date_str}. Usa formato YYYY-MM-DD."}
+
+    now = datetime.now(tz=MX_TIMEZONE)
+
+    # Get schedules for the target day
+    db_day = (target_date.weekday() + 1) % 7  # Python Mon=0 → DB Sun=0
+    stmt = select(AvailabilitySchedule).where(
+        (AvailabilitySchedule.office_id == ctx.office.id)
+        & (AvailabilitySchedule.is_active == True)
+        & (AvailabilitySchedule.day_of_week == db_day)
+    )
+    result = await ctx.db.execute(stmt)
+    schedules = result.scalars().all()
+
+    if not schedules:
+        day_name = DAYS_ES[target_date.weekday()]
+        return {
+            "date": date_str,
+            "day_name": day_name,
+            "slots": [],
+            "message": f"No hay horario de atención configurado para {day_name}.",
+        }
+
+    # Google Calendar freebusy
+    time_min = datetime.combine(target_date, datetime.min.time()).replace(tzinfo=MX_TIMEZONE)
+    time_max = datetime.combine(target_date, datetime.max.time()).replace(tzinfo=MX_TIMEZONE)
+    busy_ranges = []
+    if ctx.office.google_calendar_token:
+        try:
+            busy_periods = await get_freebusy(ctx.office.id, time_min, time_max, ctx.db)
+            for bp in busy_periods:
+                start = datetime.fromisoformat(bp["start"].replace("Z", "+00:00")).astimezone(MX_TIMEZONE)
+                end = datetime.fromisoformat(bp["end"].replace("Z", "+00:00")).astimezone(MX_TIMEZONE)
+                busy_ranges.append((start, end))
+        except Exception as e:
+            logger.warning("tool_freebusy_failed", error=str(e))
+            return {"error": "No se pudo consultar la disponibilidad del calendario. Intenta de nuevo en unos minutos."}
+
+    # Existing appointments for the date
+    stmt = select(Appointment).where(
+        (Appointment.office_id == ctx.office.id)
+        & (Appointment.start_datetime >= time_min)
+        & (Appointment.start_datetime <= time_max)
+        & (Appointment.status.in_(["scheduled", "confirmed"]))
+    )
+    result = await ctx.db.execute(stmt)
+    existing_appts = result.scalars().all()
+    for appt in existing_appts:
+        a_start = appt.start_datetime
+        if a_start.tzinfo is None:
+            a_start = a_start.replace(tzinfo=MX_TIMEZONE)
+        a_end = appt.end_datetime
+        if a_end and a_end.tzinfo is None:
+            a_end = a_end.replace(tzinfo=MX_TIMEZONE)
+        elif not a_end:
+            a_end = a_start + timedelta(minutes=appt.duration_minutes or 30)
+        busy_ranges.append((a_start, a_end))
+
+    # Generate slots
+    slots = []
+    for sched in schedules:
+        slot_duration = timedelta(minutes=sched.appointment_duration_min)
+        buffer = timedelta(minutes=sched.buffer_minutes)
+        slot_time = datetime.combine(target_date, sched.start_time).replace(tzinfo=MX_TIMEZONE)
+        end_time = datetime.combine(target_date, sched.end_time).replace(tzinfo=MX_TIMEZONE)
+
+        while slot_time + slot_duration <= end_time:
+            slot_end = slot_time + slot_duration
+
+            if slot_time > now:
+                is_busy = any(
+                    slot_time < busy_end and slot_end > busy_start
+                    for busy_start, busy_end in busy_ranges
+                )
+                if not is_busy:
+                    slots.append({
+                        "time": slot_time.strftime("%H:%M"),
+                        "period": "mañana" if slot_time.hour < 12 else "tarde",
+                    })
+
+            slot_time = slot_time + slot_duration + buffer
+
+    day_name = DAYS_ES[target_date.weekday()]
+    return {
+        "date": date_str,
+        "day_name": day_name,
+        "slots": slots,
+        "message": f"{'No hay' if not slots else str(len(slots))} horarios disponibles para {day_name} {target_date.strftime('%d/%m/%Y')}.",
+    }
+
+
+@_handler("get_patient_appointments")
+async def _handle_get_patient_appointments(args: dict, ctx: ToolContext) -> dict:
+    if not ctx.patient_id:
+        return {"appointments": [], "message": "No se encontró registro del paciente."}
+
+    now = datetime.now(tz=MX_TIMEZONE)
+    stmt = (
+        select(Appointment)
+        .where(
+            (Appointment.patient_id == ctx.patient_id)
+            & (Appointment.office_id == ctx.office.id)
+            & (Appointment.status.in_(["scheduled", "confirmed"]))
+            & (Appointment.start_datetime >= now)
+        )
+        .order_by(Appointment.start_datetime)
+    )
+    result = await ctx.db.execute(stmt)
+    appointments = result.scalars().all()
+
+    if not appointments:
+        return {"appointments": [], "message": "El paciente no tiene citas próximas."}
+
+    appt_list = []
+    for appt in appointments:
+        dt = appt.start_datetime
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=MX_TIMEZONE)
+        else:
+            dt = dt.astimezone(MX_TIMEZONE)
+        appt_list.append({
+            "id": str(appt.id),
+            "date": dt.strftime("%Y-%m-%d"),
+            "time": dt.strftime("%H:%M"),
+            "day_name": DAYS_ES[dt.weekday()],
+            "formatted": f"{DAYS_ES[dt.weekday()]} {dt.strftime('%d/%m/%Y')} a las {dt.strftime('%H:%M')}",
+            "reason": appt.consultation_reason or "Consulta",
+            "status": appt.status,
+        })
+
+    return {"appointments": appt_list}
+
+
+@_handler("create_appointment")
+async def _handle_create_appointment(args: dict, ctx: ToolContext) -> dict:
+    patient_name = args.get("patient_name", "").strip()
+    date_str = args.get("date", "")
+    time_str = args.get("time", "")
+    reason = args.get("reason", "Consulta")
+
+    if not all([patient_name, date_str, time_str, reason]):
+        return {"error": "Faltan datos para crear la cita. Se requiere: nombre, fecha, hora y motivo."}
+
+    try:
+        start_dt = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M").replace(tzinfo=MX_TIMEZONE)
+    except ValueError:
+        return {"error": f"Fecha u hora inválida: {date_str} {time_str}"}
+
+    # Ensure patient record exists
+    patient = None
+    if ctx.patient_id:
+        patient = await ctx.db.get(Patient, ctx.patient_id)
+
+    if not patient:
+        # Create patient
+        patient = Patient(
+            id=uuid.uuid4(),
+            office_id=ctx.office.id,
+            whatsapp_id=ctx.whatsapp_id,
+            phone=ctx.whatsapp_id,
+            name=patient_name,
+        )
+        ctx.db.add(patient)
+        await ctx.db.flush()
+        ctx.patient_id = patient.id
+    elif not patient.name:
+        patient.name = patient_name
+
+    duration = timedelta(minutes=30)
+    end_dt = start_dt + duration
+
+    # Google Calendar event
+    google_event_id = None
+    if ctx.office.google_calendar_token:
+        try:
+            google_event_id = await create_calendar_event(
+                office_id=ctx.office.id,
+                title=f"Cita: {patient_name}",
+                start_time=start_dt,
+                end_time=end_dt,
+                description=f"Motivo: {reason}\nAgendada por WhatsApp",
+                db=ctx.db,
+                color_id="9",
+            )
+        except Exception as e:
+            logger.error("tool_create_gcal_failed", error=str(e))
+
+    # Create appointment
+    appointment_id = uuid.uuid4()
+    appointment = Appointment(
+        id=appointment_id,
+        office_id=ctx.office.id,
+        patient_id=patient.id,
+        start_datetime=start_dt,
+        end_datetime=end_dt,
+        duration_minutes=30,
+        consultation_reason=reason,
+        status="scheduled",
+        google_event_id=google_event_id,
+    )
+    ctx.db.add(appointment)
+    await ctx.db.flush()
+
+    day_name = DAYS_ES[start_dt.weekday()]
+    logger.info("tool_appointment_created", appointment_id=str(appointment_id), office_id=str(ctx.office.id))
+
+    return {
+        "success": True,
+        "appointment_id": str(appointment_id),
+        "patient_name": patient_name,
+        "date": date_str,
+        "time": time_str,
+        "day_name": day_name,
+        "formatted_date": f"{day_name} {start_dt.strftime('%d/%m/%Y')}",
+        "reason": reason,
+        "office_name": ctx.office.name,
+        "office_address": ctx.office.address or "",
+    }
+
+
+@_handler("cancel_appointment")
+async def _handle_cancel_appointment(args: dict, ctx: ToolContext) -> dict:
+    appt_id_str = args.get("appointment_id", "")
+    reason = args.get("reason", "")
+
+    try:
+        appt_id = uuid.UUID(appt_id_str)
+    except ValueError:
+        return {"error": f"ID de cita inválido: {appt_id_str}"}
+
+    appointment = await ctx.db.get(Appointment, appt_id)
+    if not appointment or appointment.office_id != ctx.office.id:
+        return {"error": "No se encontró la cita."}
+
+    if appointment.status == "cancelled":
+        return {"error": "La cita ya fue cancelada previamente."}
+
+    # Format before cancelling
+    dt = appointment.start_datetime
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=MX_TIMEZONE)
+    else:
+        dt = dt.astimezone(MX_TIMEZONE)
+    formatted = f"{DAYS_ES[dt.weekday()]} {dt.strftime('%d/%m/%Y')} a las {dt.strftime('%H:%M')}"
+
+    # Cancel
+    appointment.status = "cancelled"
+    appointment.cancelled_by = "patient"
+    appointment.cancellation_reason = reason
+
+    # Google Calendar
+    try:
+        await cancel_appointment_in_calendar(appt_id, ctx.office.id, ctx.db)
+    except Exception as e:
+        logger.warning("tool_cancel_gcal_failed", error=str(e))
+
+    logger.info("tool_appointment_cancelled", appointment_id=appt_id_str)
+
+    return {
+        "success": True,
+        "appointment_id": appt_id_str,
+        "formatted": formatted,
+        "reason": reason,
+    }
+
+
+@_handler("reschedule_appointment")
+async def _handle_reschedule_appointment(args: dict, ctx: ToolContext) -> dict:
+    appt_id_str = args.get("appointment_id", "")
+    new_date = args.get("new_date", "")
+    new_time = args.get("new_time", "")
+
+    try:
+        appt_id = uuid.UUID(appt_id_str)
+    except ValueError:
+        return {"error": f"ID de cita inválido: {appt_id_str}"}
+
+    appointment = await ctx.db.get(Appointment, appt_id)
+    if not appointment or appointment.office_id != ctx.office.id:
+        return {"error": "No se encontró la cita."}
+
+    try:
+        new_start = datetime.strptime(f"{new_date} {new_time}", "%Y-%m-%d %H:%M").replace(tzinfo=MX_TIMEZONE)
+    except ValueError:
+        return {"error": f"Fecha u hora inválida: {new_date} {new_time}"}
+
+    # Format old appointment
+    old_dt = appointment.start_datetime
+    if old_dt.tzinfo is None:
+        old_dt = old_dt.replace(tzinfo=MX_TIMEZONE)
+    else:
+        old_dt = old_dt.astimezone(MX_TIMEZONE)
+    old_formatted = f"{DAYS_ES[old_dt.weekday()]} {old_dt.strftime('%d/%m/%Y')} a las {old_dt.strftime('%H:%M')}"
+
+    # Cancel old
+    appointment.status = "cancelled"
+    appointment.cancelled_by = "patient"
+    appointment.cancellation_reason = "Reagendada por el paciente"
+
+    try:
+        await cancel_appointment_in_calendar(appt_id, ctx.office.id, ctx.db)
+    except Exception as e:
+        logger.warning("tool_reschedule_cancel_gcal_failed", error=str(e))
+
+    # Create new
+    patient_name = ""
+    if appointment.patient_id:
+        patient = await ctx.db.get(Patient, appointment.patient_id)
+        if patient:
+            patient_name = patient.name or ""
+
+    duration = timedelta(minutes=appointment.duration_minutes or 30)
+    new_end = new_start + duration
+    reason = appointment.consultation_reason or "Consulta"
+
+    google_event_id = None
+    if ctx.office.google_calendar_token:
+        try:
+            google_event_id = await create_calendar_event(
+                office_id=ctx.office.id,
+                title=f"Cita: {patient_name}",
+                start_time=new_start,
+                end_time=new_end,
+                description=f"Motivo: {reason}\nReagendada por WhatsApp",
+                db=ctx.db,
+                color_id="9",
+            )
+        except Exception as e:
+            logger.error("tool_reschedule_gcal_create_failed", error=str(e))
+
+    new_appointment_id = uuid.uuid4()
+    new_appointment = Appointment(
+        id=new_appointment_id,
+        office_id=ctx.office.id,
+        patient_id=appointment.patient_id,
+        start_datetime=new_start,
+        end_datetime=new_end,
+        duration_minutes=appointment.duration_minutes or 30,
+        consultation_reason=reason,
+        status="scheduled",
+        google_event_id=google_event_id,
+    )
+    ctx.db.add(new_appointment)
+    await ctx.db.flush()
+
+    new_day_name = DAYS_ES[new_start.weekday()]
+    logger.info("tool_appointment_rescheduled", old_id=appt_id_str, new_id=str(new_appointment_id))
+
+    return {
+        "success": True,
+        "old_appointment_id": appt_id_str,
+        "old_formatted": old_formatted,
+        "new_appointment_id": str(new_appointment_id),
+        "new_date": new_date,
+        "new_time": new_time,
+        "new_day_name": new_day_name,
+        "new_formatted": f"{new_day_name} {new_start.strftime('%d/%m/%Y')} a las {new_start.strftime('%H:%M')}",
+        "reason": reason,
+        "patient_name": patient_name,
+    }
+
+
+@_handler("confirm_appointment")
+async def _handle_confirm_appointment(args: dict, ctx: ToolContext) -> dict:
+    appt_id_str = args.get("appointment_id", "")
+
+    try:
+        appt_id = uuid.UUID(appt_id_str)
+    except ValueError:
+        return {"error": f"ID de cita inválido: {appt_id_str}"}
+
+    appointment = await ctx.db.get(Appointment, appt_id)
+    if not appointment or appointment.office_id != ctx.office.id:
+        return {"error": "No se encontró la cita."}
+
+    if appointment.status == "cancelled":
+        return {"error": "La cita fue cancelada y no puede confirmarse."}
+
+    appointment.status = "confirmed"
+
+    # Update Google Calendar color
+    if appointment.google_event_id:
+        try:
+            await update_event_color(ctx.office.id, appointment.google_event_id, "10", ctx.db)
+        except Exception as e:
+            logger.warning("tool_confirm_gcal_color_failed", error=str(e))
+
+    dt = appointment.start_datetime
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=MX_TIMEZONE)
+    else:
+        dt = dt.astimezone(MX_TIMEZONE)
+
+    logger.info("tool_appointment_confirmed", appointment_id=appt_id_str)
+
+    return {
+        "success": True,
+        "appointment_id": appt_id_str,
+        "formatted": f"{DAYS_ES[dt.weekday()]} {dt.strftime('%d/%m/%Y')} a las {dt.strftime('%H:%M')}",
+        "office_name": ctx.office.name,
+        "office_address": ctx.office.address or "",
+    }
