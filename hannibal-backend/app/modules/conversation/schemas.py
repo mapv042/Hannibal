@@ -40,9 +40,9 @@ class SessionContext(BaseModel):
     )
 
     # Claude conversation history
-    claude_history: list[dict[str, str]] = Field(
+    claude_history: list[dict[str, Any]] = Field(
         default_factory=list,
-        description="Conversation history for Claude context (role/content pairs)",
+        description="Conversation history for Claude context (role/content pairs, may include tool-use blocks)",
     )
 
     # Control flags
