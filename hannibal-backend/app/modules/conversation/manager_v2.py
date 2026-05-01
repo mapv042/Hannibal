@@ -136,7 +136,7 @@ class ConversationManagerV2:
 
             # Trim history
             if len(session.claude_history) > 40:
-                session.claude_history = session.claude_history[-40:]
+                session.claude_history = self._trim_history(session.claude_history, 40)
 
             # 9. Send response
             try:
@@ -219,6 +219,25 @@ class ConversationManagerV2:
         # Safety: max iterations reached
         logger.warning("tool_use_loop_max_iterations", max=MAX_TOOL_ITERATIONS)
         return "Disculpa, tuve un problema procesando tu solicitud. ¿Podrías intentarlo de nuevo?"
+
+    @staticmethod
+    def _trim_history(messages: list[dict], max_len: int) -> list[dict]:
+        """Trim history to max_len without orphaning tool messages.
+
+        After slicing, the first message might be a 'tool' response whose
+        preceding 'assistant' (with tool_calls) was cut off.  OpenAI rejects
+        this.  We skip forward until we find a non-tool message.
+        """
+        trimmed = messages[-max_len:]
+        while trimmed and trimmed[0].get("role") == "tool":
+            trimmed.pop(0)
+        # Also guard against starting with an assistant tool_calls message
+        # whose tool results were partially cut
+        if trimmed and trimmed[0].get("role") == "assistant" and trimmed[0].get("tool_calls"):
+            trimmed.pop(0)
+            while trimmed and trimmed[0].get("role") == "tool":
+                trimmed.pop(0)
+        return trimmed
 
     # ------------------------------------------------------------------
     # Helper methods (reused from original manager, simplified)
