@@ -66,6 +66,9 @@ async def _send_reminder(appointment_id: str, reminder_type: str) -> None:
 
     Loads appointment/patient/office, checks idempotency,
     builds message from template, sends via WhatsApp, marks as sent.
+
+    Uses SELECT FOR UPDATE to prevent race conditions when multiple
+    Celery tasks for the same reminder fire simultaneously.
     """
     from app.modules.whatsapp.meta_client import MetaCloudClient
 
@@ -73,12 +76,18 @@ async def _send_reminder(appointment_id: str, reminder_type: str) -> None:
     template_fn = TEMPLATE_MAP[reminder_type]
 
     async with get_async_session_maker()() as db:
-        appointment = await db.get(Appointment, UUID(appointment_id))
+        # Lock the row to prevent race conditions with duplicate tasks
+        result = await db.execute(
+            select(Appointment)
+            .where(Appointment.id == UUID(appointment_id))
+            .with_for_update()
+        )
+        appointment = result.scalar_one_or_none()
         if not appointment:
             _log(f"send_reminder_{reminder_type}: not found appointment_id={appointment_id}")
             return
 
-        # Idempotency check
+        # Idempotency check (safe under FOR UPDATE lock)
         if getattr(appointment, flag_attr):
             _log(f"send_reminder_{reminder_type}: already sent appointment_id={appointment_id}")
             return
@@ -383,6 +392,13 @@ async def _send_confirmation_requests_async():
                             claude_history=[],
                             collected_data={},
                         )
+
+                    # Add confirmation message to claude_history so the AI
+                    # has context when the patient replies
+                    session.claude_history.append({
+                        "role": "assistant",
+                        "content": message,
+                    })
 
                     session.status = "waiting_appointment_confirmation"
                     session.active_appointment_id = appointment.id

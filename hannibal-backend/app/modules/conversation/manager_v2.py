@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.utils.logger import get_logger
 from app.core.constants import MX_TIMEZONE
 from app.core.exceptions import ConversationError
-from app.db.models import Office, Patient, Conversation, Message
+from app.db.models import Appointment, Office, Patient, Conversation, Message
 from app.modules.ai import get_ai_service
 from app.modules.ai.prompts.base_v2 import build_system_prompt_v2
 from app.modules.ai.tools import TOOL_DEFINITIONS, ToolContext, execute_tool
@@ -107,7 +107,12 @@ class ConversationManagerV2:
             await self._save_incoming_message(db, office.id, whatsapp_id, message_text, message_id)
 
             # 6. Build system prompt and add user message to history
-            system_prompt = build_system_prompt_v2(office)
+            active_appt_id = (
+                str(session.active_appointment_id)
+                if session.active_appointment_id
+                else None
+            )
+            system_prompt = build_system_prompt_v2(office, active_appointment_id=active_appt_id)
             session.claude_history.append({"role": "user", "content": message_text})
 
             # 7. Tool-use loop
@@ -125,6 +130,13 @@ class ConversationManagerV2:
             # Update patient_id if a tool created the patient
             if tool_ctx.patient_id and tool_ctx.patient_id != session.patient_id:
                 session.patient_id = tool_ctx.patient_id
+
+            # Clear confirmation state if the appointment was confirmed or cancelled
+            if session.active_appointment_id:
+                appt = await db.get(Appointment, session.active_appointment_id)
+                if not appt or appt.status in ("confirmed", "cancelled"):
+                    session.active_appointment_id = None
+                    session.status = "active"
 
             # Fallback
             if not response_text or not response_text.strip():
