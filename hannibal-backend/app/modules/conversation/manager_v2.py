@@ -255,6 +255,18 @@ class ConversationManagerV2:
     # Helper methods (reused from original manager, simplified)
     # ------------------------------------------------------------------
 
+    # Human-readable labels for WhatsApp message types
+    _MESSAGE_TYPE_LABELS: dict[str, str] = {
+        "audio": "mensaje de voz",
+        "image": "imagen",
+        "video": "video",
+        "document": "documento",
+        "sticker": "sticker",
+        "location": "ubicación",
+        "contacts": "contacto",
+        "reaction": "reacción",
+    }
+
     @staticmethod
     def _extract_message_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
         try:
@@ -265,15 +277,29 @@ class ConversationManagerV2:
             if not messages:
                 raise ValueError("No messages in payload")
             message = messages[0]
-            if message.get("type") != "text":
-                raise ValueError(f"Unsupported message type: {message.get('type')}")
+            msg_type = message.get("type", "text")
+
+            if msg_type == "text":
+                text = message["text"]["body"]
+            else:
+                # Convert non-text messages to a description the LLM can respond to
+                label = ConversationManagerV2._MESSAGE_TYPE_LABELS.get(msg_type, msg_type)
+                caption = ""
+                # Some types (image, video, document) can have a caption
+                if msg_type in ("image", "video", "document"):
+                    caption = (message.get(msg_type) or {}).get("caption", "")
+                if caption:
+                    text = f"[El paciente envió un {label} con el texto: \"{caption}\"]"
+                else:
+                    text = f"[El paciente envió un {label}]"
+
             return {
                 "from": message["from"],
-                "text": message["text"]["body"],
+                "text": text,
                 "id": message["id"],
                 "timestamp": message["timestamp"],
             }
-        except (KeyError, IndexError, ValueError) as e:
+        except (KeyError, IndexError) as e:
             raise ConversationError(f"Invalid message payload: {str(e)}") from e
 
     async def _get_or_create_conversation(
