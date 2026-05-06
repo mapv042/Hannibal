@@ -56,6 +56,9 @@ class Office(Base):
     whatsapp_phone: Mapped[Optional[str]] = mapped_column(
         String(20), unique=True, nullable=True
     )
+    owner_phone: Mapped[Optional[str]] = mapped_column(
+        String(20), nullable=True
+    )
     city: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     address: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
 
