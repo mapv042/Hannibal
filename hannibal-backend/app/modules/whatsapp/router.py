@@ -27,6 +27,7 @@ from app.modules.whatsapp.coexistence import (
 )
 from app.modules.conversation.manager import ConversationManager
 from app.modules.conversation.manager_v2 import ConversationManagerV2
+from app.modules.conversation.doctor_manager import DoctorConversationManager
 from app.modules.conversation.session_store import SessionStore
 from app.modules.whatsapp.meta_client import MetaCloudClient
 from app.core.exceptions import WhatsAppError
@@ -245,6 +246,21 @@ async def _process_message(
             type=message_type,
             office_id=str(office.id),
         )
+
+        # Check if sender is the doctor (route before pause check so doctor always gets through)
+        if office.owner_phone and from_id == office.owner_phone:
+            logger.info(
+                "doctor_message_detected",
+                message_id=message_id,
+                office_id=str(office.id),
+            )
+            meta_client = MetaCloudClient()
+            doctor_manager = DoctorConversationManager(meta_client, redis_client)
+            conversation_payload = {
+                "entry": [{"changes": [{"value": {"messages": [message]}}]}]
+            }
+            await doctor_manager.process(office, conversation_payload, db)
+            return
 
         # Check if bot is paused
         is_paused = await check_pause(office.id, redis_client)
