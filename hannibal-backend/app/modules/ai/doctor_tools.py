@@ -28,15 +28,20 @@ DOCTOR_TOOL_DEFINITIONS = [
     {
         "name": "get_appointments_by_date",
         "description": (
-            "Obtiene todas las citas del consultorio para una fecha específica. "
-            "Si no se especifica fecha, usa la fecha de hoy."
+            "Obtiene todas las citas del consultorio para una fecha o rango de fechas. "
+            "Si no se especifica fecha, usa la fecha de hoy. "
+            "Para consultar una semana completa, usa date como fecha de inicio y end_date como fecha de fin."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "date": {
                     "type": "string",
-                    "description": "Fecha en formato YYYY-MM-DD. Si no se proporciona, se usa hoy.",
+                    "description": "Fecha (o fecha de inicio del rango) en formato YYYY-MM-DD. Si no se proporciona, se usa hoy.",
+                },
+                "end_date": {
+                    "type": "string",
+                    "description": "Fecha de fin del rango en formato YYYY-MM-DD (inclusive). Si no se proporciona, solo se consulta la fecha de 'date'.",
                 },
             },
         },
@@ -241,16 +246,26 @@ async def execute_doctor_tool(
 @_handler("get_appointments_by_date")
 async def _handle_get_appointments(args: dict, ctx: DoctorToolContext) -> dict:
     date_str = args.get("date", "")
+    end_date_str = args.get("end_date", "")
+
     if not date_str:
-        target_date = datetime.now(tz=MX_TIMEZONE).date()
+        start_date = datetime.now(tz=MX_TIMEZONE).date()
     else:
         try:
-            target_date = date_cls.fromisoformat(date_str)
+            start_date = date_cls.fromisoformat(date_str)
         except ValueError:
             return {"error": f"Fecha invalida: {date_str}. Usa formato YYYY-MM-DD."}
 
-    time_min = datetime.combine(target_date, datetime.min.time()).replace(tzinfo=MX_TIMEZONE)
-    time_max = datetime.combine(target_date, datetime.max.time()).replace(tzinfo=MX_TIMEZONE)
+    if end_date_str:
+        try:
+            end_date = date_cls.fromisoformat(end_date_str)
+        except ValueError:
+            return {"error": f"Fecha de fin invalida: {end_date_str}. Usa formato YYYY-MM-DD."}
+    else:
+        end_date = start_date
+
+    time_min = datetime.combine(start_date, datetime.min.time()).replace(tzinfo=MX_TIMEZONE)
+    time_max = datetime.combine(end_date, datetime.max.time()).replace(tzinfo=MX_TIMEZONE)
 
     stmt = (
         select(Appointment)
@@ -265,13 +280,22 @@ async def _handle_get_appointments(args: dict, ctx: DoctorToolContext) -> dict:
     result = await ctx.db.execute(stmt)
     appointments = result.scalars().all()
 
+    is_range = start_date != end_date
+
     if not appointments:
-        day_name = DAYS_ES[target_date.weekday()]
+        if is_range:
+            return {
+                "start_date": start_date.isoformat(),
+                "end_date": end_date.isoformat(),
+                "appointments": [],
+                "message": f"No hay citas del {start_date.strftime('%d/%m/%Y')} al {end_date.strftime('%d/%m/%Y')}.",
+            }
+        day_name = DAYS_ES[start_date.weekday()]
         return {
-            "date": target_date.isoformat(),
+            "date": start_date.isoformat(),
             "day_name": day_name,
             "appointments": [],
-            "message": f"No hay citas para {day_name} {target_date.strftime('%d/%m/%Y')}.",
+            "message": f"No hay citas para {day_name} {start_date.strftime('%d/%m/%Y')}.",
         }
 
     appt_list = []
@@ -280,29 +304,32 @@ async def _handle_get_appointments(args: dict, ctx: DoctorToolContext) -> dict:
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=MX_TIMEZONE)
 
-        # Get patient name
         patient_name = "Sin nombre"
         if appt.patient_id:
             patient = await ctx.db.get(Patient, appt.patient_id)
             if patient and patient.name:
                 patient_name = patient.name
 
-        appt_list.append({
+        entry = {
             "id": str(appt.id),
+            "date": dt.strftime("%Y-%m-%d"),
+            "day_name": DAYS_ES[dt.weekday()],
             "time": dt.strftime("%H:%M"),
             "patient_name": patient_name,
             "reason": appt.consultation_reason or "Consulta",
             "status": appt.status,
             "notes": appt.post_consultation_notes or "",
-        })
+        }
+        appt_list.append(entry)
 
-    day_name = DAYS_ES[target_date.weekday()]
-    return {
-        "date": target_date.isoformat(),
-        "day_name": day_name,
-        "total": len(appt_list),
-        "appointments": appt_list,
-    }
+    result_dict = {"total": len(appt_list), "appointments": appt_list}
+    if is_range:
+        result_dict["start_date"] = start_date.isoformat()
+        result_dict["end_date"] = end_date.isoformat()
+    else:
+        result_dict["date"] = start_date.isoformat()
+        result_dict["day_name"] = DAYS_ES[start_date.weekday()]
+    return result_dict
 
 
 @_handler("cancel_appointment")
