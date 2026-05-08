@@ -31,6 +31,7 @@ from app.modules.conversation.doctor_manager import DoctorConversationManager
 from app.modules.conversation.session_store import SessionStore
 from app.modules.whatsapp.meta_client import MetaCloudClient
 from app.core.exceptions import WhatsAppError
+from app.utils.phone import normalize_phone
 
 logger = get_logger(__name__)
 
@@ -248,7 +249,13 @@ async def _process_message(
         )
 
         # Check if sender is the doctor (route before pause check so doctor always gets through)
-        if office.owner_phone and from_id == office.owner_phone:
+        is_doctor = False
+        if office.owner_phone:
+            try:
+                is_doctor = normalize_phone(from_id) == normalize_phone(office.owner_phone)
+            except ValueError:
+                pass
+        if is_doctor:
             logger.info(
                 "doctor_message_detected",
                 message_id=message_id,
