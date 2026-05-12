@@ -301,8 +301,7 @@ async def _handle_get_appointments(args: dict, ctx: DoctorToolContext) -> dict:
     appt_list = []
     for appt in appointments:
         dt = appt.start_datetime
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=MX_TIMEZONE)
+        dt = dt.astimezone(MX_TIMEZONE) if dt.tzinfo else dt.replace(tzinfo=MX_TIMEZONE)
 
         patient_name = "Sin nombre"
         if appt.patient_id:
@@ -350,8 +349,7 @@ async def _handle_cancel_appointment(args: dict, ctx: DoctorToolContext) -> dict
         return {"error": "La cita ya fue cancelada."}
 
     dt = appointment.start_datetime
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=MX_TIMEZONE)
+    dt = dt.astimezone(MX_TIMEZONE) if dt.tzinfo else dt.replace(tzinfo=MX_TIMEZONE)
     formatted = f"{DAYS_ES[dt.weekday()]} {dt.strftime('%d/%m/%Y')} a las {dt.strftime('%H:%M')}"
 
     # Google Calendar first — if it fails, don't touch the DB
