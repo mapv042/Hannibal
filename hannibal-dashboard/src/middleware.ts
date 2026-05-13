@@ -6,7 +6,7 @@ export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl
 
   // Skip middleware for auth pages and OAuth callback
-  if (pathname.startsWith('/login') || pathname.startsWith('/register') || pathname.startsWith('/auth/callback')) {
+  if (pathname.startsWith('/login') || pathname.startsWith('/register') || pathname.startsWith('/auth/callback') || pathname === '/onboarding/preview') {
     return NextResponse.next()
   }
 
