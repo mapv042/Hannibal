@@ -7,6 +7,7 @@ export interface OfficeInfoData {
   officeName: string
   specialty: string
   city: string
+  state: string
   address: string
   ownerPhone: string
 }
@@ -60,12 +61,19 @@ export const StepOfficeInfo: React.FC<StepOfficeInfoProps> = ({
             onChange={(e) => onUpdate({ city: e.target.value })}
           />
           <Input
-            label="Tu WhatsApp personal"
-            placeholder="+52 33 1234 5678"
-            value={data.ownerPhone}
-            onChange={(e) => onUpdate({ ownerPhone: e.target.value })}
+            label="Estado"
+            placeholder="Jalisco"
+            value={data.state}
+            onChange={(e) => onUpdate({ state: e.target.value })}
           />
         </div>
+
+        <Input
+          label="Tu WhatsApp personal"
+          placeholder="+52 33 1234 5678"
+          value={data.ownerPhone}
+          onChange={(e) => onUpdate({ ownerPhone: e.target.value })}
+        />
 
         <Input
           label="Direccion del consultorio"

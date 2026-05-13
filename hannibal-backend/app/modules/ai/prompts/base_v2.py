@@ -21,7 +21,11 @@ def _build_confirmation_context(active_appointment_id: str | None) -> str:
     )
 
 
-def build_system_prompt_v2(office: Office, active_appointment_id: str | None = None) -> str:
+def build_system_prompt_v2(
+    office: Office,
+    active_appointment_id: str | None = None,
+    is_returning_patient: bool = False,
+) -> str:
     """
     Build a simplified system prompt for tool-use mode.
 
@@ -45,6 +49,47 @@ def build_system_prompt_v2(office: Office, active_appointment_id: str | None = N
 INSTRUCCIONES PERSONALIZADAS DEL CONSULTORIO:
 {office.custom_prompt}"""
 
+    welcome_section = ""
+    if office.welcome_message:
+        welcome_section = f"""
+
+MENSAJE DE BIENVENIDA:
+Cuando un paciente te contacte por PRIMERA VEZ (no tiene historial de conversación previa), salúdalo usando este mensaje como base (puedes adaptarlo ligeramente al contexto):
+"{office.welcome_message}"
+Para pacientes que ya han conversado contigo antes, salúdalos normalmente sin usar este mensaje."""
+
+    pricing_parts = []
+    if office.new_patient_cost:
+        pricing_parts.append(f"- Costo primera consulta: {office.new_patient_cost}")
+    if office.returning_patient_cost:
+        pricing_parts.append(f"- Costo consulta subsecuente: {office.returning_patient_cost}")
+    pricing_section = ""
+    if pricing_parts:
+        pricing_section = "\n" + "\n".join(pricing_parts)
+
+    # Patient type context
+    if is_returning_patient:
+        patient_type_section = f"""
+
+PACIENTE ACTUAL:
+Este paciente es RECURRENTE (ya ha tenido citas previas).
+- Duración de su cita: {office.returning_patient_duration_min} minutos
+- Costo de su consulta: {office.returning_patient_cost or "No especificado"}"""
+    else:
+        patient_type_section = f"""
+
+PACIENTE ACTUAL:
+Este paciente es NUEVO (primera vez).
+- Duración de su cita: {office.new_patient_duration_min} minutos
+- Costo de su consulta: {office.new_patient_cost or "No especificado"}"""
+
+    location_parts = []
+    if office.city:
+        location_parts.append(office.city)
+    if office.state:
+        location_parts.append(office.state)
+    location_str = ", ".join(location_parts) if location_parts else "No especificada"
+
     return f"""Eres {office.assistant_name}, asistente de citas médicas para {office.name}.
 
 FECHA Y HORA ACTUAL: {today_str} ({day_name}), {now.strftime("%H:%M")} hrs
@@ -55,9 +100,9 @@ IMPORTANTE: Cuando el paciente diga "mañana", "pasado mañana" o un día de la 
 INFORMACIÓN DEL CONSULTORIO:
 - Nombre: {office.name}
 - Especialidad: {office.specialty or "No especificada"}
-- Ciudad: {office.city or "No especificada"}
+- Ubicación: {location_str}
 - Dirección: {office.address or "No especificada"}
-- Teléfono WhatsApp: {office.whatsapp_phone or "No disponible"}
+- Teléfono WhatsApp: {office.whatsapp_phone or "No disponible"}{pricing_section}{patient_type_section}
 
 CÓMO COMUNICARTE:
 - Comunícate {tone_desc}
@@ -65,7 +110,7 @@ CÓMO COMUNICARTE:
 - Entiende abreviaciones y lenguaje informal (ej: "xfa", "doc", "x la tarde", "pa mañana")
 - Cuando muestres horarios, usa formato de 12 horas (ej: "10:00 AM", "2:30 PM")
 - Numera las opciones para que el paciente responda fácilmente (1, 2, 3...)
-- No uses emojis en tus respuestas
+- No uses emojis en tus respuestas{welcome_section}
 
 CÓMO TRABAJAR:
 - Tienes herramientas para consultar disponibilidad, agendar, cancelar, reagendar y confirmar citas

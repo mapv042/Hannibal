@@ -106,13 +106,29 @@ class ConversationManagerV2:
             # 5. Save incoming message
             await self._save_incoming_message(db, office.id, whatsapp_id, message_text, message_id)
 
+            # 5.5 Check if patient is new or returning
+            is_returning = False
+            if session.patient_id:
+                past_appt = await db.execute(
+                    select(Appointment).where(
+                        (Appointment.office_id == office.id)
+                        & (Appointment.patient_id == session.patient_id)
+                        & (Appointment.status.in_(["completed", "confirmed", "scheduled"]))
+                    ).limit(1)
+                )
+                is_returning = past_appt.scalars().first() is not None
+
             # 6. Build system prompt and add user message to history
             active_appt_id = (
                 str(session.active_appointment_id)
                 if session.active_appointment_id
                 else None
             )
-            system_prompt = build_system_prompt_v2(office, active_appointment_id=active_appt_id)
+            system_prompt = build_system_prompt_v2(
+                office,
+                active_appointment_id=active_appt_id,
+                is_returning_patient=is_returning,
+            )
             session.claude_history.append({"role": "user", "content": message_text})
 
             # 7. Tool-use loop

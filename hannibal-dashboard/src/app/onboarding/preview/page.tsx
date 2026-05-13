@@ -30,6 +30,7 @@ export default function OnboardingPreviewPage() {
     officeName: '',
     specialty: '',
     city: '',
+    state: '',
     address: '',
     ownerPhone: '',
   })
@@ -37,11 +38,14 @@ export default function OnboardingPreviewPage() {
   const [schedule, setSchedule] = useState<ScheduleData>({
     days: buildInitialScheduleDays(),
     appointmentDuration: 30,
+    newPatientDuration: 30,
+    returningPatientDuration: 30,
     bufferMinutes: 10,
   })
 
   const [consultation, setConsultation] = useState<ConsultationData>({
-    consultationCost: '',
+    newPatientCost: '',
+    returningPatientCost: '',
     acceptsInsurance: '',
     insuranceDetails: '',
   })

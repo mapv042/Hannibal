@@ -6,10 +6,16 @@ export type Office = {
   whatsapp_phone: string | null
   owner_phone: string | null
   city: string | null
+  state: string | null
   address: string | null
   assistant_tone: string
   assistant_name: string
   custom_prompt: string | null
+  welcome_message: string | null
+  new_patient_duration_min: number
+  returning_patient_duration_min: number
+  new_patient_cost: string | null
+  returning_patient_cost: string | null
   is_active: boolean
   onboarding_completed: boolean
   google_calendar_token: Record<string, unknown> | null

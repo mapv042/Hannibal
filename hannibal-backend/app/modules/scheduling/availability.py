@@ -88,7 +88,7 @@ async def get_available_slots(
             and_(
                 AvailabilitySchedule.office_id == office_id,
                 AvailabilitySchedule.day_of_week == db_day_of_week,
-                AvailabilitySchedule.active == True,
+                AvailabilitySchedule.is_active == True,
             )
         )
     )
@@ -111,7 +111,7 @@ async def get_available_slots(
         while current_time + timedelta(minutes=duration_min) <= end_of_day:
             slot_end = current_time + timedelta(minutes=duration_min)
             all_slots.append((current_time, slot_end))
-            current_time += timedelta(minutes=schedule.buffer_min)
+            current_time += timedelta(minutes=duration_min + schedule.buffer_minutes)
 
     if not all_slots:
         return []

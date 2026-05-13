@@ -60,6 +60,7 @@ class Office(Base):
         String(20), nullable=True
     )
     city: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    state: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     address: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
 
     # WhatsApp Integration
@@ -92,6 +93,23 @@ class Office(Base):
     )
     custom_prompt: Mapped[Optional[str]] = mapped_column(
         String(5000), nullable=True
+    )
+    welcome_message: Mapped[Optional[str]] = mapped_column(
+        String(2000), nullable=True
+    )
+
+    # Appointment Duration & Pricing
+    new_patient_duration_min: Mapped[int] = mapped_column(
+        Integer, default=30, nullable=False
+    )
+    returning_patient_duration_min: Mapped[int] = mapped_column(
+        Integer, default=30, nullable=False
+    )
+    new_patient_cost: Mapped[Optional[str]] = mapped_column(
+        String(100), nullable=True
+    )
+    returning_patient_cost: Mapped[Optional[str]] = mapped_column(
+        String(100), nullable=True
     )
 
     # Google Calendar Integration

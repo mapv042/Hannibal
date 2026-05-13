@@ -35,14 +35,13 @@ function buildCustomPrompt(
 ): string {
   const parts: string[] = []
 
-  if (consultation.consultationCost || consultation.acceptsInsurance) {
-    parts.push('INFORMACION DEL CONSULTORIO:')
-    if (consultation.consultationCost) {
-      parts.push(`- Costo de consulta: ${consultation.consultationCost}`)
-    }
+  // Insurance info goes in custom_prompt (pricing is now in dedicated columns)
+  if (consultation.acceptsInsurance) {
     if (consultation.acceptsInsurance === 'Si' || consultation.acceptsInsurance === 'Algunos') {
+      parts.push(`SEGUROS MEDICOS:`)
       parts.push(`- Seguros aceptados: ${consultation.insuranceDetails || 'Preguntar al consultorio'}`)
     } else if (consultation.acceptsInsurance === 'No') {
+      parts.push('SEGUROS MEDICOS:')
       parts.push('- No se aceptan seguros medicos')
     }
     parts.push('')
@@ -51,12 +50,6 @@ function buildCustomPrompt(
   if (personalize.emergencySymptoms.trim()) {
     parts.push('SINTOMAS DE EMERGENCIA:')
     parts.push(personalize.emergencySymptoms.trim())
-    parts.push('')
-  }
-
-  if (personalize.welcomeMessage.trim()) {
-    parts.push('MENSAJE DE BIENVENIDA:')
-    parts.push(personalize.welcomeMessage.trim())
   }
 
   return parts.join('\n')
@@ -73,6 +66,7 @@ export default function OnboardingPage() {
     officeName: '',
     specialty: '',
     city: '',
+    state: '',
     address: '',
     ownerPhone: '',
   })
@@ -80,11 +74,14 @@ export default function OnboardingPage() {
   const [schedule, setSchedule] = useState<ScheduleData>({
     days: buildInitialScheduleDays(),
     appointmentDuration: 30,
+    newPatientDuration: 30,
+    returningPatientDuration: 30,
     bufferMinutes: 10,
   })
 
   const [consultation, setConsultation] = useState<ConsultationData>({
-    consultationCost: '',
+    newPatientCost: '',
+    returningPatientCost: '',
     acceptsInsurance: '',
     insuranceDetails: '',
   })
@@ -132,14 +129,30 @@ export default function OnboardingPage() {
             officeName: existingOffice.name || '',
             specialty: existingOffice.specialty || '',
             city: existingOffice.city || '',
+            state: existingOffice.state || '',
             address: existingOffice.address || '',
             ownerPhone: existingOffice.owner_phone || '',
           })
+          setSchedule((prev) => ({
+            ...prev,
+            newPatientDuration: existingOffice.new_patient_duration_min || 30,
+            returningPatientDuration: existingOffice.returning_patient_duration_min || 30,
+            appointmentDuration: Math.max(
+              existingOffice.new_patient_duration_min || 30,
+              existingOffice.returning_patient_duration_min || 30
+            ),
+          }))
+          setConsultation((prev) => ({
+            ...prev,
+            newPatientCost: existingOffice.new_patient_cost || '',
+            returningPatientCost: existingOffice.returning_patient_cost || '',
+          }))
           if (existingOffice.assistant_name && existingOffice.assistant_name !== 'Assistant') {
             setPersonalize((prev) => ({
               ...prev,
               assistantName: existingOffice.assistant_name,
               assistantTone: existingOffice.assistant_tone as 'formal' | 'informal',
+              welcomeMessage: existingOffice.welcome_message || '',
             }))
           }
         }
@@ -172,6 +185,7 @@ export default function OnboardingPage() {
         name: officeInfo.officeName,
         specialty: officeInfo.specialty || undefined,
         city: officeInfo.city || undefined,
+        state: officeInfo.state || undefined,
         address: officeInfo.address || undefined,
         owner_phone: officeInfo.ownerPhone || undefined,
       }
@@ -212,6 +226,16 @@ export default function OnboardingPage() {
 
       const res = await api.upsertAvailabilitySchedules(schedules)
       if (!res.success) throw new Error(res.error)
+
+      // Save patient-specific durations to Office
+      const durationRes = await api.updateOffice(office.id, {
+        new_patient_duration_min: schedule.newPatientDuration,
+        returning_patient_duration_min: schedule.returningPatientDuration,
+      })
+      if (durationRes.success && durationRes.data) {
+        setOffice(durationRes.data)
+      }
+
       setCurrentStep(3)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Error al guardar')
@@ -219,6 +243,25 @@ export default function OnboardingPage() {
       setSaving(false)
     }
   }, [office, schedule, api])
+
+  const handleSaveConsultation = useCallback(async () => {
+    if (!office) return
+    setSaving(true)
+    setError('')
+    try {
+      const res = await api.updateOffice(office.id, {
+        new_patient_cost: consultation.newPatientCost || undefined,
+        returning_patient_cost: consultation.returningPatientCost || undefined,
+      })
+      if (!res.success) throw new Error(res.error)
+      setOffice(res.data!)
+      setCurrentStep(4)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Error al guardar')
+    } finally {
+      setSaving(false)
+    }
+  }, [office, consultation, api])
 
   const handleSavePersonalize = useCallback(async () => {
     if (!office) return
@@ -230,6 +273,7 @@ export default function OnboardingPage() {
         assistant_name: personalize.assistantName || 'Asistente',
         assistant_tone: personalize.assistantTone,
         custom_prompt: customPrompt || undefined,
+        welcome_message: personalize.welcomeMessage || undefined,
       })
       if (!res.success) throw new Error(res.error)
       setOffice(res.data!)
@@ -305,7 +349,7 @@ export default function OnboardingPage() {
         <StepConsultationDetails
           data={consultation}
           onUpdate={(d) => setConsultation((prev) => ({ ...prev, ...d }))}
-          onNext={() => setCurrentStep(4)}
+          onNext={handleSaveConsultation}
           onBack={() => setCurrentStep(2)}
         />
       )}

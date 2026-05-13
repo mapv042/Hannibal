@@ -4,7 +4,8 @@ import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
 
 export interface ConsultationData {
-  consultationCost: string
+  newPatientCost: string
+  returningPatientCost: string
   acceptsInsurance: string
   insuranceDetails: string
 }
@@ -31,13 +32,23 @@ export const StepConsultationDetails: React.FC<StepConsultationDetailsProps> = (
         </p>
       </CardHeader>
       <CardBody className="space-y-5">
-        <Input
-          label="Costo de la consulta"
-          placeholder="$800 MXN"
-          value={data.consultationCost}
-          onChange={(e) => onUpdate({ consultationCost: e.target.value })}
-          helpText="El asistente informara este precio si el paciente pregunta"
-        />
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <Input
+            label="Costo primera consulta"
+            placeholder="$800 MXN"
+            value={data.newPatientCost}
+            onChange={(e) => onUpdate({ newPatientCost: e.target.value })}
+          />
+          <Input
+            label="Costo consulta subsecuente"
+            placeholder="$600 MXN"
+            value={data.returningPatientCost}
+            onChange={(e) => onUpdate({ returningPatientCost: e.target.value })}
+          />
+        </div>
+        <p className="text-xs text-gray-500 -mt-3">
+          El asistente informara estos precios si el paciente pregunta
+        </p>
 
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-2">

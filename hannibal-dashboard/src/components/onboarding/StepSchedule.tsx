@@ -17,6 +17,8 @@ export interface ScheduleDay {
 export interface ScheduleData {
   days: ScheduleDay[]
   appointmentDuration: number
+  newPatientDuration: number
+  returningPatientDuration: number
   bufferMinutes: number
 }
 
@@ -170,38 +172,72 @@ export const StepSchedule: React.FC<StepScheduleProps> = ({
         </div>
 
         {/* Duration & Buffer */}
-        <div className="grid grid-cols-2 gap-4 pt-2">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1.5">
-              Duracion de cita
-            </label>
-            <select
-              value={data.appointmentDuration}
-              onChange={(e) => onUpdate({ appointmentDuration: Number(e.target.value) })}
-              className="input-field"
-            >
-              <option value={15}>15 minutos</option>
-              <option value={20}>20 minutos</option>
-              <option value={30}>30 minutos</option>
-              <option value={45}>45 minutos</option>
-              <option value={60}>60 minutos</option>
-            </select>
+        <div className="space-y-3 pt-2">
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1.5">
+                Duracion primera consulta
+              </label>
+              <select
+                value={data.newPatientDuration}
+                onChange={(e) => {
+                  const val = Number(e.target.value)
+                  onUpdate({
+                    newPatientDuration: val,
+                    appointmentDuration: Math.max(val, data.returningPatientDuration),
+                  })
+                }}
+                className="input-field"
+              >
+                <option value={15}>15 minutos</option>
+                <option value={20}>20 minutos</option>
+                <option value={30}>30 minutos</option>
+                <option value={45}>45 minutos</option>
+                <option value={60}>60 minutos</option>
+                <option value={90}>90 minutos</option>
+              </select>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1.5">
+                Duracion consulta subsecuente
+              </label>
+              <select
+                value={data.returningPatientDuration}
+                onChange={(e) => {
+                  const val = Number(e.target.value)
+                  onUpdate({
+                    returningPatientDuration: val,
+                    appointmentDuration: Math.max(data.newPatientDuration, val),
+                  })
+                }}
+                className="input-field"
+              >
+                <option value={15}>15 minutos</option>
+                <option value={20}>20 minutos</option>
+                <option value={30}>30 minutos</option>
+                <option value={45}>45 minutos</option>
+                <option value={60}>60 minutos</option>
+                <option value={90}>90 minutos</option>
+              </select>
+            </div>
           </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1.5">
-              Descanso entre citas
-            </label>
-            <select
-              value={data.bufferMinutes}
-              onChange={(e) => onUpdate({ bufferMinutes: Number(e.target.value) })}
-              className="input-field"
-            >
-              <option value={0}>Sin descanso</option>
-              <option value={5}>5 minutos</option>
-              <option value={10}>10 minutos</option>
-              <option value={15}>15 minutos</option>
-              <option value={20}>20 minutos</option>
-            </select>
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1.5">
+                Descanso entre citas
+              </label>
+              <select
+                value={data.bufferMinutes}
+                onChange={(e) => onUpdate({ bufferMinutes: Number(e.target.value) })}
+                className="input-field"
+              >
+                <option value={0}>Sin descanso</option>
+                <option value={5}>5 minutos</option>
+                <option value={10}>10 minutos</option>
+                <option value={15}>15 minutos</option>
+                <option value={20}>20 minutos</option>
+              </select>
+            </div>
           </div>
         </div>
 

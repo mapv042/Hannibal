@@ -82,6 +82,7 @@ export class ApiClient {
     name: string
     specialty?: string
     city?: string
+    state?: string
     address?: string
     owner_phone?: string
   }): Promise<ApiResponse<Office>> {

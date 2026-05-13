@@ -42,6 +42,7 @@ async def create_office(
         whatsapp_phone=data.whatsapp_phone,
         owner_phone=data.owner_phone,
         city=data.city,
+        state=data.state,
         address=data.address,
     )
 
@@ -152,6 +153,18 @@ async def update_office(
         office.is_active = data.is_active
     if data.onboarding_completed is not None:
         office.onboarding_completed = data.onboarding_completed
+    if data.state is not None:
+        office.state = data.state
+    if data.welcome_message is not None:
+        office.welcome_message = data.welcome_message
+    if data.new_patient_duration_min is not None:
+        office.new_patient_duration_min = data.new_patient_duration_min
+    if data.returning_patient_duration_min is not None:
+        office.returning_patient_duration_min = data.returning_patient_duration_min
+    if data.new_patient_cost is not None:
+        office.new_patient_cost = data.new_patient_cost
+    if data.returning_patient_cost is not None:
+        office.returning_patient_cost = data.returning_patient_cost
 
     await db.commit()
     await db.refresh(office)

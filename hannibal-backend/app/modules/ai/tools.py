@@ -392,7 +392,22 @@ async def _handle_create_appointment(args: dict, ctx: ToolContext) -> dict:
     elif not patient.name:
         patient.name = patient_name
 
-    duration = timedelta(minutes=30)
+    # Determine duration based on patient type (new vs returning)
+    existing_appt = await ctx.db.execute(
+        select(Appointment).where(
+            (Appointment.office_id == ctx.office.id)
+            & (Appointment.patient_id == patient.id)
+            & (Appointment.status.in_(["completed", "confirmed", "scheduled"]))
+        ).limit(1)
+    )
+    is_returning = existing_appt.scalars().first() is not None
+    duration_min = (
+        ctx.office.returning_patient_duration_min if is_returning
+        else ctx.office.new_patient_duration_min
+    )
+    appt_type = "follow_up" if is_returning else "first_visit"
+
+    duration = timedelta(minutes=duration_min)
     end_dt = start_dt + duration
 
     # Google Calendar event
@@ -419,7 +434,8 @@ async def _handle_create_appointment(args: dict, ctx: ToolContext) -> dict:
         patient_id=patient.id,
         start_datetime=start_dt,
         end_datetime=end_dt,
-        duration_minutes=30,
+        duration_minutes=duration_min,
+        type=appt_type,
         consultation_reason=reason,
         status="scheduled",
         google_event_id=google_event_id,
@@ -439,6 +455,7 @@ async def _handle_create_appointment(args: dict, ctx: ToolContext) -> dict:
         "day_name": day_name,
         "formatted_date": f"{day_name} {start_dt.strftime('%d/%m/%Y')}",
         "reason": reason,
+        "duration_minutes": duration_min,
         "office_name": ctx.office.name,
         "office_address": ctx.office.address or "",
     }
