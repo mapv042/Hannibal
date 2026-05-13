@@ -1,5 +1,4 @@
 import React from 'react'
-import { Heart } from 'lucide-react'
 
 export const dynamic = 'force-dynamic'
 
@@ -12,9 +11,6 @@ export default function OnboardingLayout({
     <div className="min-h-screen bg-gradient-to-br from-primary-50 to-secondary-50 flex flex-col items-center py-8 px-4">
       {/* Logo */}
       <div className="flex items-center gap-3 mb-8">
-        <div className="p-2 bg-white rounded-lg shadow-sm">
-          <Heart className="w-6 h-6 text-primary-600" fill="currentColor" />
-        </div>
         <h1 className="font-bold text-xl text-gray-900">Hannibal</h1>
       </div>
 

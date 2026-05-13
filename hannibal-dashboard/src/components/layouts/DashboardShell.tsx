@@ -14,7 +14,6 @@ import {
   LogOut,
   Menu,
   X,
-  Heart,
   Clock,
 } from 'lucide-react'
 import type { Office } from '@/lib/supabase'
@@ -111,9 +110,6 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
       >
         {/* Logo */}
         <div className="flex items-center gap-3 px-6 py-6 border-b border-gray-200">
-          <div className="p-2 bg-primary-100 rounded-lg">
-            <Heart className="w-6 h-6 text-primary-600" fill="currentColor" />
-          </div>
           <div>
             <h1 className="font-bold text-lg text-gray-900">Hannibal</h1>
             <p className="text-xs text-gray-500">Asistente WhatsApp</p>
