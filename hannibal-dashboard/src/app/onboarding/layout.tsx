@@ -1,7 +1,7 @@
-'use client'
-
 import React from 'react'
 import { Heart } from 'lucide-react'
+
+export const dynamic = 'force-dynamic'
 
 export default function OnboardingLayout({
   children,
