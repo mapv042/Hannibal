@@ -64,7 +64,6 @@ export const StepOfficeInfo: React.FC<StepOfficeInfoProps> = ({
             placeholder="+52 33 1234 5678"
             value={data.ownerPhone}
             onChange={(e) => onUpdate({ ownerPhone: e.target.value })}
-            helpText="Aqui te llegaran notificaciones"
           />
         </div>
 
