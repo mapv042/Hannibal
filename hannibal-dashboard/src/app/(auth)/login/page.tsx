@@ -34,11 +34,6 @@ export default function LoginPage() {
     <div className="space-y-6">
       {/* Header */}
       <div className="text-center space-y-2">
-        <div className="flex justify-center mb-4">
-          <div className="p-3 bg-white rounded-lg shadow-sm">
-            <Heart className="w-8 h-8 text-primary-600" fill="currentColor" />
-          </div>
-        </div>
         <h1 className="text-3xl font-bold text-gray-900">Hannibal</h1>
         <p className="text-gray-600">Tu asistente inteligente de WhatsApp</p>
       </div>
