@@ -1,0 +1,224 @@
+import React from 'react'
+import { Card, CardBody, CardHeader } from '@/components/ui/Card'
+import { Button } from '@/components/ui/Button'
+import { Plus, X } from 'lucide-react'
+
+export interface TimeBlock {
+  startTime: string
+  endTime: string
+}
+
+export interface ScheduleDay {
+  dayOfWeek: number
+  enabled: boolean
+  blocks: TimeBlock[]
+}
+
+export interface ScheduleData {
+  days: ScheduleDay[]
+  appointmentDuration: number
+  bufferMinutes: number
+}
+
+interface StepScheduleProps {
+  data: ScheduleData
+  onUpdate: (data: Partial<ScheduleData>) => void
+  onNext: () => void
+  onBack: () => void
+  loading?: boolean
+}
+
+const DAY_NAMES = ['Domingo', 'Lunes', 'Martes', 'Miercoles', 'Jueves', 'Viernes', 'Sabado']
+
+export const StepSchedule: React.FC<StepScheduleProps> = ({
+  data,
+  onUpdate,
+  onNext,
+  onBack,
+  loading,
+}) => {
+  const toggleDay = (dayOfWeek: number) => {
+    const newDays = data.days.map((d) =>
+      d.dayOfWeek === dayOfWeek
+        ? {
+            ...d,
+            enabled: !d.enabled,
+            blocks: !d.enabled && d.blocks.length === 0
+              ? [{ startTime: '09:00', endTime: '17:00' }]
+              : d.blocks,
+          }
+        : d
+    )
+    onUpdate({ days: newDays })
+  }
+
+  const updateBlock = (dayOfWeek: number, blockIndex: number, field: keyof TimeBlock, value: string) => {
+    const newDays = data.days.map((d) =>
+      d.dayOfWeek === dayOfWeek
+        ? {
+            ...d,
+            blocks: d.blocks.map((b, i) =>
+              i === blockIndex ? { ...b, [field]: value } : b
+            ),
+          }
+        : d
+    )
+    onUpdate({ days: newDays })
+  }
+
+  const addBlock = (dayOfWeek: number) => {
+    const newDays = data.days.map((d) =>
+      d.dayOfWeek === dayOfWeek
+        ? { ...d, blocks: [...d.blocks, { startTime: '14:00', endTime: '18:00' }] }
+        : d
+    )
+    onUpdate({ days: newDays })
+  }
+
+  const removeBlock = (dayOfWeek: number, blockIndex: number) => {
+    const newDays = data.days.map((d) =>
+      d.dayOfWeek === dayOfWeek
+        ? { ...d, blocks: d.blocks.filter((_, i) => i !== blockIndex) }
+        : d
+    )
+    onUpdate({ days: newDays })
+  }
+
+  const hasAtLeastOneDay = data.days.some((d) => d.enabled && d.blocks.length > 0)
+
+  return (
+    <Card>
+      <CardHeader>
+        <h2 className="text-xl font-bold text-gray-900">Tus horarios</h2>
+        <p className="text-sm text-gray-600 mt-1">
+          El asistente solo agendara en estos horarios
+        </p>
+      </CardHeader>
+      <CardBody className="space-y-4">
+        {/* Days */}
+        <div className="space-y-3">
+          {data.days.map((day) => (
+            <div
+              key={day.dayOfWeek}
+              className={`p-4 rounded-lg border-2 transition-colors ${
+                day.enabled
+                  ? 'border-primary-300 bg-primary-50'
+                  : 'border-gray-200 bg-gray-50'
+              }`}
+            >
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => toggleDay(day.dayOfWeek)}
+                  className={`w-6 h-6 rounded flex items-center justify-center border-2 transition-colors flex-shrink-0 ${
+                    day.enabled
+                      ? 'bg-primary-600 border-primary-600 text-white'
+                      : 'bg-white border-gray-300'
+                  }`}
+                >
+                  {day.enabled && (
+                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+                    </svg>
+                  )}
+                </button>
+                <span className={`text-sm font-medium w-24 ${day.enabled ? 'text-gray-900' : 'text-gray-500'}`}>
+                  {DAY_NAMES[day.dayOfWeek]}
+                </span>
+
+                {day.enabled && (
+                  <div className="flex-1 space-y-2">
+                    {day.blocks.map((block, bi) => (
+                      <div key={bi} className="flex items-center gap-2">
+                        <input
+                          type="time"
+                          value={block.startTime}
+                          onChange={(e) => updateBlock(day.dayOfWeek, bi, 'startTime', e.target.value)}
+                          className="input-field py-1.5 px-2 text-sm w-28"
+                        />
+                        <span className="text-gray-400 text-sm">a</span>
+                        <input
+                          type="time"
+                          value={block.endTime}
+                          onChange={(e) => updateBlock(day.dayOfWeek, bi, 'endTime', e.target.value)}
+                          className="input-field py-1.5 px-2 text-sm w-28"
+                        />
+                        {day.blocks.length > 1 && (
+                          <button
+                            type="button"
+                            onClick={() => removeBlock(day.dayOfWeek, bi)}
+                            className="p-1 text-gray-400 hover:text-red-500 transition-colors"
+                          >
+                            <X size={16} />
+                          </button>
+                        )}
+                      </div>
+                    ))}
+                    <button
+                      type="button"
+                      onClick={() => addBlock(day.dayOfWeek)}
+                      className="flex items-center gap-1 text-xs text-primary-600 hover:text-primary-700 transition-colors"
+                    >
+                      <Plus size={14} />
+                      Agregar bloque
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {/* Duration & Buffer */}
+        <div className="grid grid-cols-2 gap-4 pt-2">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1.5">
+              Duracion de cita
+            </label>
+            <select
+              value={data.appointmentDuration}
+              onChange={(e) => onUpdate({ appointmentDuration: Number(e.target.value) })}
+              className="input-field"
+            >
+              <option value={15}>15 minutos</option>
+              <option value={20}>20 minutos</option>
+              <option value={30}>30 minutos</option>
+              <option value={45}>45 minutos</option>
+              <option value={60}>60 minutos</option>
+            </select>
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1.5">
+              Descanso entre citas
+            </label>
+            <select
+              value={data.bufferMinutes}
+              onChange={(e) => onUpdate({ bufferMinutes: Number(e.target.value) })}
+              className="input-field"
+            >
+              <option value={0}>Sin descanso</option>
+              <option value={5}>5 minutos</option>
+              <option value={10}>10 minutos</option>
+              <option value={15}>15 minutos</option>
+              <option value={20}>20 minutos</option>
+            </select>
+          </div>
+        </div>
+
+        <div className="flex gap-3 pt-2">
+          <Button variant="secondary" onClick={onBack}>
+            Atras
+          </Button>
+          <Button
+            onClick={onNext}
+            disabled={!hasAtLeastOneDay}
+            isLoading={loading}
+            className="flex-1"
+          >
+            Continuar
+          </Button>
+        </div>
+      </CardBody>
+    </Card>
+  )
+}

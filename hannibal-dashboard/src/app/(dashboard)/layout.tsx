@@ -66,9 +66,18 @@ export default function DashboardLayout({
 
         if (user) {
           // Load consultorio data
-          const officeRes = await api.getOffice(user.id)
-          if (officeRes.success && officeRes.data) {
-            setOffice(officeRes.data)
+          const officeRes = await api.listOffices()
+          if (officeRes.success && officeRes.data && officeRes.data.length > 0) {
+            const userOffice = officeRes.data[0]
+            if (!userOffice.onboarding_completed) {
+              router.push('/onboarding')
+              return
+            }
+            setOffice(userOffice)
+          } else {
+            // No office — redirect to onboarding
+            router.push('/onboarding')
+            return
           }
         }
       } catch (error) {
@@ -149,7 +158,7 @@ export default function DashboardLayout({
             </p>
             <BotStatusBadge
               officeId={office.id}
-              currentStatus={office.bot_status as any}
+              currentStatus={office.is_active ? 'active' : 'paused'}
             />
           </div>
         )}
@@ -205,7 +214,7 @@ export default function DashboardLayout({
                 {office?.assistant_name || 'My Office'}
               </p>
               <p className="text-xs text-gray-500">
-                {office?.whatsapp_number || 'No number'}
+                {office?.whatsapp_phone || 'No number'}
               </p>
             </div>
           </div>

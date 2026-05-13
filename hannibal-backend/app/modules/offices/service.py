@@ -40,6 +40,7 @@ async def create_office(
         name=data.name,
         specialty=data.specialty,
         whatsapp_phone=data.whatsapp_phone,
+        owner_phone=data.owner_phone,
         city=data.city,
         address=data.address,
     )
@@ -135,6 +136,8 @@ async def update_office(
         office.specialty = data.specialty
     if data.whatsapp_phone is not None:
         office.whatsapp_phone = data.whatsapp_phone
+    if data.owner_phone is not None:
+        office.owner_phone = data.owner_phone
     if data.city is not None:
         office.city = data.city
     if data.address is not None:
@@ -143,8 +146,12 @@ async def update_office(
         office.assistant_tone = data.assistant_tone
     if data.assistant_name is not None:
         office.assistant_name = data.assistant_name
+    if data.custom_prompt is not None:
+        office.custom_prompt = data.custom_prompt
     if data.is_active is not None:
         office.is_active = data.is_active
+    if data.onboarding_completed is not None:
+        office.onboarding_completed = data.onboarding_completed
 
     await db.commit()
     await db.refresh(office)

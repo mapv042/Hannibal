@@ -52,7 +52,7 @@ cp .env.local.example .env.local
 Fill in `.env.local` with your Supabase credentials:
 ```
 NEXT_PUBLIC_SUPABASE_URL=https://your-project.supabase.co
-NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key
+NEXT_PUBLIC_SUPABASE_SERVICE_KEY=your-anon-key
 NEXT_PUBLIC_API_URL=http://localhost:8000
 ```
 
@@ -156,7 +156,7 @@ docker run -p 3000:3000 hannibal-dashboard
 
 Set in your hosting platform:
 - `NEXT_PUBLIC_SUPABASE_URL`
-- `NEXT_PUBLIC_SUPABASE_ANON_KEY`
+- `NEXT_PUBLIC_SUPABASE_SERVICE_KEY`
 - `NEXT_PUBLIC_API_URL`
 
 ## Development

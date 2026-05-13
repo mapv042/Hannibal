@@ -25,7 +25,7 @@ from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-router = APIRouter(prefix="/api/offices", tags=["Offices"])
+router = APIRouter(tags=["Offices"])
 
 
 @router.post("", response_model=OfficeResponse, status_code=201)

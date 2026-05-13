@@ -123,3 +123,38 @@ class CancelAppointmentRequest(BaseModel):
     cancellation_reason: Optional[str] = Field(
         None, description="Cancellation reason", max_length=500
     )
+
+
+# ── Availability Schedule schemas ──────────────────────────────────────────
+
+
+class AvailabilityScheduleItem(BaseModel):
+    """Single availability schedule entry."""
+
+    day_of_week: int = Field(..., description="0=Sun, 1=Mon, ..., 6=Sat", ge=0, le=6)
+    start_time: str = Field(..., description="Start time in HH:MM format")
+    end_time: str = Field(..., description="End time in HH:MM format")
+    appointment_duration_min: int = Field(30, description="Appointment duration in minutes", ge=10)
+    buffer_minutes: int = Field(10, description="Buffer between appointments", ge=0)
+
+
+class BulkUpsertSchedulesRequest(BaseModel):
+    """Request to bulk upsert availability schedules for an office."""
+
+    schedules: List[AvailabilityScheduleItem]
+
+
+class AvailabilityScheduleResponse(BaseModel):
+    """Response model for a single availability schedule."""
+
+    id: UUID
+    office_id: UUID
+    day_of_week: int
+    start_time: str
+    end_time: str
+    appointment_duration_min: int
+    buffer_minutes: int
+    is_active: bool
+
+    class Config:
+        from_attributes = True

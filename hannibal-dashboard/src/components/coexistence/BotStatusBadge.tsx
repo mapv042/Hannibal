@@ -33,7 +33,7 @@ export const BotStatusBadge: React.FC<BotStatusBadgeProps> = ({
       }
 
       if (response.success && response.data) {
-        setStatus(response.data.bot_status)
+        setStatus(response.data.bot_status as 'active' | 'paused' | 'inactive')
         onStatusChange?.(response.data.bot_status)
       }
     } catch (error) {

@@ -1,5 +1,5 @@
 import { createBrowserSupabaseClient } from './supabase/browser'
-import type { Appointment, Patient, Office } from './supabase/types'
+import type { Appointment, Patient, Office, AvailabilitySchedule } from './supabase/types'
 
 export interface ApiResponse<T> {
   success: boolean
@@ -42,9 +42,8 @@ export class ApiClient {
     options: RequestInit = {}
   ): Promise<ApiResponse<T>> {
     const token = await this.getAuthToken()
-    const headers: HeadersInit = {
+    const headers: Record<string, string> = {
       'Content-Type': 'application/json',
-      ...options.headers,
     }
 
     if (token) {
@@ -78,72 +77,94 @@ export class ApiClient {
     }
   }
 
+  // Offices
+  async createOffice(data: {
+    name: string
+    specialty?: string
+    city?: string
+    address?: string
+    owner_phone?: string
+  }): Promise<ApiResponse<Office>> {
+    return this.fetch<Office>('/api/offices', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    })
+  }
+
+  async listOffices(): Promise<ApiResponse<Office[]>> {
+    return this.fetch<Office[]>('/api/offices', {
+      method: 'GET',
+    })
+  }
+
+  async getOffice(office_id: string): Promise<ApiResponse<Office>> {
+    return this.fetch<Office>(`/api/offices/${office_id}`, {
+      method: 'GET',
+    })
+  }
+
+  async updateOffice(office_id: string, data: Partial<Office>): Promise<ApiResponse<Office>> {
+    return this.fetch<Office>(`/api/offices/${office_id}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    })
+  }
+
   // Appointments
   async getAppointments(
-    office_id: string,
+    _office_id: string,
     filters?: { start_date?: string; end_date?: string; status?: string }
   ): Promise<ApiResponse<Appointment[]>> {
     const params = new URLSearchParams()
-    params.append('office_id', office_id)
-
     if (filters?.start_date) params.append('start_date', filters.start_date)
     if (filters?.end_date) params.append('end_date', filters.end_date)
     if (filters?.status) params.append('status', filters.status)
 
-    return this.fetch<Appointment[]>(`/api/appointments?${params}`, {
+    const qs = params.toString()
+    return this.fetch<Appointment[]>(`/api/scheduling/appointments${qs ? `?${qs}` : ''}`, {
       method: 'GET',
     })
   }
 
   async getAppointmentsToday(office_id: string): Promise<ApiResponse<Appointment[]>> {
-    return this.fetch<Appointment[]>(`/api/appointments/today?office_id=${office_id}`, {
-      method: 'GET',
-    })
+    const today = new Date().toISOString().split('T')[0]
+    const tomorrow = new Date(Date.now() + 86400000).toISOString().split('T')[0]
+    return this.getAppointments(office_id, { start_date: today, end_date: tomorrow })
   }
 
   async getAppointment(appointment_id: string): Promise<ApiResponse<Appointment>> {
-    return this.fetch<Appointment>(`/api/appointments/${appointment_id}`, {
+    return this.fetch<Appointment>(`/api/scheduling/appointments/${appointment_id}`, {
       method: 'GET',
     })
   }
 
   async createAppointment(data: Partial<Appointment> & { office_id: string }): Promise<ApiResponse<Appointment>> {
-    return this.fetch<Appointment>('/api/appointments', {
+    return this.fetch<Appointment>('/api/scheduling/appointments', {
       method: 'POST',
       body: JSON.stringify(data),
     })
   }
 
   async updateAppointment(appointment_id: string, data: Partial<Appointment>): Promise<ApiResponse<Appointment>> {
-    return this.fetch<Appointment>(`/api/appointments/${appointment_id}`, {
+    return this.fetch<Appointment>(`/api/scheduling/appointments/${appointment_id}`, {
       method: 'PUT',
       body: JSON.stringify(data),
     })
   }
 
   async deleteAppointment(appointment_id: string): Promise<ApiResponse<{ success: boolean }>> {
-    return this.fetch<{ success: boolean }>(`/api/appointments/${appointment_id}`, {
+    return this.fetch<{ success: boolean }>(`/api/scheduling/appointments/${appointment_id}`, {
       method: 'DELETE',
     })
   }
 
-  async moveBlock(
-    appointment_id: string,
-    new_date_time: string,
-    duration_minutes?: number
-  ): Promise<ApiResponse<Appointment>> {
-    return this.fetch<Appointment>(`/api/appointments/${appointment_id}/move`, {
-      method: 'POST',
-      body: JSON.stringify({ new_date_time, duration_minutes }),
-    })
-  }
-
   // Patients
-  async getPatients(office_id: string, search?: string): Promise<ApiResponse<Patient[]>> {
-    const params = new URLSearchParams({ office_id })
+  async getPatients(_office_id: string, search?: string): Promise<ApiResponse<Patient[]>> {
+    const params = new URLSearchParams()
     if (search) params.append('search', search)
 
-    return this.fetch<Patient[]>(`/api/patients?${params}`, {
+    const qs = params.toString()
+    return this.fetch<Patient[]>(`/api/patients${qs ? `?${qs}` : ''}`, {
       method: 'GET',
     })
   }
@@ -168,48 +189,48 @@ export class ApiClient {
     })
   }
 
-  // Office
-  async getOffice(office_id: string): Promise<ApiResponse<Office>> {
-    return this.fetch<Office>(`/api/office/${office_id}`, {
+  // Availability Schedules
+  async getAvailabilitySchedules(): Promise<ApiResponse<AvailabilitySchedule[]>> {
+    return this.fetch<AvailabilitySchedule[]>('/api/scheduling/schedules', {
       method: 'GET',
     })
   }
 
-  async updateOffice(office_id: string, data: Partial<Office>): Promise<ApiResponse<Office>> {
-    return this.fetch<Office>(`/api/office/${office_id}`, {
-      method: 'PUT',
-      body: JSON.stringify(data),
-    })
-  }
-
-  async getAvailability(office_id: string, date?: string): Promise<ApiResponse<Record<string, boolean>>> {
-    const params = new URLSearchParams({ office_id })
-    if (date) params.append('date', date)
-
-    return this.fetch<Record<string, boolean>>(`/api/office/${office_id}/availability?${params}`, {
-      method: 'GET',
-    })
-  }
-
-  async updateSchedules(
-    office_id: string,
-    schedules: Record<string, unknown>
-  ): Promise<ApiResponse<Office>> {
-    return this.fetch<Office>(`/api/office/${office_id}`, {
+  async upsertAvailabilitySchedules(
+    schedules: Array<{
+      day_of_week: number
+      start_time: string
+      end_time: string
+      appointment_duration_min: number
+      buffer_minutes: number
+    }>
+  ): Promise<ApiResponse<AvailabilitySchedule[]>> {
+    return this.fetch<AvailabilitySchedule[]>('/api/scheduling/schedules', {
       method: 'PUT',
       body: JSON.stringify({ schedules }),
     })
   }
 
+  // Availability
+  async getAvailability(_office_id: string, date?: string): Promise<ApiResponse<Record<string, boolean>>> {
+    const params = new URLSearchParams()
+    if (date) params.append('date', date)
+
+    const qs = params.toString()
+    return this.fetch<Record<string, boolean>>(`/api/scheduling/availability${qs ? `?${qs}` : ''}`, {
+      method: 'GET',
+    })
+  }
+
   // Bot Control
   async pauseBot(office_id: string): Promise<ApiResponse<{ bot_status: string }>> {
-    return this.fetch<{ bot_status: string }>(`/api/office/${office_id}/pause`, {
+    return this.fetch<{ bot_status: string }>(`/api/offices/${office_id}/pause`, {
       method: 'POST',
     })
   }
 
   async resumeBot(office_id: string): Promise<ApiResponse<{ bot_status: string }>> {
-    return this.fetch<{ bot_status: string }>(`/api/office/${office_id}/resume`, {
+    return this.fetch<{ bot_status: string }>(`/api/offices/${office_id}/resume`, {
       method: 'POST',
     })
   }
@@ -222,24 +243,25 @@ export class ApiClient {
     no_show_appointments: number
     total_patients: number
   }>> {
-    const params = new URLSearchParams({ office_id })
+    const params = new URLSearchParams()
     if (period) params.append('period', period)
 
-    return this.fetch(`/api/office/${office_id}/stats?${params}`, {
+    const qs = params.toString()
+    return this.fetch(`/api/offices/${office_id}/stats${qs ? `?${qs}` : ''}`, {
       method: 'GET',
     })
   }
 
   // Google Calendar Integration
   async getGoogleCalendarAuthUrl(office_id: string): Promise<ApiResponse<{ auth_url: string }>> {
-    return this.fetch<{ auth_url: string }>(`/api/integrations/google-calendar/auth-url`, {
+    return this.fetch<{ auth_url: string }>('/api/google-calendar/auth-url', {
       method: 'POST',
       body: JSON.stringify({ office_id }),
     })
   }
 
   async syncGoogleCalendar(office_id: string, code: string): Promise<ApiResponse<{ success: boolean }>> {
-    return this.fetch<{ success: boolean }>(`/api/integrations/google-calendar/sync`, {
+    return this.fetch<{ success: boolean }>('/api/google-calendar/sync', {
       method: 'POST',
       body: JSON.stringify({ office_id, code }),
     })

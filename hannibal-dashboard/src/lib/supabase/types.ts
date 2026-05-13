@@ -1,14 +1,20 @@
 export type Office = {
   id: string
-  doctor_id: string
+  user_id: string
+  name: string
+  specialty: string | null
+  whatsapp_phone: string | null
+  owner_phone: string | null
+  city: string | null
+  address: string | null
+  assistant_tone: string
   assistant_name: string
-  tone: 'formal' | 'informal'
-  custom_prompt: string
-  schedules: Record<string, unknown>
-  bot_status: 'active' | 'paused' | 'inactive'
-  whatsapp_number: string
+  custom_prompt: string | null
+  is_active: boolean
+  onboarding_completed: boolean
+  plan: string
   created_at: string
-  updated_at: string
+  updated_at: string | null
 }
 
 export type Appointment = {
@@ -45,4 +51,15 @@ export type Doctor = {
   city: string
   created_at: string
   updated_at: string
+}
+
+export type AvailabilitySchedule = {
+  id: string
+  office_id: string
+  day_of_week: number
+  start_time: string
+  end_time: string
+  appointment_duration_min: number
+  buffer_minutes: number
+  is_active: boolean
 }

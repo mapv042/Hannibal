@@ -22,6 +22,8 @@ from app.modules.scheduling.schemas import (
     RescheduleAppointmentRequest,
     CancelAppointmentRequest,
     CompleteAppointmentRequest,
+    BulkUpsertSchedulesRequest,
+    AvailabilityScheduleResponse,
 )
 from app.modules.scheduling.availability import (
     get_available_slots,
@@ -42,7 +44,7 @@ from sqlalchemy import select
 
 logger = get_logger(__name__)
 
-router = APIRouter(prefix="/api/scheduling", tags=["Scheduling"])
+router = APIRouter(tags=["Scheduling"])
 
 
 async def get_office_from_user(
@@ -349,3 +351,69 @@ async def get_waitlist(
     entries = result.scalars().all()
 
     return {"entries": entries}
+
+
+# ── Availability Schedule CRUD ─────────────────────────────────────────────
+
+
+@router.get("/schedules", response_model=List[AvailabilityScheduleResponse])
+async def get_schedules_endpoint(
+    db: AsyncSession = Depends(get_db),
+    office: Office = Depends(get_office_from_user),
+):
+    """Get all availability schedules for the current user's office."""
+    from app.modules.scheduling.availability_crud import get_schedules
+
+    schedules = await get_schedules(
+        office_id=office.id,
+        user_id=office.user_id,
+        db=db,
+    )
+
+    # Convert time objects to HH:MM strings
+    results = []
+    for s in schedules:
+        results.append(AvailabilityScheduleResponse(
+            id=s.id,
+            office_id=s.office_id,
+            day_of_week=s.day_of_week,
+            start_time=s.start_time.strftime("%H:%M"),
+            end_time=s.end_time.strftime("%H:%M"),
+            appointment_duration_min=s.appointment_duration_min,
+            buffer_minutes=s.buffer_minutes,
+            is_active=s.is_active,
+        ))
+
+    return results
+
+
+@router.put("/schedules", response_model=List[AvailabilityScheduleResponse])
+async def upsert_schedules_endpoint(
+    request: BulkUpsertSchedulesRequest,
+    db: AsyncSession = Depends(get_db),
+    office: Office = Depends(get_office_from_user),
+):
+    """Bulk upsert availability schedules — replaces all existing schedules."""
+    from app.modules.scheduling.availability_crud import bulk_upsert_schedules
+
+    schedules = await bulk_upsert_schedules(
+        office_id=office.id,
+        user_id=office.user_id,
+        schedules_data=request.schedules,
+        db=db,
+    )
+
+    results = []
+    for s in schedules:
+        results.append(AvailabilityScheduleResponse(
+            id=s.id,
+            office_id=s.office_id,
+            day_of_week=s.day_of_week,
+            start_time=s.start_time.strftime("%H:%M"),
+            end_time=s.end_time.strftime("%H:%M"),
+            appointment_duration_min=s.appointment_duration_min,
+            buffer_minutes=s.buffer_minutes,
+            is_active=s.is_active,
+        ))
+
+    return results

@@ -29,7 +29,7 @@ from app.core.exceptions import NotFoundError
 
 logger = get_logger(__name__)
 
-router = APIRouter(prefix="/api/patients", tags=["Patients"])
+router = APIRouter(tags=["Patients"])
 
 
 async def get_office_from_user(

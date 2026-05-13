@@ -87,14 +87,10 @@ export default function RegisterPage() {
       }
 
       // Create office in backend
-      const officeResponse = await api.createAppointment({
-        office_id: authData.user.id,
-        patient_id: formData.name,
-        date_time: new Date().toISOString(),
-        duration_minutes: 30,
-        consultation_type: 'initial',
-        status: 'pending',
-        notes: `New registration: ${formData.name} - ${formData.specialty} - ${formData.city}`,
+      const officeResponse = await api.createOffice({
+        name: formData.name,
+        specialty: formData.specialty || undefined,
+        city: formData.city || undefined,
       })
 
       if (!officeResponse.success) {
@@ -102,7 +98,7 @@ export default function RegisterPage() {
         // Continue anyway since user was created
       }
 
-      router.push('/login')
+      router.push('/onboarding')
       router.refresh()
     } catch (err) {
       setError(

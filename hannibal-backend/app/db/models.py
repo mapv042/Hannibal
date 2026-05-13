@@ -110,6 +110,7 @@ class Office(Base):
 
     # Status & Plan
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    onboarding_completed: Mapped[bool] = mapped_column(Boolean, default=False)
     plan: Mapped[str] = mapped_column(String(50), default="trial", nullable=False)
 
     # Timestamps

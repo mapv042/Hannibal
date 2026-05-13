@@ -12,7 +12,7 @@ import { Users, Search } from 'lucide-react'
 import type { Patient } from '@/lib/supabase'
 
 export default function PatientsPage() {
-  const [patients, setPatients] = useState<Patient[]>([])
+  const [_patients, setPatients] = useState<Patient[]>([])
   const [search, setSearch] = useState('')
   const [filteredPatients, setFilteredPatients] = useState<Patient[]>([])
   const [loading, setLoading] = useState(true)

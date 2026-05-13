@@ -25,13 +25,13 @@ export const Modal: React.FC<ModalProps> = ({
       if (e.key === 'Escape') onClose()
     }
 
-    if (isOpen) {
-      document.addEventListener('keydown', handleEscape)
-      document.body.style.overflow = 'hidden'
-      return () => {
-        document.removeEventListener('keydown', handleEscape)
-        document.body.style.overflow = 'unset'
-      }
+    if (!isOpen) return
+
+    document.addEventListener('keydown', handleEscape)
+    document.body.style.overflow = 'hidden'
+    return () => {
+      document.removeEventListener('keydown', handleEscape)
+      document.body.style.overflow = 'unset'
     }
   }, [isOpen, onClose])
 

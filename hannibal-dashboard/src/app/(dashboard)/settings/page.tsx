@@ -31,13 +31,14 @@ export default function SettingsPage() {
 
         if (!user) return
 
-        const response = await api.getOffice(user.id)
-        if (response.success && response.data) {
-          setOffice(response.data)
+        const response = await api.listOffices()
+        if (response.success && response.data && response.data.length > 0) {
+          const officeData = response.data[0]
+          setOffice(officeData)
           setFormData({
-            assistant_name: response.data.assistant_name,
-            tone: response.data.tone,
-            custom_prompt: response.data.custom_prompt,
+            assistant_name: officeData.assistant_name,
+            tone: officeData.assistant_tone as 'formal' | 'informal',
+            custom_prompt: officeData.custom_prompt || '',
           })
         }
       } catch (error) {
@@ -182,12 +183,12 @@ export default function SettingsPage() {
             <div>
               <p className="font-medium text-gray-900">WhatsApp Number</p>
               <p className="text-sm text-gray-600 mt-1">
-                {office?.whatsapp_number || 'Not configured'}
+                {office?.whatsapp_phone || 'Not configured'}
               </p>
             </div>
             <div
               className={`w-3 h-3 rounded-full ${
-                office?.whatsapp_number ? 'bg-green-500' : 'bg-gray-400'
+                office?.whatsapp_phone ? 'bg-green-500' : 'bg-gray-400'
               }`}
             />
           </div>
@@ -196,14 +197,14 @@ export default function SettingsPage() {
             <div>
               <p className="font-medium text-gray-900">Bot Status</p>
               <p className="text-sm text-gray-600 mt-1">
-                {office?.bot_status === 'active'
+                {office?.is_active
                   ? 'Bot active and responding'
                   : 'Bot paused'}
               </p>
             </div>
             <div
               className={`w-3 h-3 rounded-full ${
-                office?.bot_status === 'active'
+                office?.is_active
                   ? 'bg-green-500 animate-pulse'
                   : 'bg-gray-400'
               }`}

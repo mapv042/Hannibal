@@ -2,14 +2,14 @@
 
 import React, { useState } from 'react'
 import { createBrowserSupabaseClient } from '@/lib/supabase'
-import { ScheduleCalendar } from '@/components/agenda/ScheduleCalendar'
+import { ScheduleCalendar } from '@/components/scheduling/ScheduleCalendar'
 import { Modal } from '@/components/ui/Modal'
-import { Card, CardBody, CardHeader } from '@/components/ui/Card'
+import { Card, CardBody } from '@/components/ui/Card'
 import { StatusBadge } from '@/components/ui/Badge'
 import { format } from 'date-fns'
 import { es } from 'date-fns/locale'
 import type { Appointment } from '@/lib/supabase'
-import { X } from 'lucide-react'
+// import { X } from 'lucide-react'
 
 export default function SchedulePage() {
   const [selectedAppointment, setSelectedAppointment] = useState<Appointment | null>(null)

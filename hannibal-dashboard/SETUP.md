@@ -20,7 +20,7 @@ Edit `.env.local` and add your configuration:
 ```env
 # Supabase Configuration
 NEXT_PUBLIC_SUPABASE_URL=https://your-project.supabase.co
-NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key-here
+NEXT_PUBLIC_SUPABASE_SERVICE_KEY=your-anon-key-here
 
 # Backend API URL
 NEXT_PUBLIC_API_URL=http://localhost:8000
@@ -239,7 +239,7 @@ const { data: { user } } = await supabase.auth.getUser()
 docker build -t hannibal-dashboard .
 docker run -p 3000:3000 \
   -e NEXT_PUBLIC_SUPABASE_URL=... \
-  -e NEXT_PUBLIC_SUPABASE_ANON_KEY=... \
+  -e NEXT_PUBLIC_SUPABASE_SERVICE_KEY=... \
   -e NEXT_PUBLIC_API_URL=... \
   hannibal-dashboard
 ```
@@ -256,7 +256,7 @@ Server runs on port 3000. Set `PORT` environment variable to change.
 ## Troubleshooting
 
 ### "Supabase client not initialized"
-- Check `.env.local` has correct `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_ANON_KEY`
+- Check `.env.local` has correct `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_SERVICE_KEY`
 
 ### "API requests failing"
 - Verify `NEXT_PUBLIC_API_URL` is correct

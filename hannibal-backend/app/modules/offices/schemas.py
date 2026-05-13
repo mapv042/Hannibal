@@ -18,6 +18,9 @@ class CreateOfficeRequest(BaseModel):
     whatsapp_phone: Optional[str] = Field(
         None, description="WhatsApp phone number", max_length=20
     )
+    owner_phone: Optional[str] = Field(
+        None, description="Doctor's personal WhatsApp number", max_length=20
+    )
     city: Optional[str] = Field(None, description="City", max_length=100)
     address: Optional[str] = Field(None, description="Address", max_length=500)
 
@@ -32,13 +35,22 @@ class UpdateOfficeRequest(BaseModel):
     whatsapp_phone: Optional[str] = Field(
         None, description="WhatsApp phone number", max_length=20
     )
+    owner_phone: Optional[str] = Field(
+        None, description="Doctor's personal WhatsApp number", max_length=20
+    )
     city: Optional[str] = Field(None, description="City", max_length=100)
     address: Optional[str] = Field(None, description="Address", max_length=500)
     assistant_tone: Optional[str] = Field(
         None, description="Assistant tone (formal|informal)"
     )
     assistant_name: Optional[str] = Field(None, description="Assistant name")
+    custom_prompt: Optional[str] = Field(
+        None, description="Custom AI prompt instructions", max_length=5000
+    )
     is_active: Optional[bool] = Field(None, description="Is active")
+    onboarding_completed: Optional[bool] = Field(
+        None, description="Whether onboarding has been completed"
+    )
 
 
 class OfficeResponse(BaseModel):
@@ -49,11 +61,14 @@ class OfficeResponse(BaseModel):
     name: str
     specialty: Optional[str]
     whatsapp_phone: Optional[str]
+    owner_phone: Optional[str]
     city: Optional[str]
     address: Optional[str]
     assistant_tone: str
     assistant_name: str
+    custom_prompt: Optional[str]
     is_active: bool
+    onboarding_completed: bool
     plan: str
 
     class Config:
