@@ -3,7 +3,6 @@
 import React, { useState } from 'react'
 import { createBrowserSupabaseClient } from '@/lib/supabase'
 import { Card, CardBody } from '@/components/ui/Card'
-import { Heart } from 'lucide-react'
 
 export default function LoginPage() {
   const [loading, setLoading] = useState(false)

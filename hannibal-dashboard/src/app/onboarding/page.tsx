@@ -1,7 +1,7 @@
 'use client'
 
 import React, { useState, useEffect, useCallback } from 'react'
-import { useRouter } from 'next/navigation'
+import { useRouter, useSearchParams } from 'next/navigation'
 import { createBrowserSupabaseClient } from '@/lib/supabase'
 import { useApi } from '@/lib/api'
 import type { Office } from '@/lib/supabase'
@@ -96,7 +96,10 @@ export default function OnboardingPage() {
     welcomeMessage: '',
   })
 
+  const [gcalConnected, setGcalConnected] = useState(false)
+
   const router = useRouter()
+  const searchParams = useSearchParams()
   const supabase = createBrowserSupabaseClient()
   const api = useApi()
 
@@ -120,6 +123,10 @@ export default function OnboardingPage() {
           }
 
           setOffice(existingOffice)
+          // Check if Google Calendar is already connected
+          if (existingOffice.google_calendar_token) {
+            setGcalConnected(true)
+          }
           // Pre-fill with existing data
           setOfficeInfo({
             officeName: existingOffice.name || '',
@@ -145,6 +152,16 @@ export default function OnboardingPage() {
     }
 
     loadOffice()
+
+    // Handle Google Calendar OAuth callback
+    const gcalParam = searchParams.get('gcal')
+    if (gcalParam === 'success') {
+      setGcalConnected(true)
+      setCurrentStep(6)
+    } else if (gcalParam === 'error') {
+      setCurrentStep(6)
+      setError('Error al conectar Google Calendar. Intenta de nuevo.')
+    }
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleSaveOfficeInfo = useCallback(async () => {
@@ -314,6 +331,7 @@ export default function OnboardingPage() {
         <StepConnectCalendar
           onNext={() => setCurrentStep(7)}
           onBack={() => setCurrentStep(5)}
+          connected={gcalConnected}
         />
       )}
 

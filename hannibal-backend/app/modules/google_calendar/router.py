@@ -82,7 +82,13 @@ async def process_oauth_callback(
 ):
     """
     Process Google OAuth2 callback (GET — Google redirects here).
+    After exchanging the code, redirects back to the frontend.
     """
+    from fastapi.responses import RedirectResponse
+    from app.config import settings
+
+    frontend_url = settings.frontend_url or "http://localhost:3000"
+
     try:
         office_id = UUID(base64.b64decode(state).decode())
 
@@ -91,17 +97,17 @@ async def process_oauth_callback(
             office_id=str(office_id),
         )
 
-        token_data = await exchange_code_for_token(code, office_id, db)
+        await exchange_code_for_token(code, office_id, db)
 
-        return {
-            "success": True,
-            "message": "Google Calendar connected successfully",
-            "office_id": str(office_id),
-        }
+        return RedirectResponse(
+            url=f"{frontend_url}/onboarding?gcal=success"
+        )
 
     except Exception as e:
         logger.error("oauth_callback_error", error=str(e))
-        raise GoogleCalendarError(f"OAuth callback failed: {str(e)}")
+        return RedirectResponse(
+            url=f"{frontend_url}/onboarding?gcal=error"
+        )
 
 
 @router.post("/disconnect")

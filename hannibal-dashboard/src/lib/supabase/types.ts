@@ -12,6 +12,7 @@ export type Office = {
   custom_prompt: string | null
   is_active: boolean
   onboarding_completed: boolean
+  google_calendar_token: Record<string, unknown> | null
   plan: string
   created_at: string
   updated_at: string | null

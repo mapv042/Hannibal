@@ -253,18 +253,21 @@ export class ApiClient {
   }
 
   // Google Calendar Integration
-  async getGoogleCalendarAuthUrl(office_id: string): Promise<ApiResponse<{ auth_url: string }>> {
-    return this.fetch<{ auth_url: string }>('/api/google-calendar/auth-url', {
-      method: 'POST',
-      body: JSON.stringify({ office_id }),
+  async getGoogleCalendarAuthUrl(): Promise<ApiResponse<{ auth_url: string }>> {
+    return this.fetch<{ auth_url: string }>('/api/google-calendar/auth/url', {
+      method: 'GET',
     })
   }
 
-  async syncGoogleCalendar(office_id: string, code: string): Promise<ApiResponse<{ success: boolean }>> {
-    return this.fetch<{ success: boolean }>('/api/google-calendar/sync', {
-      method: 'POST',
-      body: JSON.stringify({ office_id, code }),
-    })
+  async checkGoogleCalendarConnected(): Promise<ApiResponse<{ connected: boolean }>> {
+    const res = await this.listOffices()
+    if (res.success && res.data && res.data.length > 0) {
+      return {
+        success: true,
+        data: { connected: !!res.data[0].google_calendar_token },
+      }
+    }
+    return { success: true, data: { connected: false } }
   }
 }
 
