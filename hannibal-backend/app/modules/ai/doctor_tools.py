@@ -632,6 +632,7 @@ async def _handle_send_message(args: dict, ctx: DoctorToolContext) -> dict:
         "success": True,
         "patient_name": patient.name,
         "message_sent": message,
+        "note": "El mensaje fue enviado pero la entrega NO está confirmada. Usa check_message_delivery para verificar si llegó.",
     }
 
 
