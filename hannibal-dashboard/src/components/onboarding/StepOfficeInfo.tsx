@@ -2,6 +2,7 @@ import React from 'react'
 import { Card, CardBody, CardHeader } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
+import { MEXICAN_STATES } from '@/lib/constants/mexican-states'
 
 export interface OfficeInfoData {
   officeName: string
@@ -60,12 +61,23 @@ export const StepOfficeInfo: React.FC<StepOfficeInfoProps> = ({
             value={data.city}
             onChange={(e) => onUpdate({ city: e.target.value })}
           />
-          <Input
-            label="Estado"
-            placeholder="Jalisco"
-            value={data.state}
-            onChange={(e) => onUpdate({ state: e.target.value })}
-          />
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1.5">
+              Estado
+            </label>
+            <select
+              value={data.state}
+              onChange={(e) => onUpdate({ state: e.target.value })}
+              className="input-field"
+            >
+              <option value="">Selecciona un estado</option>
+              {MEXICAN_STATES.map((state) => (
+                <option key={state} value={state}>
+                  {state}
+                </option>
+              ))}
+            </select>
+          </div>
         </div>
 
         <Input
