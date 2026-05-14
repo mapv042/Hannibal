@@ -85,7 +85,7 @@ class DoctorConversationManager:
             # Append response and save history
             history.append({"role": "assistant", "content": response_text})
             if len(history) > 30:
-                history = history[-30:]
+                history = self._trim_history(history, 30)
             await self._save_history(office.id, history)
 
             # Send response to doctor
@@ -177,6 +177,26 @@ class DoctorConversationManager:
         except (KeyError, IndexError) as e:
             raise ConversationError(f"Invalid message payload: {str(e)}") from e
 
+    @staticmethod
+    def _trim_history(messages: list[dict], max_len: int) -> list[dict]:
+        """Trim history without orphaning tool messages.
+
+        After slicing, the first message might be a 'tool' response whose
+        preceding 'assistant' (with tool_calls) was cut off. OpenAI rejects
+        this. We skip forward until we find a valid starting message.
+        """
+        trimmed = messages[-max_len:]
+        # Drop orphaned tool results at the start
+        while trimmed and trimmed[0].get("role") == "tool":
+            trimmed.pop(0)
+        # If we now start with an assistant tool_calls message whose
+        # tool results were partially cut, drop it too
+        if trimmed and trimmed[0].get("role") == "assistant" and trimmed[0].get("tool_calls"):
+            trimmed.pop(0)
+            while trimmed and trimmed[0].get("role") == "tool":
+                trimmed.pop(0)
+        return trimmed
+
     async def _get_history(self, office_id: uuid.UUID) -> list[dict]:
         """Load doctor conversation history from Redis."""
         import json
@@ -184,7 +204,15 @@ class DoctorConversationManager:
         try:
             data = await self.redis_client.get(key)
             if data:
-                return json.loads(data)
+                history = json.loads(data)
+                # Sanitize: drop orphaned tool messages at the start
+                while history and history[0].get("role") == "tool":
+                    history.pop(0)
+                if history and history[0].get("role") == "assistant" and history[0].get("tool_calls"):
+                    history.pop(0)
+                    while history and history[0].get("role") == "tool":
+                        history.pop(0)
+                return history
         except Exception as e:
             logger.warning("doctor_session_load_error", error=str(e))
         return []

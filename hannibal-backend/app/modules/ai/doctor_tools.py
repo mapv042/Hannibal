@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 import redis.asyncio as redis
 
 from app.core.constants import DAYS_ES, MX_TIMEZONE
-from app.db.models import Appointment, AvailabilitySchedule, Office, Patient, TimeBlock
+from app.db.models import Appointment, AvailabilitySchedule, Conversation, Message, Office, Patient, TimeBlock
 from app.modules.google_calendar.service import (
     create_calendar_event, get_freebusy, update_event_color, update_calendar_event,
 )
@@ -231,6 +231,23 @@ DOCTOR_TOOL_DEFINITIONS = [
                 },
             },
             "required": ["patient_name", "date", "time", "reason"],
+        },
+    },
+    {
+        "name": "check_message_delivery",
+        "description": (
+            "Verifica si un mensaje enviado a un paciente fue entregado. "
+            "Usa esta herramienta cuando el doctor pregunte si un mensaje llegó."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "patient_name": {
+                    "type": "string",
+                    "description": "Nombre (o parte del nombre) del paciente.",
+                },
+            },
+            "required": ["patient_name"],
         },
     },
     {
@@ -579,7 +596,7 @@ async def _handle_send_message(args: dict, ctx: DoctorToolContext) -> dict:
         return {"error": f"El paciente {patient.name} no tiene WhatsApp registrado."}
 
     try:
-        await ctx.meta_client.send_text_message(
+        wa_message_id = await ctx.meta_client.send_text_message(
             phone_number_id=ctx.office.whatsapp_phone_id,
             token=ctx.office.whatsapp_token,
             to=patient.whatsapp_id,
@@ -588,12 +605,96 @@ async def _handle_send_message(args: dict, ctx: DoctorToolContext) -> dict:
     except Exception as e:
         return {"error": f"No se pudo enviar el mensaje: {str(e)}"}
 
-    logger.info("doctor_sent_message", patient_id=str(patient.id), patient_name=patient.name)
+    # Save outgoing message with delivery tracking
+    conv_stmt = select(Conversation).where(
+        (Conversation.office_id == ctx.office.id)
+        & (Conversation.whatsapp_id == patient.whatsapp_id)
+        & (Conversation.status != "archived")
+    )
+    conv_result = await ctx.db.execute(conv_stmt)
+    conversation = conv_result.scalar_one_or_none()
+    if conversation:
+        msg = Message(
+            id=uuid.uuid4(),
+            conversation_id=conversation.id,
+            content=message,
+            type="text",
+            direction="outgoing",
+            whatsapp_message_id=wa_message_id,
+            delivery_status="sent",
+        )
+        ctx.db.add(msg)
+        await ctx.db.flush()
+
+    logger.info("doctor_sent_message", patient_id=str(patient.id), patient_name=patient.name, wa_message_id=wa_message_id)
 
     return {
         "success": True,
         "patient_name": patient.name,
         "message_sent": message,
+    }
+
+
+@_handler("check_message_delivery")
+async def _handle_check_delivery(args: dict, ctx: DoctorToolContext) -> dict:
+    patient_name = args.get("patient_name", "").strip()
+    if not patient_name:
+        return {"error": "Se requiere nombre del paciente."}
+
+    # Find patient
+    stmt = select(Patient).where(
+        (Patient.office_id == ctx.office.id)
+        & (Patient.name.ilike(f"%{patient_name}%"))
+    )
+    result = await ctx.db.execute(stmt)
+    patients = result.scalars().all()
+
+    if not patients:
+        return {"error": f"No se encontró paciente con nombre '{patient_name}'."}
+    if len(patients) > 1:
+        return {"error": "Múltiples pacientes encontrados. Sé más específico.", "matches": [p.name for p in patients]}
+
+    patient = patients[0]
+
+    # Find conversation and last outgoing message
+    conv_stmt = select(Conversation).where(
+        (Conversation.office_id == ctx.office.id)
+        & (Conversation.whatsapp_id == patient.whatsapp_id)
+    )
+    conv_result = await ctx.db.execute(conv_stmt)
+    conversation = conv_result.scalar_one_or_none()
+    if not conversation:
+        return {"error": f"No hay conversación con {patient.name}."}
+
+    msg_stmt = (
+        select(Message)
+        .where(
+            (Message.conversation_id == conversation.id)
+            & (Message.direction == "outgoing")
+            & (Message.delivery_status.isnot(None))
+        )
+        .order_by(Message.created_at.desc())
+        .limit(1)
+    )
+    msg_result = await ctx.db.execute(msg_stmt)
+    last_msg = msg_result.scalar_one_or_none()
+
+    if not last_msg:
+        return {"message": f"No se encontraron mensajes enviados con tracking a {patient.name}."}
+
+    status_labels = {
+        "sent": "Enviado (sin confirmación de entrega)",
+        "delivered": "Entregado al teléfono del paciente",
+        "read": "Leído por el paciente",
+        "failed": "Falló la entrega",
+    }
+
+    return {
+        "patient_name": patient.name,
+        "delivery_status": last_msg.delivery_status,
+        "status_description": status_labels.get(last_msg.delivery_status, last_msg.delivery_status),
+        "message_preview": last_msg.content[:100],
+        "sent_at": last_msg.created_at.strftime("%Y-%m-%d %H:%M"),
     }
 
 

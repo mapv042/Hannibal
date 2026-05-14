@@ -587,6 +587,9 @@ class Message(Base):
     whatsapp_message_id: Mapped[Optional[str]] = mapped_column(
         String(255), nullable=True
     )
+    delivery_status: Mapped[Optional[str]] = mapped_column(
+        String(20), nullable=True
+    )  # sent|delivered|read|failed (null for incoming)
 
     # Metadata
     extra_metadata: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)

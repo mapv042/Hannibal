@@ -324,6 +324,9 @@ async def _process_status(
     db: AsyncSession,
 ) -> None:
     """Process a message status update (sent, delivered, read, failed)."""
+    from sqlalchemy import select
+    from app.db.models import Message
+
     try:
         message_id = status_update.get("id")
         status = status_update.get("status")
@@ -337,9 +340,23 @@ async def _process_status(
             office_id=str(office.id),
         )
 
-        # TODO: Update message status in database
-        # from app.modules.conversation.manager import update_message_status
-        # await update_message_status(message_id, status, office, db)
+        if status in ("sent", "delivered", "read", "failed") and message_id:
+            stmt = select(Message).where(Message.whatsapp_message_id == message_id)
+            result = await db.execute(stmt)
+            msg = result.scalar_one_or_none()
+            if msg:
+                # Only update forward: sent → delivered → read, or any → failed
+                status_order = {"sent": 1, "delivered": 2, "read": 3, "failed": 0}
+                current = status_order.get(msg.delivery_status, -1)
+                new = status_order.get(status, -1)
+                if status == "failed" or new > current:
+                    msg.delivery_status = status
+                    await db.commit()
+                    logger.info(
+                        "message_delivery_updated",
+                        message_id=message_id,
+                        status=status,
+                    )
 
     except Exception as e:
         logger.error(
