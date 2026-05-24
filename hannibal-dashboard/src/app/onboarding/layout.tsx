@@ -1,4 +1,5 @@
 import React from 'react'
+import { Logo } from '@/components/ui/Logo'
 
 export const dynamic = 'force-dynamic'
 
@@ -8,14 +9,21 @@ export default function OnboardingLayout({
   children: React.ReactNode
 }) {
   return (
-    <div className="min-h-screen bg-gradient-to-br from-primary-50 to-secondary-50 flex flex-col items-center py-8 px-4">
+    <div
+      className="relative min-h-screen flex flex-col items-center py-10 px-4 overflow-hidden"
+      style={{
+        background: `radial-gradient(ellipse 60% 40% at 20% 0%, rgba(var(--primary-rgb-500), .10), transparent 60%),
+                     radial-gradient(ellipse 60% 40% at 80% 100%, rgba(var(--secondary-rgb-500), .08), transparent 60%),
+                     linear-gradient(180deg, #f9fafb, #eef1fa)`,
+      }}
+    >
       {/* Logo */}
-      <div className="flex items-center gap-3 mb-8">
-        <h1 className="font-bold text-xl text-gray-900">Hannibal</h1>
+      <div className="mb-8">
+        <Logo size={30} />
       </div>
 
       {/* Content */}
-      <div className="w-full max-w-2xl">
+      <div className="relative w-full max-w-5xl">
         {children}
       </div>
 

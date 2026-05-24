@@ -5,6 +5,7 @@ import FullCalendar from '@fullcalendar/react'
 import dayGridPlugin from '@fullcalendar/daygrid'
 import timeGridPlugin from '@fullcalendar/timegrid'
 import interactionPlugin from '@fullcalendar/interaction'
+import esLocale from '@fullcalendar/core/locales/es'
 import { useApi } from '@/lib/api'
 import type { Appointment } from '@/lib/supabase'
 
@@ -76,7 +77,7 @@ export const ScheduleCalendar: React.FC<ScheduleCalendarProps> = ({
     <div className="bg-white rounded-lg border border-gray-200 p-6">
       {loading ? (
         <div className="text-center py-12">
-          <p className="text-gray-600">Loading calendar...</p>
+          <p className="text-gray-600">Cargando calendario...</p>
         </div>
       ) : (
         <FullCalendar
@@ -95,7 +96,7 @@ export const ScheduleCalendar: React.FC<ScheduleCalendarProps> = ({
           events={events}
           eventClick={handleEventClick}
           dateClick={handleDateClick}
-          locale="en"
+          locale={esLocale}
           height="auto"
           contentHeight="auto"
         />

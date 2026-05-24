@@ -51,14 +51,14 @@ export default function PatientsPage() {
     <div className="space-y-6">
       {/* Header */}
       <div>
-        <h1 className="text-3xl font-bold text-gray-900">Patients</h1>
-        <p className="text-gray-600 mt-1">Manage and view your patient information</p>
+        <h1 className="text-3xl font-bold text-gray-900">Pacientes</h1>
+        <p className="text-gray-600 mt-1">Administra y consulta la información de tus pacientes</p>
       </div>
 
       {/* Search */}
       <div className="relative">
         <Input
-          placeholder="Search by name or phone..."
+          placeholder="Buscar por nombre o teléfono..."
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           className="pl-10"
@@ -70,18 +70,18 @@ export default function PatientsPage() {
       <Card>
         <CardHeader>
           <h2 className="text-xl font-semibold text-gray-900">
-            {filteredPatients.length} Patient{filteredPatients.length !== 1 ? 's' : ''}
+            {filteredPatients.length} Paciente{filteredPatients.length !== 1 ? 's' : ''}
           </h2>
         </CardHeader>
         <CardBody>
           {loading ? (
             <div className="text-center py-12">
-              <p className="text-gray-600">Loading patients...</p>
+              <p className="text-gray-600">Cargando pacientes...</p>
             </div>
           ) : filteredPatients.length === 0 ? (
             <div className="text-center py-12">
               <Users size={48} className="mx-auto text-gray-300 mb-4" />
-              <p className="text-gray-600">No patients found</p>
+              <p className="text-gray-600">No se encontraron pacientes</p>
             </div>
           ) : (
             <div className="overflow-x-auto">
@@ -89,22 +89,22 @@ export default function PatientsPage() {
                 <thead>
                   <tr className="border-b border-gray-200">
                     <th className="text-left py-3 px-4 font-medium text-gray-700 text-sm">
-                      Name
+                      Nombre
                     </th>
                     <th className="text-left py-3 px-4 font-medium text-gray-700 text-sm">
-                      Phone
+                      Teléfono
                     </th>
                     <th className="text-left py-3 px-4 font-medium text-gray-700 text-sm">
-                      Email
+                      Correo
                     </th>
                     <th className="text-left py-3 px-4 font-medium text-gray-700 text-sm">
-                      Appointments
+                      Citas
                     </th>
                     <th className="text-left py-3 px-4 font-medium text-gray-700 text-sm">
-                      Last Appointment
+                      Última cita
                     </th>
                     <th className="text-left py-3 px-4 font-medium text-gray-700 text-sm">
-                      Actions
+                      Acciones
                     </th>
                   </tr>
                 </thead>
@@ -135,10 +135,10 @@ export default function PatientsPage() {
                       </td>
                       <td className="py-3 px-4 text-sm">
                         <Link
-                          href={`/dashboard/pacientes/${patient.id}`}
+                          href={`/dashboard/patients/${patient.id}`}
                           className="text-primary-600 hover:text-primary-700 font-medium"
                         >
-                          View Profile
+                          Ver perfil
                         </Link>
                       </td>
                     </tr>

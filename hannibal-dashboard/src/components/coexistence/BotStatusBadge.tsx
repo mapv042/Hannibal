@@ -64,12 +64,12 @@ export const BotStatusBadge: React.FC<BotStatusBadgeProps> = ({
         {status === 'active' ? (
           <>
             <Pause size={16} />
-            Pause
+            Pausar
           </>
         ) : (
           <>
             <Power size={16} />
-            Activate
+            Activar
           </>
         )}
       </Button>

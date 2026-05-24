@@ -5,9 +5,32 @@ import { useApi } from '@/lib/api'
 import { createBrowserSupabaseClient } from '@/lib/supabase'
 import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
+import { Badge } from '@/components/ui/Badge'
 import { Card, CardBody, CardHeader } from '@/components/ui/Card'
-import { Settings, Save, Globe, Zap } from 'lucide-react'
+import { Settings, Save, Globe, Zap, Clock, LucideIcon } from 'lucide-react'
 import type { Office } from '@/lib/supabase'
+
+function SectionHeader({
+  icon: Icon,
+  title,
+  subtitle,
+}: {
+  icon: LucideIcon
+  title: string
+  subtitle?: string
+}) {
+  return (
+    <div className="flex items-center gap-3.5">
+      <div className="w-10 h-10 rounded-[10px] bg-primary-50 flex items-center justify-center flex-shrink-0">
+        <Icon size={20} className="text-primary-700" />
+      </div>
+      <div>
+        <h2 className="text-base font-semibold tracking-tight text-gray-900">{title}</h2>
+        {subtitle && <p className="text-[13px] text-gray-500 mt-0.5">{subtitle}</p>}
+      </div>
+    </div>
+  )
+}
 
 export default function SettingsPage() {
   const [office, setOffice] = useState<Office | null>(null)
@@ -80,7 +103,7 @@ export default function SettingsPage() {
   if (loading) {
     return (
       <div className="text-center py-12">
-        <p className="text-gray-600">Loading settings...</p>
+        <p className="text-gray-600">Cargando configuración...</p>
       </div>
     )
   }
@@ -89,15 +112,16 @@ export default function SettingsPage() {
     <div className="space-y-6 max-w-2xl">
       {/* Header */}
       <div>
-        <h1 className="text-3xl font-bold text-gray-900">Settings</h1>
-        <p className="text-gray-600 mt-1">Customize your WhatsApp assistant</p>
+        <Badge variant="primary" className="mb-3">Panel</Badge>
+        <h1 className="text-[28px] font-bold tracking-tight text-gray-900">Configuración</h1>
+        <p className="text-sm text-gray-500 mt-1">Personaliza tu asistente de WhatsApp</p>
       </div>
 
       {/* Save Notification */}
       {saved && (
-        <div className="p-4 bg-green-100 border border-green-300 rounded-lg">
+        <div className="p-4 bg-green-100 border border-green-300 rounded-xl">
           <p className="text-sm text-green-800">
-            Settings saved successfully
+            Configuración guardada correctamente
           </p>
         </div>
       )}
@@ -105,26 +129,25 @@ export default function SettingsPage() {
       {/* General Settings */}
       <Card>
         <CardHeader>
-          <div className="flex items-center gap-2">
-            <Settings size={20} className="text-primary-600" />
-            <h2 className="text-xl font-semibold text-gray-900">
-              General Settings
-            </h2>
-          </div>
+          <SectionHeader
+            icon={Settings}
+            title="General"
+            subtitle="Identidad y voz de tu asistente"
+          />
         </CardHeader>
         <CardBody className="space-y-5">
           <Input
-            label="Assistant Name"
+            label="Nombre del asistente"
             name="assistant_name"
-            placeholder="My Assistant"
+            placeholder="Mi asistente"
             value={formData.assistant_name}
             onChange={handleChange}
-            helpText="This name will appear in messages to patients"
+            helpText="Este nombre aparecerá en los mensajes a pacientes"
           />
 
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1.5">
-              Conversation Tone
+              Tono de conversación
             </label>
             <select
               name="tone"
@@ -132,28 +155,28 @@ export default function SettingsPage() {
               onChange={handleChange}
               className="input-field"
             >
-              <option value="formal">Formal (professional)</option>
-              <option value="informal">Informal (friendly)</option>
+              <option value="formal">De usted · formal</option>
+              <option value="informal">De tú · cercano</option>
             </select>
             <p className="text-xs text-gray-500 mt-1">
-              Choose how the assistant communicates with your patients
+              Elige cómo se comunica el asistente con tus pacientes
             </p>
           </div>
 
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1.5">
-              Custom Instructions
+              Instrucciones personalizadas
             </label>
             <textarea
               name="custom_prompt"
               value={formData.custom_prompt}
               onChange={handleChange}
-              placeholder="Write custom instructions for the assistant..."
+              placeholder="Escribe instrucciones personalizadas para el asistente..."
               rows={6}
               className="input-field resize-none"
             />
             <p className="text-xs text-gray-500 mt-1">
-              Provide specific instructions the assistant should follow
+              Proporciona instrucciones específicas que el asistente debe seguir
             </p>
           </div>
 
@@ -163,7 +186,7 @@ export default function SettingsPage() {
             className="gap-2"
           >
             <Save size={16} />
-            Save Changes
+            Guardar cambios
           </Button>
         </CardBody>
       </Card>
@@ -171,19 +194,18 @@ export default function SettingsPage() {
       {/* WhatsApp Status */}
       <Card>
         <CardHeader>
-          <div className="flex items-center gap-2">
-            <Zap size={20} className="text-primary-600" />
-            <h2 className="text-xl font-semibold text-gray-900">
-              WhatsApp Status
-            </h2>
-          </div>
+          <SectionHeader
+            icon={Zap}
+            title="Estado de WhatsApp"
+            subtitle="Conexión y control del asistente"
+          />
         </CardHeader>
         <CardBody className="space-y-4">
-          <div className="flex items-center justify-between p-4 bg-gray-50 rounded-lg border border-gray-200">
+          <div className="flex items-center justify-between p-4 bg-gray-50 rounded-xl border border-gray-200">
             <div>
-              <p className="font-medium text-gray-900">WhatsApp Number</p>
+              <p className="font-medium text-gray-900">Número de WhatsApp</p>
               <p className="text-sm text-gray-600 mt-1">
-                {office?.whatsapp_phone || 'Not configured'}
+                {office?.whatsapp_phone || 'Sin configurar'}
               </p>
             </div>
             <div
@@ -193,13 +215,13 @@ export default function SettingsPage() {
             />
           </div>
 
-          <div className="flex items-center justify-between p-4 bg-gray-50 rounded-lg border border-gray-200">
+          <div className="flex items-center justify-between p-4 bg-gray-50 rounded-xl border border-gray-200">
             <div>
-              <p className="font-medium text-gray-900">Bot Status</p>
+              <p className="font-medium text-gray-900">Estado del bot</p>
               <p className="text-sm text-gray-600 mt-1">
                 {office?.is_active
-                  ? 'Bot active and responding'
-                  : 'Bot paused'}
+                  ? 'Bot activo y respondiendo'
+                  : 'Bot en pausa'}
               </p>
             </div>
             <div
@@ -216,19 +238,18 @@ export default function SettingsPage() {
       {/* Integration Info */}
       <Card>
         <CardHeader>
-          <div className="flex items-center gap-2">
-            <Globe size={20} className="text-primary-600" />
-            <h2 className="text-xl font-semibold text-gray-900">
-              Integrations
-            </h2>
-          </div>
+          <SectionHeader
+            icon={Globe}
+            title="Integraciones"
+            subtitle="Conecta tu calendario y otras herramientas"
+          />
         </CardHeader>
         <CardBody className="space-y-4">
           <p className="text-sm text-gray-600">
-            Connect Google Calendar to automatically sync your appointments
+            Conecta Google Calendar para sincronizar tus citas automáticamente
           </p>
           <Button variant="secondary">
-            Connect Google Calendar
+            Conectar Google Calendar
           </Button>
         </CardBody>
       </Card>
@@ -236,13 +257,15 @@ export default function SettingsPage() {
       {/* Schedules */}
       <Card>
         <CardHeader>
-          <h2 className="text-xl font-semibold text-gray-900">
-            Availability Schedules
-          </h2>
+          <SectionHeader
+            icon={Clock}
+            title="Horarios de atención"
+            subtitle="Disponibilidad semanal. El bot solo agenda dentro de estos bloques."
+          />
         </CardHeader>
         <CardBody className="space-y-4">
           <div className="space-y-3">
-            {['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'].map(
+            {['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo'].map(
               (day) => (
                 <div key={day} className="flex items-center gap-4">
                   <label className="w-24 font-medium text-gray-900 text-sm">
@@ -264,7 +287,7 @@ export default function SettingsPage() {
             )}
           </div>
           <Button variant="secondary" className="w-full">
-            Save Schedules
+            Guardar horarios
           </Button>
         </CardBody>
       </Card>

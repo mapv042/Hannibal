@@ -5,8 +5,20 @@
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@100;200;300;400;500;600;700;800;900&display=swap');
 
 :root {
-  --primary: 42, 184, 154;
+  --primary: 21, 53, 163;
   --primary-rgb: rgb(var(--primary));
+
+  /* RGB triplets for rgba() composition */
+  --primary-rgb-500: 21, 53, 163;
+  --primary-rgb-600: 9, 43, 130;
+  --secondary-rgb-500: 39, 69, 184;
+
+  /* Radius scale (mirrors design tokens) */
+  --r-sm: 6px;
+  --r-md: 8px;
+  --r-lg: 12px;
+  --r-xl: 16px;
+  --r-2xl: 20px;
 }
 
 html {
@@ -15,6 +27,8 @@ html {
 
 body {
   @apply text-gray-900 bg-gray-50;
+  -webkit-font-smoothing: antialiased;
+  font-feature-settings: 'cv11', 'ss01';
 }
 
 /* Custom scrollbar */
@@ -128,7 +142,7 @@ body {
 /* Form styles */
 @layer components {
   .input-field {
-    @apply w-full px-4 py-2.5 rounded-lg border border-gray-300 bg-white text-gray-900 placeholder-gray-500 transition-colors duration-200 focus:outline-none focus:border-primary-500 focus:ring-2 focus:ring-primary-100;
+    @apply w-full px-3 py-2.5 rounded-xl border border-gray-300 bg-white text-gray-900 placeholder-gray-500 transition-all duration-150 focus:outline-none focus:border-primary-500 focus:ring-4 focus:ring-primary-500/10;
   }
 
   .input-field:disabled {
@@ -136,15 +150,15 @@ body {
   }
 
   .button-primary {
-    @apply inline-flex items-center justify-center px-4 py-2.5 rounded-lg font-medium text-white bg-primary-600 hover:bg-primary-700 transition-colors duration-200 disabled:opacity-50 disabled:cursor-not-allowed;
+    @apply inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl font-semibold tracking-tight text-white bg-primary-600 shadow-[0_4px_12px_rgba(var(--primary-rgb-600),0.22)] hover:bg-primary-700 hover:shadow-[0_6px_20px_rgba(var(--primary-rgb-600),0.35)] transition-all duration-150 disabled:opacity-50 disabled:shadow-none disabled:cursor-not-allowed;
   }
 
   .button-secondary {
-    @apply inline-flex items-center justify-center px-4 py-2.5 rounded-lg font-medium text-gray-700 border border-gray-300 bg-white hover:bg-gray-50 transition-colors duration-200 disabled:opacity-50 disabled:cursor-not-allowed;
+    @apply inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl font-semibold tracking-tight text-gray-800 border border-gray-300 bg-white shadow-xs hover:bg-gray-100 transition-all duration-150 disabled:opacity-50 disabled:cursor-not-allowed;
   }
 
   .button-danger {
-    @apply inline-flex items-center justify-center px-4 py-2.5 rounded-lg font-medium text-white bg-red-600 hover:bg-red-700 transition-colors duration-200 disabled:opacity-50 disabled:cursor-not-allowed;
+    @apply inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl font-semibold tracking-tight text-white bg-error shadow-sm hover:bg-red-600 transition-all duration-150 disabled:opacity-50 disabled:cursor-not-allowed;
   }
 
   .badge-success {
@@ -164,6 +178,6 @@ body {
   }
 
   .card {
-    @apply rounded-lg border border-gray-200 bg-white shadow-sm;
+    @apply rounded-2xl border border-gray-200 bg-white shadow-sm;
   }
 }

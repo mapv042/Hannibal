@@ -5,7 +5,7 @@ import { createBrowserSupabaseClient } from '@/lib/supabase'
 import { ScheduleCalendar } from '@/components/scheduling/ScheduleCalendar'
 import { Modal } from '@/components/ui/Modal'
 import { Card, CardBody } from '@/components/ui/Card'
-import { StatusBadge } from '@/components/ui/Badge'
+import { Badge, StatusBadge } from '@/components/ui/Badge'
 import { format } from 'date-fns'
 import { es } from 'date-fns/locale'
 import type { Appointment } from '@/lib/supabase'
@@ -27,15 +27,16 @@ export default function SchedulePage() {
   }, [supabase])
 
   if (!user) {
-    return <div>Loading...</div>
+    return <div>Cargando...</div>
   }
 
   return (
     <div className="space-y-6">
       {/* Header */}
       <div>
-        <h1 className="text-3xl font-bold text-gray-900">Schedule</h1>
-        <p className="text-gray-600 mt-1">View and manage your appointment calendar</p>
+        <Badge variant="primary" className="mb-3">Panel</Badge>
+        <h1 className="text-[28px] font-bold tracking-tight text-gray-900">Agenda</h1>
+        <p className="text-sm text-gray-500 mt-1">Consulta y administra tu calendario de citas</p>
       </div>
 
       {/* Calendar */}
@@ -52,14 +53,14 @@ export default function SchedulePage() {
       <Modal
         isOpen={!!selectedAppointment}
         onClose={() => setSelectedAppointment(null)}
-        title="Appointment Details"
+        title="Detalles de la cita"
         size="md"
       >
         {selectedAppointment && (
           <div className="space-y-4">
             <div className="space-y-3">
               <div>
-                <p className="text-xs font-medium text-gray-600 uppercase">Patient</p>
+                <p className="text-xs font-medium text-gray-600 uppercase">Paciente</p>
                 <p className="text-lg font-semibold text-gray-900">
                   {selectedAppointment.patient_id}
                 </p>
@@ -67,7 +68,7 @@ export default function SchedulePage() {
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <p className="text-xs font-medium text-gray-600 uppercase">Date</p>
+                  <p className="text-xs font-medium text-gray-600 uppercase">Fecha</p>
                   <p className="text-sm text-gray-900">
                     {format(new Date(selectedAppointment.date_time), "MMMM d", {
                       locale: es,
@@ -75,7 +76,7 @@ export default function SchedulePage() {
                   </p>
                 </div>
                 <div>
-                  <p className="text-xs font-medium text-gray-600 uppercase">Time</p>
+                  <p className="text-xs font-medium text-gray-600 uppercase">Hora</p>
                   <p className="text-sm text-gray-900">
                     {format(new Date(selectedAppointment.date_time), 'HH:mm', { locale: es })}
                   </p>
@@ -84,13 +85,13 @@ export default function SchedulePage() {
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <p className="text-xs font-medium text-gray-600 uppercase">Duration</p>
+                  <p className="text-xs font-medium text-gray-600 uppercase">Duración</p>
                   <p className="text-sm text-gray-900">
-                    {selectedAppointment.duration_minutes} minutes
+                    {selectedAppointment.duration_minutes} minutos
                   </p>
                 </div>
                 <div>
-                  <p className="text-xs font-medium text-gray-600 uppercase">Type</p>
+                  <p className="text-xs font-medium text-gray-600 uppercase">Tipo</p>
                   <p className="text-sm text-gray-900">
                     {selectedAppointment.consultation_type}
                   </p>
@@ -99,14 +100,14 @@ export default function SchedulePage() {
 
               <div>
                 <p className="text-xs font-medium text-gray-600 uppercase mb-1">
-                  Status
+                  Estado
                 </p>
                 <StatusBadge estado={selectedAppointment.status} />
               </div>
 
               {selectedAppointment.notes && (
                 <div>
-                  <p className="text-xs font-medium text-gray-600 uppercase">Notes</p>
+                  <p className="text-xs font-medium text-gray-600 uppercase">Notas</p>
                   <p className="text-sm text-gray-700 mt-1">
                     {selectedAppointment.notes}
                   </p>
@@ -116,7 +117,7 @@ export default function SchedulePage() {
 
             <div className="pt-4 border-t border-gray-200">
               <p className="text-xs text-gray-500">
-                Created:{' '}
+                Creada:{' '}
                 {format(new Date(selectedAppointment.created_at), 'PPp', {
                   locale: es,
                 })}

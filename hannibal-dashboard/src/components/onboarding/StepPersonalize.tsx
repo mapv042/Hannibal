@@ -1,7 +1,8 @@
 import React from 'react'
-import { Card, CardBody, CardHeader } from '@/components/ui/Card'
+import { Card, CardBody } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
+import { StepHeader } from '@/components/onboarding/StepHeader'
 
 export interface PersonalizeData {
   assistantName: string
@@ -27,13 +28,12 @@ export const StepPersonalize: React.FC<StepPersonalizeProps> = ({
 }) => {
   return (
     <Card>
-      <CardHeader>
-        <h2 className="text-xl font-bold text-gray-900">Personaliza tu asistente</h2>
-        <p className="text-sm text-gray-600 mt-1">
-          Asi se comunicara con tus pacientes
-        </p>
-      </CardHeader>
-      <CardBody className="space-y-5">
+      <CardBody className="space-y-5 p-8">
+        <StepHeader
+          eyebrow="Paso 4"
+          title="Personaliza a tu asistente"
+          subtitle="Decide como se llama, como habla y que considera una emergencia."
+        />
         <Input
           label="Nombre del asistente"
           placeholder="Sofia"
@@ -43,32 +43,36 @@ export const StepPersonalize: React.FC<StepPersonalizeProps> = ({
         />
 
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-2">
+          <label className="block text-sm font-semibold text-gray-700 mb-2.5">
             Tono de conversacion
           </label>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-2 gap-2.5">
             {[
-              { value: 'formal' as const, label: 'De usted', desc: '"Buenos dias, en que le puedo ayudar"' },
-              { value: 'informal' as const, label: 'De tu', desc: '"Hola, en que te puedo ayudar?"' },
-            ].map((option) => (
-              <button
-                key={option.value}
-                type="button"
-                onClick={() => onUpdate({ assistantTone: option.value })}
-                className={`p-4 rounded-lg border-2 text-left transition-colors ${
-                  data.assistantTone === option.value
-                    ? 'border-primary-500 bg-primary-50'
-                    : 'border-gray-200 bg-white hover:border-gray-300'
-                }`}
-              >
-                <p className={`text-sm font-medium ${
-                  data.assistantTone === option.value ? 'text-primary-700' : 'text-gray-900'
-                }`}>
-                  {option.label}
-                </p>
-                <p className="text-xs text-gray-500 mt-1 italic">{option.desc}</p>
-              </button>
-            ))}
+              { value: 'formal' as const, label: 'De usted', desc: 'Formal, profesional', example: '"Buen dia, en que le puedo ayudar?"' },
+              { value: 'informal' as const, label: 'De tu', desc: 'Cercano, casual', example: '"Hola! En que te ayudo?"' },
+            ].map((option) => {
+              const active = data.assistantTone === option.value
+              return (
+                <button
+                  key={option.value}
+                  type="button"
+                  onClick={() => onUpdate({ assistantTone: option.value })}
+                  className={`p-4 rounded-xl border text-left transition-all ${
+                    active
+                      ? 'border-primary-500 bg-primary-50 ring-4 ring-primary-500/10'
+                      : 'border-gray-200 bg-white shadow-xs hover:border-gray-300'
+                  }`}
+                >
+                  <p className="text-[15px] font-semibold text-gray-900">{option.label}</p>
+                  <p className="text-xs text-gray-500 mt-0.5 mb-2.5">{option.desc}</p>
+                  <p className={`text-[12.5px] italic px-2.5 py-2 rounded-lg border border-gray-200 text-gray-700 ${
+                    active ? 'bg-white' : 'bg-gray-50'
+                  }`}>
+                    {option.example}
+                  </p>
+                </button>
+              )
+            })}
           </div>
         </div>
 

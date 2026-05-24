@@ -50,7 +50,7 @@ export default function PatientDetailPage() {
   if (loading) {
     return (
       <div className="text-center py-12">
-        <p className="text-gray-600">Loading...</p>
+        <p className="text-gray-600">Cargando...</p>
       </div>
     )
   }
@@ -58,7 +58,7 @@ export default function PatientDetailPage() {
   if (!patient) {
     return (
       <div className="text-center py-12">
-        <p className="text-gray-600">Patient not found</p>
+        <p className="text-gray-600">Paciente no encontrado</p>
       </div>
     )
   }
@@ -76,7 +76,7 @@ export default function PatientDetailPage() {
         </Button>
         <div>
           <h1 className="text-3xl font-bold text-gray-900">{patient.name}</h1>
-          <p className="text-gray-600 mt-1">Patient Profile</p>
+          <p className="text-gray-600 mt-1">Perfil del paciente</p>
         </div>
       </div>
 
@@ -86,7 +86,7 @@ export default function PatientDetailPage() {
           <CardBody className="space-y-2">
             <div className="flex items-center gap-2 text-gray-600 mb-2">
               <Phone size={16} />
-              <p className="text-xs font-medium uppercase">Phone</p>
+              <p className="text-xs font-medium uppercase">Teléfono</p>
             </div>
             <p className="text-lg font-semibold text-gray-900">
               {patient.whatsapp_number}
@@ -98,7 +98,7 @@ export default function PatientDetailPage() {
           <CardBody className="space-y-2">
             <div className="flex items-center gap-2 text-gray-600 mb-2">
               <Mail size={16} />
-              <p className="text-xs font-medium uppercase">Email</p>
+              <p className="text-xs font-medium uppercase">Correo</p>
             </div>
             <p className="text-lg font-semibold text-gray-900">
               {patient.email || '-'}
@@ -110,7 +110,7 @@ export default function PatientDetailPage() {
           <CardBody className="space-y-2">
             <div className="flex items-center gap-2 text-gray-600 mb-2">
               <Calendar size={16} />
-              <p className="text-xs font-medium uppercase">Total Appointments</p>
+              <p className="text-xs font-medium uppercase">Total de citas</p>
             </div>
             <p className="text-lg font-semibold text-gray-900">
               {patient.total_consultations}
@@ -123,7 +123,7 @@ export default function PatientDetailPage() {
       {patient.notes && (
         <Card>
           <CardHeader>
-            <h3 className="font-semibold text-gray-900">Notes</h3>
+            <h3 className="font-semibold text-gray-900">Notas</h3>
           </CardHeader>
           <CardBody>
             <p className="text-gray-700">{patient.notes}</p>
@@ -135,12 +135,12 @@ export default function PatientDetailPage() {
       <Card>
         <CardHeader>
           <h3 className="font-semibold text-gray-900">
-            Appointment History ({appointments.length})
+            Historial de citas ({appointments.length})
           </h3>
         </CardHeader>
         <CardBody>
           {appointments.length === 0 ? (
-            <p className="text-gray-600 text-center py-8">No appointments recorded</p>
+            <p className="text-gray-600 text-center py-8">Sin citas registradas</p>
           ) : (
             <div className="space-y-3">
               {appointments
@@ -178,7 +178,7 @@ export default function PatientDetailPage() {
       {patient.last_consultation_at && (
         <Card>
           <CardBody className="space-y-1">
-            <p className="text-xs font-medium text-gray-600 uppercase">Last Appointment</p>
+            <p className="text-xs font-medium text-gray-600 uppercase">Última cita</p>
             <p className="text-sm text-gray-900">
               {format(new Date(patient.last_consultation_at), 'PPp', {
                 locale: es,

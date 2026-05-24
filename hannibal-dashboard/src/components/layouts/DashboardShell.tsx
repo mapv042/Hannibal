@@ -6,6 +6,7 @@ import { useRouter, usePathname } from 'next/navigation'
 import { createBrowserSupabaseClient } from '@/lib/supabase'
 import { BotStatusBadge } from '@/components/coexistence/BotStatusBadge'
 import { Button } from '@/components/ui/Button'
+import { Logo } from '@/components/ui/Logo'
 import { useApi } from '@/lib/api'
 import {
   Calendar,
@@ -20,22 +21,22 @@ import type { Office } from '@/lib/supabase'
 
 const navItems = [
   {
-    label: 'Today',
+    label: 'Hoy',
     href: '/dashboard',
     icon: Clock,
   },
   {
-    label: 'Schedule',
+    label: 'Agenda',
     href: '/dashboard/schedule',
     icon: Calendar,
   },
   {
-    label: 'Patients',
+    label: 'Pacientes',
     href: '/dashboard/patients',
     icon: Users,
   },
   {
-    label: 'Settings',
+    label: 'Configuración',
     href: '/dashboard/settings',
     icon: Settings,
   },
@@ -94,7 +95,7 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
       <div className="flex items-center justify-center min-h-screen bg-gray-50">
         <div className="text-center">
           <div className="w-12 h-12 rounded-full border-4 border-primary-200 border-t-primary-600 animate-spin mx-auto mb-4" />
-          <p className="text-gray-600">Loading...</p>
+          <p className="text-gray-600">Cargando...</p>
         </div>
       </div>
     )
@@ -104,20 +105,17 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
     <div className="flex h-screen bg-gray-50">
       {/* Sidebar */}
       <aside
-        className={`fixed inset-y-0 left-0 z-40 bg-white border-r border-gray-200 transition-transform duration-300 w-64 ${
+        className={`fixed inset-y-0 left-0 z-40 flex flex-col bg-white border-r border-gray-200 transition-transform duration-300 w-64 px-3.5 py-5 ${
           sidebarOpen ? 'translate-x-0' : '-translate-x-full'
         } lg:translate-x-0 lg:static`}
       >
         {/* Logo */}
-        <div className="flex items-center gap-3 px-6 py-6 border-b border-gray-200">
-          <div>
-            <h1 className="font-bold text-lg text-gray-900">Hannibal</h1>
-            <p className="text-xs text-gray-500">Asistente WhatsApp</p>
-          </div>
+        <div className="px-2.5 pb-6">
+          <Logo size={26} />
         </div>
 
         {/* Navigation */}
-        <nav className="flex-1 px-4 py-6 space-y-2">
+        <nav className="flex-1 flex flex-col gap-0.5">
           {navItems.map((item) => {
             const Icon = item.icon
             const isActive = pathname === item.href
@@ -126,14 +124,14 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
               <Link
                 key={item.href}
                 href={item.href}
-                className={`flex items-center gap-3 px-4 py-2.5 rounded-lg transition-colors duration-200 ${
+                className={`flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-colors duration-100 ${
                   isActive
-                    ? 'bg-primary-50 text-primary-600 font-medium'
-                    : 'text-gray-700 hover:bg-gray-100'
+                    ? 'bg-primary-50 text-primary-700 font-semibold'
+                    : 'text-gray-700 font-medium hover:bg-gray-100'
                 }`}
                 onClick={() => setSidebarOpen(false)}
               >
-                <Icon size={20} />
+                <Icon size={18} className={isActive ? 'text-primary-700' : 'text-gray-500'} />
                 <span>{item.label}</span>
               </Link>
             )
@@ -142,9 +140,9 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
 
         {/* Bot Status */}
         {office && (
-          <div className="px-4 py-4 border-t border-gray-200">
-            <p className="text-xs font-medium text-gray-600 mb-3 uppercase tracking-wide">
-              Bot Status
+          <div className="rounded-xl bg-primary-50 border border-primary-100 p-3.5 mb-3.5">
+            <p className="text-[11px] font-bold text-gray-600 mb-2 uppercase tracking-wider">
+              Estado del bot
             </p>
             <BotStatusBadge
               officeId={office.id}
@@ -154,18 +152,18 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
         )}
 
         {/* User Menu */}
-        <div className="px-4 py-4 border-t border-gray-200">
-          <div className="flex items-center gap-3 mb-4">
-            <div className="w-10 h-10 rounded-full bg-primary-100 flex items-center justify-center">
-              <span className="font-semibold text-primary-600">
+        <div className="border-t border-gray-200 pt-3.5">
+          <div className="flex items-center gap-2.5 p-2 rounded-lg mb-1">
+            <div className="w-8 h-8 rounded-full bg-primary-100 flex items-center justify-center flex-shrink-0">
+              <span className="text-sm font-semibold text-primary-700">
                 {user?.email?.[0].toUpperCase() || 'U'}
               </span>
             </div>
             <div className="flex-1 min-w-0">
-              <p className="text-sm font-medium text-gray-900 truncate">
+              <p className="text-[13px] font-semibold text-gray-900 truncate">
                 {user?.email || 'User'}
               </p>
-              <p className="text-xs text-gray-500">Doctor</p>
+              <p className="text-[11px] text-gray-500">Doctor</p>
             </div>
           </div>
 
@@ -176,7 +174,7 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
             className="w-full justify-start gap-2"
           >
             <LogOut size={16} />
-            Sign Out
+            Cerrar sesión
           </Button>
         </div>
       </aside>
@@ -201,10 +199,10 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
 
             <div className="text-right">
               <p className="text-sm font-medium text-gray-900">
-                {office?.assistant_name || 'My Office'}
+                {office?.assistant_name || 'Mi consultorio'}
               </p>
               <p className="text-xs text-gray-500">
-                {office?.whatsapp_phone || 'No number'}
+                {office?.whatsapp_phone || 'Sin número'}
               </p>
             </div>
           </div>

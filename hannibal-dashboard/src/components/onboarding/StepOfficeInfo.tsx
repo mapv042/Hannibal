@@ -1,7 +1,9 @@
 import React from 'react'
-import { Card, CardBody, CardHeader } from '@/components/ui/Card'
+import { Card, CardBody } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
+import { StepHeader } from '@/components/onboarding/StepHeader'
+import { Lock } from 'lucide-react'
 import { MEXICAN_STATES } from '@/lib/constants/mexican-states'
 
 export interface OfficeInfoData {
@@ -32,13 +34,12 @@ export const StepOfficeInfo: React.FC<StepOfficeInfoProps> = ({
 
   return (
     <Card>
-      <CardHeader>
-        <h2 className="text-xl font-bold text-gray-900">Tu consultorio</h2>
-        <p className="text-sm text-gray-600 mt-1">
-          Informacion basica de tu practica
-        </p>
-      </CardHeader>
-      <CardBody className="space-y-5">
+      <CardBody className="space-y-5 p-8">
+        <StepHeader
+          eyebrow="Paso 1"
+          title="Cuentanos sobre tu consultorio"
+          subtitle="Esta informacion ayuda al asistente a presentar tu practica correctamente a los pacientes."
+        />
         <Input
           label="Nombre del consultorio"
           placeholder="Consultorio Oftalmologico Garcia"
@@ -93,6 +94,13 @@ export const StepOfficeInfo: React.FC<StepOfficeInfoProps> = ({
           value={data.address}
           onChange={(e) => onUpdate({ address: e.target.value })}
         />
+
+        <div className="flex items-start gap-2.5 p-3.5 bg-primary-50 border border-primary-100 rounded-xl">
+          <Lock size={16} className="text-primary-700 flex-shrink-0 mt-0.5" />
+          <span className="text-[13px] text-gray-700 leading-relaxed">
+            Todos tus datos se almacenan cifrados en servidores en Mexico. Nunca compartimos informacion con terceros.
+          </span>
+        </div>
 
         <div className="flex gap-3 pt-2">
           <Button variant="secondary" onClick={onBack}>

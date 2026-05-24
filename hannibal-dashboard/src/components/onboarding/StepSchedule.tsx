@@ -1,6 +1,7 @@
 import React from 'react'
-import { Card, CardBody, CardHeader } from '@/components/ui/Card'
+import { Card, CardBody } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
+import { StepHeader } from '@/components/onboarding/StepHeader'
 import { Plus, X } from 'lucide-react'
 
 export interface TimeBlock {
@@ -90,21 +91,20 @@ export const StepSchedule: React.FC<StepScheduleProps> = ({
 
   return (
     <Card>
-      <CardHeader>
-        <h2 className="text-xl font-bold text-gray-900">Tus horarios</h2>
-        <p className="text-sm text-gray-600 mt-1">
-          El asistente solo agendara en estos horarios
-        </p>
-      </CardHeader>
-      <CardBody className="space-y-4">
+      <CardBody className="space-y-4 p-8">
+        <StepHeader
+          eyebrow="Paso 2"
+          title="Cuando estas disponible?"
+          subtitle="Define los horarios en los que tomas pacientes. El asistente solo ofrecera citas dentro de estos bloques."
+        />
         {/* Days */}
-        <div className="space-y-3">
+        <div className="space-y-2.5">
           {data.days.map((day) => (
             <div
               key={day.dayOfWeek}
-              className={`p-4 rounded-lg border-2 transition-colors ${
+              className={`p-4 rounded-xl border transition-colors ${
                 day.enabled
-                  ? 'border-primary-300 bg-primary-50'
+                  ? 'border-gray-200 bg-white'
                   : 'border-gray-200 bg-gray-50'
               }`}
             >
@@ -172,7 +172,8 @@ export const StepSchedule: React.FC<StepScheduleProps> = ({
         </div>
 
         {/* Duration & Buffer */}
-        <div className="space-y-3 pt-2">
+        <div className="space-y-3 p-5 bg-white border border-gray-200 rounded-2xl">
+          <p className="text-sm font-semibold text-gray-900">Duracion de citas</p>
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1.5">
