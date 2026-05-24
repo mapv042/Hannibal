@@ -3,16 +3,19 @@ import React from 'react'
 interface LogoProps {
   size?: number
   withText?: boolean
+  light?: boolean
   className?: string
 }
 
 /**
- * Hannibal brand mark — rounded teal→green gradient tile with a stylized
+ * Hannibal brand mark — rounded navy gradient tile with a stylized
  * "h" / chat-tail glyph. Matches the Claude Design reference.
+ * Pass `light` to render the wordmark in white (e.g. on dark backgrounds).
  */
 export const Logo: React.FC<LogoProps> = ({
   size = 28,
   withText = true,
+  light = false,
   className = '',
 }) => {
   return (
@@ -43,7 +46,7 @@ export const Logo: React.FC<LogoProps> = ({
       </svg>
       {withText && (
         <span
-          className="font-bold text-gray-900"
+          className={`font-bold ${light ? 'text-white' : 'text-gray-900'}`}
           style={{ fontSize: size * 0.65, letterSpacing: '-0.02em' }}
         >
           Hannibal

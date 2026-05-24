@@ -5,8 +5,8 @@ import type { NextRequest } from 'next/server'
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl
 
-  // Skip middleware for auth pages and OAuth callback
-  if (pathname.startsWith('/login') || pathname.startsWith('/register') || pathname.startsWith('/auth/callback') || pathname === '/onboarding/preview') {
+  // Skip middleware for the public landing, auth pages and OAuth callback
+  if (pathname === '/' || pathname.startsWith('/login') || pathname.startsWith('/register') || pathname.startsWith('/auth/callback') || pathname === '/onboarding/preview') {
     return NextResponse.next()
   }
 
@@ -46,7 +46,7 @@ export async function middleware(request: NextRequest) {
   }
 
   if (user && pathname === '/login') {
-    return NextResponse.redirect(new URL('/', request.url))
+    return NextResponse.redirect(new URL('/dashboard', request.url))
   }
 
   return response
