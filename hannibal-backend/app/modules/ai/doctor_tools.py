@@ -588,10 +588,12 @@ async def _handle_send_message(args: dict, ctx: DoctorToolContext) -> dict:
     patients = result.scalars().all()
 
     if not patients:
+        logger.warning("doctor_send_message_no_patient", office_id=str(ctx.office.id), query=patient_name)
         return {"error": f"No se encontró paciente con nombre '{patient_name}'."}
 
     if len(patients) > 1:
         names = [p.name for p in patients]
+        logger.warning("doctor_send_message_multiple_patients", office_id=str(ctx.office.id), query=patient_name, matches=names)
         return {
             "error": "Se encontraron múltiples pacientes. Sé más específico.",
             "matches": names,
@@ -599,6 +601,7 @@ async def _handle_send_message(args: dict, ctx: DoctorToolContext) -> dict:
 
     patient = patients[0]
     if not patient.whatsapp_id:
+        logger.warning("doctor_send_message_no_whatsapp", office_id=str(ctx.office.id), patient_id=str(patient.id), patient_name=patient.name)
         return {"error": f"El paciente {patient.name} no tiene WhatsApp registrado."}
 
     # Within the 24h window we may send the doctor's text as-is (free); outside
@@ -628,6 +631,14 @@ async def _handle_send_message(args: dict, ctx: DoctorToolContext) -> dict:
             )
             via = "template"
     except Exception as e:
+        logger.error(
+            "doctor_send_message_send_failed",
+            office_id=str(ctx.office.id),
+            patient_id=str(patient.id),
+            to=patient.whatsapp_id,
+            error=str(e),
+            exc_info=True,
+        )
         return {"error": f"No se pudo enviar el mensaje: {str(e)}"}
 
     # Save outgoing message with delivery tracking

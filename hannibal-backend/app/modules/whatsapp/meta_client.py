@@ -143,6 +143,12 @@ class MetaCloudClient:
         """
         url = f"{BASE_URL}/{phone_number_id}/messages"
 
+        # Normalize Mexican mobile numbers: WhatsApp sends 521XXXXXXXXXX
+        # but Meta API expects 52XXXXXXXXXX (without the extra 1)
+        normalized_to = to
+        if to.startswith("521") and len(to) == 13:
+            normalized_to = "52" + to[3:]
+
         template_object = {
             "name": template_name,
             "language": {"code": language_code},
@@ -158,7 +164,7 @@ class MetaCloudClient:
 
         payload = {
             "messaging_product": "whatsapp",
-            "to": to,
+            "to": normalized_to,
             "type": "template",
             "template": template_object,
         }
@@ -175,6 +181,15 @@ class MetaCloudClient:
                     json=payload,
                     headers=headers,
                 )
+                if response.status_code >= 400:
+                    logger.error(
+                        "send_template_message_meta_error",
+                        status_code=response.status_code,
+                        response_body=response.text,
+                        to=to,
+                        template_name=template_name,
+                        phone_number_id=phone_number_id,
+                    )
                 response.raise_for_status()
         except httpx.HTTPError as e:
             logger.error(
