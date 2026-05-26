@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sys
 import traceback
-from uuid import UUID
+from uuid import UUID, uuid4
 from datetime import datetime, timedelta, date
 import asyncio
 
@@ -13,10 +13,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from zoneinfo import ZoneInfo
 
 from celery import shared_task
-from app.core.constants import DAYS_ES
 
 from app.db.base import get_async_session_maker
-from app.db.models import Appointment, Office, Patient
+from app.db.models import Appointment, Office, Patient, Conversation, Message
 from app.modules.reminders.templates import (
     reminder_morning,
     reminder_4h,
@@ -25,18 +24,23 @@ from app.modules.reminders.templates import (
     post_appointment_followup,
     confirmation_request,
 )
+from app.modules.reminders.wa_templates import (
+    TEMPLATE_LANGUAGE,
+    TEMPLATE_REMINDER,
+    TEMPLATE_CONFIRMATION_DAY_BEFORE,
+    TEMPLATE_FOLLOW_UP,
+    format_appointment_date,
+    format_explicit_date,
+    build_reminder_params,
+    build_confirmation_params,
+    build_follow_up_params,
+)
+from app.modules.whatsapp.window import service_window_open
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
 MX_TZ = ZoneInfo("America/Mexico_City")
-
-TEMPLATE_MAP = {
-    "morning": reminder_morning,
-    "4h": reminder_4h,
-    "1h": reminder_1h,
-    "15m": reminder_15m,
-}
 
 FLAG_MAP = {
     "morning": "reminder_morning_sent",
@@ -45,7 +49,13 @@ FLAG_MAP = {
     "15m": "reminder_15m_sent",
 }
 
-DAY_NAMES = DAYS_ES
+# Free-text builders used while the 24h window is open (one per reminder type).
+FREETEXT_REMINDER_MAP = {
+    "morning": reminder_morning,
+    "4h": reminder_4h,
+    "1h": reminder_1h,
+    "15m": reminder_15m,
+}
 
 
 def _log(msg: str):
@@ -58,6 +68,118 @@ def _log_exception(task_name: str, e: Exception):
     _log(f"{task_name} FAILED: {e}")
     traceback.print_exc(file=sys.stderr)
     sys.stderr.flush()
+
+
+async def _get_or_create_conversation(
+    db: AsyncSession, office_id, whatsapp_id: str, patient_id
+) -> Conversation:
+    """Find the patient's open conversation for this office, creating one if needed."""
+    result = await db.execute(
+        select(Conversation).where(
+            and_(
+                Conversation.office_id == office_id,
+                Conversation.whatsapp_id == whatsapp_id,
+                Conversation.status != "archived",
+            )
+        )
+    )
+    conversation = result.scalar_one_or_none()
+    if conversation is None:
+        conversation = Conversation(
+            id=uuid4(),
+            office_id=office_id,
+            patient_id=patient_id,
+            whatsapp_id=whatsapp_id,
+            status="active",
+        )
+        db.add(conversation)
+        await db.flush()
+    return conversation
+
+
+async def _record_outgoing_message(
+    db: AsyncSession,
+    office: Office,
+    patient: Patient,
+    *,
+    content: str,
+    via: str,
+    template_name: str,
+    whatsapp_message_id: str | None,
+) -> None:
+    """Persist a bot-sent message so it shows up in the dashboard history.
+
+    Best-effort: a failure here must not roll back the send/idempotency flag,
+    so errors are logged and swallowed.
+    """
+    try:
+        conversation = await _get_or_create_conversation(
+            db, office.id, patient.whatsapp_id, patient.id
+        )
+        message = Message(
+            id=uuid4(),
+            conversation_id=conversation.id,
+            content=content,
+            type="text",
+            direction="outgoing",
+            whatsapp_message_id=whatsapp_message_id,
+            delivery_status="sent",
+            extra_metadata={
+                "via": via,
+                "template_name": template_name if via == "template" else None,
+                "source": "reminder_task",
+            },
+        )
+        db.add(message)
+        conversation.last_message_at = datetime.now(MX_TZ)
+    except Exception as e:
+        _log_exception("record_outgoing_message", e)
+
+
+async def _send_free_or_template(
+    meta_client,
+    db: AsyncSession,
+    office: Office,
+    patient: Patient,
+    *,
+    free_text: str,
+    template_name: str,
+    params: list,
+) -> str:
+    """Send free-form text if the 24h window is open, else an approved template.
+
+    Records the sent message in the conversation history and returns "text" or
+    "template" indicating which path was taken.
+    """
+    if await service_window_open(db, office.id, patient.whatsapp_id):
+        message_id = await meta_client.send_text_message(
+            phone_number_id=office.whatsapp_phone_id,
+            token=office.whatsapp_token,
+            to=patient.whatsapp_id,
+            text=free_text,
+        )
+        via = "text"
+    else:
+        message_id = await meta_client.send_template_message(
+            phone_number_id=office.whatsapp_phone_id,
+            token=office.whatsapp_token,
+            to=patient.whatsapp_id,
+            template_name=template_name,
+            params=params,
+            language_code=TEMPLATE_LANGUAGE,
+        )
+        via = "template"
+
+    await _record_outgoing_message(
+        db,
+        office,
+        patient,
+        content=free_text,
+        via=via,
+        template_name=template_name,
+        whatsapp_message_id=message_id,
+    )
+    return via
 
 
 async def _send_reminder(appointment_id: str, reminder_type: str) -> None:
@@ -73,7 +195,6 @@ async def _send_reminder(appointment_id: str, reminder_type: str) -> None:
     from app.modules.whatsapp.meta_client import MetaCloudClient
 
     flag_attr = FLAG_MAP[reminder_type]
-    template_fn = TEMPLATE_MAP[reminder_type]
 
     async with get_async_session_maker()() as db:
         # Lock the row to prevent race conditions with duplicate tasks
@@ -112,36 +233,45 @@ async def _send_reminder(appointment_id: str, reminder_type: str) -> None:
             _log(f"send_reminder_{reminder_type}: patient missing whatsapp_id patient_id={patient.id}")
             return
 
-        # Build appointment data
+        # Build both variants: free text (in-window) and template (out-of-window)
         start_local = appointment.start_datetime.astimezone(MX_TZ)
-        formatted_date = (
-            f"{DAY_NAMES[start_local.weekday()]} "
-            f"{start_local.strftime('%d/%m/%Y')}"
-        )
+        now_local = datetime.now(MX_TZ)
+        appointment_date = format_appointment_date(start_local, now_local)
+        appointment_time = start_local.strftime("%H:%M")
 
         appointment_data = {
             "patient_name": patient.name or "paciente",
-            "time": start_local.strftime("%H:%M"),
-            "date": formatted_date,
+            "time": appointment_time,
+            "date": appointment_date,
             "office_name": office.name,
             "assistant_name": office.assistant_name,
         }
-        message = template_fn(appointment_data, tone=office.assistant_tone)
+        free_text = FREETEXT_REMINDER_MAP[reminder_type](
+            appointment_data, tone=office.assistant_tone
+        )
+        params = build_reminder_params(
+            patient_name=patient.name or "paciente",
+            appointment_date=appointment_date,
+            appointment_time=appointment_time,
+            location=office.name,
+        )
 
-        # Send via WhatsApp
         meta_client = MetaCloudClient()
-        await meta_client.send_text_message(
-            phone_number_id=office.whatsapp_phone_id,
-            token=office.whatsapp_token,
-            to=patient.whatsapp_id,
-            text=message,
+        via = await _send_free_or_template(
+            meta_client,
+            db,
+            office,
+            patient,
+            free_text=free_text,
+            template_name=TEMPLATE_REMINDER,
+            params=params,
         )
 
         # Mark as sent
         setattr(appointment, flag_attr, True)
         await db.commit()
 
-        _log(f"send_reminder_{reminder_type}: sent to patient_id={patient.id} appointment_id={appointment_id}")
+        _log(f"send_reminder_{reminder_type}: sent via {via} to patient_id={patient.id} appointment_id={appointment_id}")
 
 
 # --- Celery tasks (thin wrappers) ---
@@ -236,18 +366,25 @@ async def _post_follow_up_async(appointment_id: str):
             "professional_name": "el profesional",
             "assistant_name": office.assistant_name,
         }
-        message = post_appointment_followup(
+        free_text = post_appointment_followup(
             appointment_data,
             instructions=appointment.instructions,
             tone=office.assistant_tone,
         )
+        params = build_follow_up_params(
+            patient_name=patient.name or "paciente",
+            location=office.name,
+        )
 
         meta_client = MetaCloudClient()
-        await meta_client.send_text_message(
-            phone_number_id=office.whatsapp_phone_id,
-            token=office.whatsapp_token,
-            to=patient.whatsapp_id,
-            text=message,
+        await _send_free_or_template(
+            meta_client,
+            db,
+            office,
+            patient,
+            free_text=free_text,
+            template_name=TEMPLATE_FOLLOW_UP,
+            params=params,
         )
 
         appointment.follow_up_sent = True
@@ -331,30 +468,40 @@ async def _send_confirmation_requests_async():
                         _log(f"patient missing whatsapp_id patient_id={patient.id}")
                         continue
 
-                    # Format date for display
-                    formatted_date = (
-                        f"{DAY_NAMES[tomorrow.weekday()]} "
-                        f"{tomorrow.strftime('%d/%m/%Y')}"
-                    )
+                    start_local = appointment.start_datetime.astimezone(MX_TZ)
+                    appointment_date = format_explicit_date(start_local)
+                    appointment_time = start_local.strftime("%H:%M")
 
                     appointment_data = {
                         "patient_name": patient.name or "paciente",
-                        "time": appointment.start_datetime.astimezone(MX_TZ).strftime("%H:%M"),
-                        "date": formatted_date,
+                        "time": appointment_time,
+                        "date": appointment_date,
                         "office_name": office.name,
                         "assistant_name": office.assistant_name,
                     }
-                    message = confirmation_request(
+                    free_text = confirmation_request(
                         appointment_data, tone=office.assistant_tone
                     )
-
-                    # Send WhatsApp message
-                    await meta_client.send_text_message(
-                        phone_number_id=office.whatsapp_phone_id,
-                        token=office.whatsapp_token,
-                        to=patient.whatsapp_id,
-                        text=message,
+                    params = build_confirmation_params(
+                        patient_name=patient.name or "paciente",
+                        location=office.name,
+                        appointment_date=appointment_date,
+                        appointment_time=appointment_time,
                     )
+
+                    # Free text within the 24h window, approved template otherwise
+                    await _send_free_or_template(
+                        meta_client,
+                        db,
+                        office,
+                        patient,
+                        free_text=free_text,
+                        template_name=TEMPLATE_CONFIRMATION_DAY_BEFORE,
+                        params=params,
+                    )
+
+                    # Text fed to the AI history so it has context on the reply
+                    message = free_text
 
                     # Set up session so the patient's reply routes correctly
                     session = await session_store.get_session(
@@ -422,70 +569,6 @@ async def _send_confirmation_requests_async():
             await session_store.close()
 
         _log(f"all confirmation requests completed, total={len(appointments)}")
-
-
-@shared_task(bind=True)
-def notify_waitlist(self, office_id: str, start_time: str):
-    """Notify patients in waiting list when a slot opens."""
-    _log(f"notify_waitlist: START office_id={office_id}")
-    try:
-        asyncio.run(_notify_waitlist_async(office_id, start_time))
-        _log(f"notify_waitlist: DONE office_id={office_id}")
-    except Exception as e:
-        _log_exception("notify_waitlist", e)
-        raise
-
-
-async def _notify_waitlist_async(office_id: str, start_time: str):
-    """Async implementation of waiting list notification."""
-    from app.modules.whatsapp.meta_client import MetaCloudClient
-
-    async with get_async_session_maker()() as db:
-        from app.db.models import Waitlist
-
-        result = await db.execute(
-            select(Waitlist)
-            .where(
-                and_(
-                    Waitlist.office_id == UUID(office_id),
-                    Waitlist.status == "active",
-                )
-            )
-            .order_by(Waitlist.urgent.desc(), Waitlist.created_at)
-        )
-        waitlist = result.scalars().all()
-
-        if not waitlist:
-            _log(f"notify_waitlist: no patients in waitlist for office_id={office_id}")
-            return
-
-        patient_entry = waitlist[0]
-        patient = await db.get(Patient, patient_entry.patient_id)
-        office = await db.get(Office, UUID(office_id))
-
-        if not patient or not office:
-            _log(f"notify_waitlist: missing patient/office for office_id={office_id}")
-            return
-
-        if not office.whatsapp_phone_id or not office.whatsapp_token or not patient.whatsapp_id:
-            _log(f"notify_waitlist: missing whatsapp config office_id={office_id}")
-            return
-
-        message = (
-            f"¡{patient.name or 'Hola'}! 🎉\n\n"
-            f"Se ha liberado un horario disponible en {office.name} para {start_time}.\n\n"
-            f"¿Te interesa agendar? Responde con un 👍"
-        )
-
-        meta_client = MetaCloudClient()
-        await meta_client.send_text_message(
-            phone_number_id=office.whatsapp_phone_id,
-            token=office.whatsapp_token,
-            to=patient.whatsapp_id,
-            text=message,
-        )
-
-        _log(f"notify_waitlist: notified patient_id={patient.id}")
 
 
 @shared_task(bind=True)

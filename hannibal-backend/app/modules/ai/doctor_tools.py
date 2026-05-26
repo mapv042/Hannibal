@@ -17,6 +17,12 @@ from app.modules.google_calendar.service import (
 from app.modules.google_calendar.sync import cancel_appointment_in_calendar, sync_time_block
 from app.modules.whatsapp.coexistence import pause_bot, resume_bot, check_pause
 from app.modules.whatsapp.meta_client import MetaCloudClient
+from app.modules.whatsapp.window import service_window_open
+from app.modules.reminders.wa_templates import (
+    TEMPLATE_LANGUAGE,
+    TEMPLATE_OFFICE_MESSAGE,
+    build_office_message_params,
+)
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -595,13 +601,32 @@ async def _handle_send_message(args: dict, ctx: DoctorToolContext) -> dict:
     if not patient.whatsapp_id:
         return {"error": f"El paciente {patient.name} no tiene WhatsApp registrado."}
 
+    # Within the 24h window we may send the doctor's text as-is (free); outside
+    # it, Meta rejects free text, so wrap it in the approved office_message
+    # template (which is billed). Either way the patient gets the message.
     try:
-        wa_message_id = await ctx.meta_client.send_text_message(
-            phone_number_id=ctx.office.whatsapp_phone_id,
-            token=ctx.office.whatsapp_token,
-            to=patient.whatsapp_id,
-            text=message,
-        )
+        if await service_window_open(ctx.db, ctx.office.id, patient.whatsapp_id):
+            wa_message_id = await ctx.meta_client.send_text_message(
+                phone_number_id=ctx.office.whatsapp_phone_id,
+                token=ctx.office.whatsapp_token,
+                to=patient.whatsapp_id,
+                text=message,
+            )
+            via = "text"
+        else:
+            wa_message_id = await ctx.meta_client.send_template_message(
+                phone_number_id=ctx.office.whatsapp_phone_id,
+                token=ctx.office.whatsapp_token,
+                to=patient.whatsapp_id,
+                template_name=TEMPLATE_OFFICE_MESSAGE,
+                params=build_office_message_params(
+                    patient_name=patient.name or "paciente",
+                    location=ctx.office.name,
+                    text=message,
+                ),
+                language_code=TEMPLATE_LANGUAGE,
+            )
+            via = "template"
     except Exception as e:
         return {"error": f"No se pudo enviar el mensaje: {str(e)}"}
 
@@ -622,6 +647,7 @@ async def _handle_send_message(args: dict, ctx: DoctorToolContext) -> dict:
             direction="outgoing",
             whatsapp_message_id=wa_message_id,
             delivery_status="sent",
+            extra_metadata={"via": via, "source": "doctor_send_message"},
         )
         ctx.db.add(msg)
         await ctx.db.flush()

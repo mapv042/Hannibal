@@ -98,16 +98,6 @@ class BlockOrigin(str, Enum):
     GOOGLE_CALENDAR = "google_calendar"  # Blocked via calendar
 
 
-# Waiting List Status
-class WaitlistStatus(str, Enum):
-    """Status of patient in waiting list."""
-
-    ACTIVE = "active"  # Active in waiting list
-    CONTACTED = "contacted"  # Contacted
-    SCHEDULED = "scheduled"  # Scheduled
-    CANCELLED = "cancelled"  # Cancelled
-
-
 # Time Preference
 class TimePreference(str, Enum):
     """Patient's preferred time of day."""

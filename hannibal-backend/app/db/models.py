@@ -170,12 +170,6 @@ class Office(Base):
         cascade="all, delete-orphan",
         foreign_keys="Conversation.office_id",
     )
-    waitlist: Mapped[List[Waitlist]] = relationship(
-        "Waitlist",
-        back_populates="office",
-        cascade="all, delete-orphan",
-        foreign_keys="Waitlist.office_id",
-    )
     google_calendar_events: Mapped[List[GoogleCalendarEvent]] = relationship(
         "GoogleCalendarEvent",
         back_populates="office",
@@ -353,12 +347,6 @@ class Patient(Base):
         back_populates="patient",
         cascade="all, delete-orphan",
         foreign_keys="Conversation.patient_id",
-    )
-    waitlist: Mapped[List[Waitlist]] = relationship(
-        "Waitlist",
-        back_populates="patient",
-        cascade="all, delete-orphan",
-        foreign_keys="Waitlist.patient_id",
     )
     office: Mapped[Office] = relationship(
         "Office",
@@ -610,67 +598,6 @@ class Message(Base):
         return f"<Message(id={self.id}, type={self.type}, direction={self.direction})>"
 
 
-class Waitlist(Base):
-    """
-    Waiting list entry for patients seeking appointments.
-
-    Tracks patient preferences for scheduling and urgency level.
-    """
-
-    __tablename__ = "waitlist"
-
-    # Primary Key
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
-
-    # Foreign Keys
-    office_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("offices.id", ondelete="CASCADE"),
-        nullable=False,
-    )
-    patient_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("patients.id", ondelete="CASCADE"),
-        nullable=False,
-    )
-
-    # Preferences
-    preferred_days: Mapped[Optional[list]] = mapped_column(
-        ARRAY(Integer), nullable=True
-    )  # Array of weekday numbers
-    preferred_time: Mapped[str] = mapped_column(
-        String(50), default="any", nullable=False
-    )
-
-    # Status
-    is_urgent: Mapped[bool] = mapped_column(Boolean, default=False)
-    status: Mapped[str] = mapped_column(
-        String(50), default="active", nullable=False
-    )  # active|contacted|scheduled|cancelled
-
-    # Timestamps
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=func.now(), nullable=False
-    )
-
-    # Relationships
-    office: Mapped[Office] = relationship(
-        "Office",
-        back_populates="waitlist",
-        foreign_keys=[office_id],
-    )
-    patient: Mapped[Patient] = relationship(
-        "Patient",
-        back_populates="waitlist",
-        foreign_keys=[patient_id],
-    )
-
-    def __repr__(self) -> str:
-        return f"<Waitlist(id={self.id}, patient_id={self.patient_id})>"
-
-
 class GoogleCalendarEvent(Base):
     """
     Synced Google Calendar event for appointment tracking.
@@ -737,6 +664,5 @@ __all__ = [
     "Appointment",
     "Conversation",
     "Message",
-    "Waitlist",
     "GoogleCalendarEvent",
 ]

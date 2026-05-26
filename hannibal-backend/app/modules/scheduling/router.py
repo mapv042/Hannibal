@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.dependencies import get_db, get_current_user, get_redis
 from app.core.exceptions import NotFoundError
-from app.db.models import Office, Waitlist
+from app.db.models import Office
 from app.modules.scheduling.schemas import (
     AvailabilityRequest,
     AvailabilityResponse,
@@ -325,32 +325,6 @@ async def cancel_appointment_endpoint(
         db=db,
         redis_client=redis_client,
     )
-
-
-@router.get("/waitlist")
-async def get_waitlist(
-    db: AsyncSession = Depends(get_db),
-    office: Office = Depends(get_office_from_user),
-):
-    """
-    Get waiting list entries.
-
-    Returns:
-        List of waiting list entries
-    """
-    logger.info(
-        "get_waitlist",
-        office_id=str(office.id),
-    )
-
-    result = await db.execute(
-        select(Waitlist).where(
-            Waitlist.office_id == office.id,
-        )
-    )
-    entries = result.scalars().all()
-
-    return {"entries": entries}
 
 
 # ── Availability Schedule CRUD ─────────────────────────────────────────────
