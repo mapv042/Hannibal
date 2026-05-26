@@ -261,3 +261,36 @@ class SessionStore:
         if self.redis_client:
             await self.redis_client.close()
             self.redis_client = None
+
+
+async def append_outgoing_message(
+    redis_client: redis.Redis,
+    office_id,
+    whatsapp_id: str,
+    content: str,
+    *,
+    conversation_id,
+    patient_id=None,
+) -> None:
+    """Append an outgoing (assistant) turn to the patient's session.
+
+    Used to mirror a message the doctor sent to the patient into the
+    patient-facing conversation context, so the bot has context if the patient
+    replies. Creates the session if none exists yet.
+    """
+    store = SessionStore(redis_client=redis_client)
+    office_id_str = str(office_id)
+    session = await store.get_session(whatsapp_id, office_id_str)
+    if session is None:
+        session = SessionContext(
+            conversation_id=conversation_id,
+            office_id=office_id,
+            whatsapp_id=whatsapp_id,
+            patient_id=patient_id,
+            status="active",
+            claude_history=[],
+            collected_data={},
+        )
+    session.claude_history.append({"role": "assistant", "content": content})
+    session.last_message_at = datetime.utcnow().isoformat()
+    await store.save_session(whatsapp_id, office_id_str, session)

@@ -29,7 +29,7 @@ logger = get_logger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Tool definitions (Anthropic format)
+# Tool definitions (Anthropic format — OpenAIService converts automatically)
 # ---------------------------------------------------------------------------
 
 DOCTOR_TOOL_DEFINITIONS = [
@@ -56,16 +56,13 @@ DOCTOR_TOOL_DEFINITIONS = [
     },
     {
         "name": "cancel_appointment",
-        "description": (
-            "Cancela una cita. Puede identificarse por ID o por nombre del paciente "
-            "y fecha/hora si hay ambigüedad."
-        ),
+        "description": "Cancela una cita.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "appointment_id": {
                     "type": "string",
-                    "description": "ID de la cita a cancelar.",
+                    "description": "ID de la cita a cancelar (obtenido de get_appointments_by_date).",
                 },
                 "reason": {
                     "type": "string",
@@ -147,7 +144,11 @@ DOCTOR_TOOL_DEFINITIONS = [
                 },
                 "message": {
                     "type": "string",
-                    "description": "Texto del mensaje a enviar.",
+                    "description": (
+                        "Solo el contenido central del mensaje, SIN saludo, SIN el nombre "
+                        "del paciente, SIN el nombre del consultorio y SIN despedida — "
+                        "el sistema agrega el saludo y el cierre automáticamente."
+                    ),
                 },
             },
             "required": ["patient_name", "message"],
@@ -163,7 +164,7 @@ DOCTOR_TOOL_DEFINITIONS = [
             "properties": {
                 "appointment_id": {
                     "type": "string",
-                    "description": "ID de la cita.",
+                    "description": "ID de la cita (obtenido de get_appointments_by_date).",
                 },
                 "status": {
                     "type": "string",
@@ -182,7 +183,7 @@ DOCTOR_TOOL_DEFINITIONS = [
             "properties": {
                 "appointment_id": {
                     "type": "string",
-                    "description": "ID de la cita.",
+                    "description": "ID de la cita (obtenido de get_appointments_by_date).",
                 },
                 "note": {
                     "type": "string",
@@ -267,7 +268,7 @@ DOCTOR_TOOL_DEFINITIONS = [
             "properties": {
                 "appointment_id": {
                     "type": "string",
-                    "description": "ID de la cita original a reagendar.",
+                    "description": "ID de la cita original a reagendar (obtenido de get_appointments_by_date).",
                 },
                 "new_date": {
                     "type": "string",
@@ -571,6 +572,40 @@ async def _handle_block_time(args: dict, ctx: DoctorToolContext) -> dict:
     }
 
 
+async def _get_or_create_patient_conversation(
+    db: AsyncSession, office_id, whatsapp_id: str
+) -> Conversation:
+    """Return the patient's open conversation, creating one if none exists.
+
+    Uses limit(1) so multiple non-archived conversations never raise; the most
+    recent one wins.
+    """
+    stmt = (
+        select(Conversation)
+        .where(
+            (Conversation.office_id == office_id)
+            & (Conversation.whatsapp_id == whatsapp_id)
+            & (Conversation.status != "archived")
+        )
+        .order_by(Conversation.created_at.desc())
+        .limit(1)
+    )
+    result = await db.execute(stmt)
+    conversation = result.scalar_one_or_none()
+    if conversation:
+        return conversation
+
+    conversation = Conversation(
+        id=uuid.uuid4(),
+        office_id=office_id,
+        whatsapp_id=whatsapp_id,
+        status="active",
+    )
+    db.add(conversation)
+    await db.flush()
+    return conversation
+
+
 @_handler("send_message_to_patient")
 async def _handle_send_message(args: dict, ctx: DoctorToolContext) -> dict:
     patient_name = args.get("patient_name", "").strip()
@@ -641,27 +676,22 @@ async def _handle_send_message(args: dict, ctx: DoctorToolContext) -> dict:
         )
         return {"error": f"No se pudo enviar el mensaje: {str(e)}"}
 
-    # Save outgoing message with delivery tracking
-    conv_stmt = select(Conversation).where(
-        (Conversation.office_id == ctx.office.id)
-        & (Conversation.whatsapp_id == patient.whatsapp_id)
-        & (Conversation.status != "archived")
+    # Persist the outgoing message with delivery tracking
+    conversation = await _get_or_create_patient_conversation(
+        ctx.db, ctx.office.id, patient.whatsapp_id
     )
-    conv_result = await ctx.db.execute(conv_stmt)
-    conversation = conv_result.scalar_one_or_none()
-    if conversation:
-        msg = Message(
-            id=uuid.uuid4(),
-            conversation_id=conversation.id,
-            content=message,
-            type="text",
-            direction="outgoing",
-            whatsapp_message_id=wa_message_id,
-            delivery_status="sent",
-            extra_metadata={"via": via, "source": "doctor_send_message"},
-        )
-        ctx.db.add(msg)
-        await ctx.db.flush()
+    msg = Message(
+        id=uuid.uuid4(),
+        conversation_id=conversation.id,
+        content=message,
+        type="text",
+        direction="outgoing",
+        whatsapp_message_id=wa_message_id,
+        delivery_status="sent",
+        extra_metadata={"via": via, "source": "doctor_send_message"},
+    )
+    ctx.db.add(msg)
+    await ctx.db.flush()
 
     logger.info("doctor_sent_message", patient_id=str(patient.id), patient_name=patient.name, wa_message_id=wa_message_id)
 

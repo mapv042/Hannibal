@@ -222,6 +222,7 @@ async def _process_webhook_async(
                         status_update,
                         office,
                         db,
+                        redis_client,
                     )
 
     except Exception as e:
@@ -322,6 +323,7 @@ async def _process_status(
     status_update: Dict[str, Any],
     office,
     db: AsyncSession,
+    redis_client: redis.Redis,
 ) -> None:
     """Process a message status update (sent, delivered, read, failed)."""
     from sqlalchemy import select
@@ -358,12 +360,79 @@ async def _process_status(
                         status=status,
                     )
 
+                # Once a doctor-sent message actually reaches the patient, mirror
+                # it into the patient's session so the bot has context if they
+                # reply. Only on real delivery, and only once (idempotent flag).
+                meta = msg.extra_metadata or {}
+                if (
+                    status in ("delivered", "read")
+                    and meta.get("source") == "doctor_send_message"
+                    and not meta.get("session_synced")
+                ):
+                    await _mirror_doctor_message_to_session(
+                        msg, office, db, redis_client
+                    )
+
     except Exception as e:
         logger.error(
             "process_status_error",
             message_id=status_update.get("id"),
             error=str(e),
             exc_info=True,
+        )
+
+
+async def _mirror_doctor_message_to_session(
+    msg,
+    office,
+    db: AsyncSession,
+    redis_client: redis.Redis,
+) -> None:
+    """Append a delivered doctor→patient message into the patient's session.
+
+    Best-effort: marks the message as synced so it is only mirrored once, even
+    if both `delivered` and `read` webhooks arrive.
+    """
+    from sqlalchemy import select
+    from app.db.models import Conversation, Patient
+    from app.modules.conversation.session_store import append_outgoing_message
+
+    try:
+        conv = await db.get(Conversation, msg.conversation_id)
+        if not conv:
+            return
+
+        presult = await db.execute(
+            select(Patient).where(
+                (Patient.office_id == office.id)
+                & (Patient.whatsapp_id == conv.whatsapp_id)
+            )
+        )
+        patient = presult.scalar_one_or_none()
+
+        await append_outgoing_message(
+            redis_client,
+            office.id,
+            conv.whatsapp_id,
+            msg.content,
+            conversation_id=conv.id,
+            patient_id=patient.id if patient else None,
+        )
+
+        # Mark synced (reassign dict so SQLAlchemy detects the JSONB change)
+        msg.extra_metadata = {**(msg.extra_metadata or {}), "session_synced": True}
+        await db.commit()
+
+        logger.info(
+            "doctor_message_mirrored_to_session",
+            message_id=msg.whatsapp_message_id,
+            office_id=str(office.id),
+        )
+    except Exception as e:
+        logger.warning(
+            "doctor_message_mirror_failed",
+            message_id=getattr(msg, "whatsapp_message_id", None),
+            error=str(e),
         )
 
 
