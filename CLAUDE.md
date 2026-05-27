@@ -117,6 +117,7 @@ npm run dev
 
 - All code is in **English** (variable names, comments, function names)
 - The AI prompts sent to Claude (in `app/modules/ai/prompts/`) contain **Spanish** text — this is intentional, the product serves Spanish-speaking users
+- **AI prompts & tools**: follow `app/modules/ai/CONVENTIONS.md`. The prompt says WHAT, the tools encode the HOW; patient and doctor flows follow the same standard. Do **not** patch prompts — change tool descriptions/handlers/code instead of stacking ad-hoc rules
 - Reminder message templates (`app/modules/reminders/templates.py`) are also in **Spanish**
 - Use `async/await` everywhere — no sync DB calls
 - Logging via `structlog` (JSON format): `from app.utils.logger import get_logger`
