@@ -18,14 +18,14 @@ hannibal/
 │   │   │   ├── models.py             # 9 SQLAlchemy models
 │   │   │   └── migrations/           # Alembic (async)
 │   │   ├── modules/
-│   │   │   ├── whatsapp/             # Meta Cloud API webhook, coexistence, provisioning
-│   │   │   ├── ai/                   # Claude API integration, intent detection, prompts
-│   │   │   ├── conversation/         # Session store (Redis), conversation manager
+│   │   │   ├── whatsapp/             # Meta Cloud API webhook, coexistence, provisioning, Twilio number purchase
+│   │   │   ├── ai/                   # Claude/OpenAI integration (tool-use), prompts, patient + doctor tools
+│   │   │   ├── conversation/         # Session store (Redis), conversation manager (patient + doctor)
 │   │   │   ├── scheduling/           # Availability engine, appointments CRUD, blocks
-│   │   │   ├── reminders/            # Celery tasks (48h, 24h, 2h), reconciliation
+│   │   │   ├── reminders/            # Celery tasks (day_before, 4h, 1h, post-appointment), confirmation requests, reconciliation
 │   │   │   ├── offices/              # Office/practice CRUD
 │   │   │   ├── patients/             # Patient CRUD
-│   │   │   ├── notifications/        # Doctor notifications
+│   │   │   ├── notifications/        # Doctor notifications (⚠️ stub — not implemented, see Known gaps)
 │   │   │   └── google_calendar/      # OAuth2, sync, watch channels
 │   │   ├── middleware/               # JWT auth, rate limiting
 │   │   └── utils/                    # Dates (Mexico_City TZ), phone normalization, logging
@@ -51,8 +51,8 @@ hannibal/
 - **Backend**: Python 3.11+, FastAPI, SQLAlchemy 2.0 (async), Alembic, Pydantic v2
 - **Database**: Supabase (PostgreSQL) with Row Level Security
 - **Cache/Broker**: Redis (sessions, Celery broker, availability cache, slot locking)
-- **AI**: Claude API (Anthropic) — intent detection + conversational response generation
-- **WhatsApp**: Meta Cloud API direct (no intermediaries like 360dialog)
+- **AI**: Pluggable provider via `AI_PROVIDER` (`openai` | `anthropic`). **Default is `openai`.** Both `anthropic_service.py` and `openai_service.py` implement the same tool-use interface. The conversation flow is **tool-use based** (the LLM calls tools), not intent-detection/state-machine.
+- **WhatsApp**: Meta Cloud API direct. A Twilio number-purchase path (`provisioning.buy_twilio_number`) also exists for dedicated numbers.
 - **Task Queue**: Celery + Redis for reminders, reconciliation, Google Calendar watch renewal
 - **Frontend**: Next.js 14 (App Router), TypeScript, Tailwind CSS, FullCalendar
 - **Auth**: Supabase Auth + JWT
@@ -63,23 +63,27 @@ hannibal/
 ### Multi-tenancy
 Every table has `office_id`. All queries must filter by office. Supabase RLS enforces isolation at DB level. Never query without `office_id`.
 
-### Database models (app/db/models.py)
+### Database models (app/db/models.py) — 9 models
 - `Office` — the practice/consultorio (tenant)
 - `AvailabilitySchedule` — weekly schedule (day_of_week, start_time, end_time, duration, buffer)
 - `TimeBlock` — unavailable periods (vacations, etc.)
 - `Patient` — identified by whatsapp_id
 - `Appointment` — the core entity (status: scheduled → confirmed → completed)
+- `ReminderRule` — per-office reminder configuration (reminder_type, offset_minutes, enabled)
 - `Conversation` — WhatsApp conversation thread
-- `Message` — individual messages (incoming/outgoing)
-- `Waitlist` — patients waiting for openings
+- `Message` — individual messages (incoming/outgoing, with delivery_status)
 - `GoogleCalendarEvent` — synced calendar events
+
+> **Note:** `Waitlist` was removed (migration `f1a2b3c4d5e6_drop_waitlist_table`). Do not reference it.
 
 ### Enums (app/core/constants.py)
 All enums use string values in English:
 - `AppointmentStatus`: scheduled, confirmed, cancelled, completed, no_show
-- `Intent`: SCHEDULE, CANCEL, RESCHEDULE, CONFIRM, QUESTION, URGENT, GREETING, OTHER
 - `WhatsAppMode`: coexistence, dedicated, new
 - `ConversationStatus`: active, waiting_confirmation, paused_by_doctor, completed, abandoned
+- `ReminderType`: day_before, 4h, 1h, post_appointment (timing via `ReminderRule` / `DEFAULT_REMINDER_RULES`)
+
+> **Vestigial enums** (defined but unused — safe to ignore/remove): `Intent`, `SubscriptionPlan`, `AppointmentType`. `Intent` predates the tool-use rewrite; the manager no longer does intent detection.
 
 ### WhatsApp coexistence
 The doctor can use WhatsApp on their phone simultaneously with the bot. When the doctor sends a message (echo), the bot pauses for 60 minutes for that conversation. Redis key: `bot_pause:{office_id}:{conversation_id}`.
@@ -132,7 +136,7 @@ npm run dev
 2. **Webhook returns 200 immediately** — processing happens in FastAPI `BackgroundTasks`
 3. **Verification endpoint** returns `PlainTextResponse` with just the challenge value (Meta requirement)
 4. **Session context stored in Redis** (not DB) for speed — persisted to DB on conversation close
-5. **Celery Beat** handles: Google Calendar watch renewal (every 24h), reminder reconciliation (daily 1am)
+5. **Celery Beat** schedule (`celery_app.py`): reminder reconciliation (daily 7am), confirmation requests (daily, `CONFIRMATION_REQUEST_HOUR`), Google Calendar watch renewal (every 24h). ⚠️ The watch-renewal entry points at `app.modules.google_calendar.tasks.renew_google_watches`, which **does not exist** — see Known gaps. Per-appointment reminders are enqueued with `eta` by `reminders/scheduler.py` (real `shared_task`).
 6. **DB base.py uses lazy initialization** — `get_engine()` and `get_async_session_maker()` create connections on first use, not at import time (required for Alembic to work)
 
 ## Environment variables (minimum required)
@@ -142,12 +146,23 @@ DATABASE_URL=postgresql://...   # auto-converted to asyncpg
 SUPABASE_URL=https://xxx.supabase.co
 SUPABASE_SERVICE_KEY=eyJ...
 REDIS_URL=redis://localhost:6379
-ANTHROPIC_API_KEY=sk-ant-...
+AI_PROVIDER=openai              # "openai" (default) or "anthropic"
+OPEN_AI_KEY=sk-...             # required when AI_PROVIDER=openai
+ANTHROPIC_API_KEY=sk-ant-...   # required when AI_PROVIDER=anthropic
 META_VERIFY_TOKEN=your-custom-string
 META_APP_SECRET=from-meta-developers
 META_APP_ID=from-meta-developers
 ENCRYPTION_KEY=64-char-hex-string
 JWT_SECRET=from-supabase-settings
+FRONTEND_URL=https://...        # used for CORS allow-origin (single origin)
+# Optional
+SENTRY_DSN=...
+TWILIO_ACCOUNT_SID=...          # only if using Twilio number purchase
+TWILIO_AUTH_TOKEN=...
+GOOGLE_CLIENT_ID=...            # Google Calendar OAuth
+GOOGLE_CLIENT_SECRET=...
+GOOGLE_REDIRECT_URI=...
+CONFIRMATION_REQUEST_HOUR=8     # hour (MX TZ) to send daily confirmation requests
 ```
 
 ## Testing
@@ -157,11 +172,3 @@ cd hannibal-backend
 pytest tests/ -v
 pytest tests/unit/test_availability.py -v  # availability engine has 100% coverage target
 ```
-
-## Current status
-
-- Phase 1, Sprint 1-7 codebase generated
-- Alembic migrations working with Supabase
-- WhatsApp webhook verified with Meta
-- Conversation manager has TODO markers for full integration
-- Frontend pages created but need `npm install` + API connection
