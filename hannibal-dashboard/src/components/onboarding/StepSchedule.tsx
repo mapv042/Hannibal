@@ -167,7 +167,7 @@ export const StepSchedule: React.FC<StepScheduleProps> = ({
                   : 'border-gray-200 bg-gray-50'
               }`}
             >
-              <div className="flex items-center gap-3">
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
                 <button
                   type="button"
                   onClick={() => toggleDay(day.dayOfWeek)}
@@ -188,21 +188,21 @@ export const StepSchedule: React.FC<StepScheduleProps> = ({
                 </span>
 
                 {day.enabled && (
-                  <div className="flex-1 space-y-2">
+                  <div className="basis-full sm:basis-auto sm:flex-1 space-y-2">
                     {day.blocks.map((block, bi) => (
                       <div key={bi} className="flex items-center gap-2">
                         <input
                           type="time"
                           value={block.startTime}
                           onChange={(e) => updateBlock(day.dayOfWeek, bi, 'startTime', e.target.value)}
-                          className="input-field py-1.5 px-2 text-sm w-28"
+                          className="input-field py-1.5 px-2 text-sm flex-1 min-w-0 sm:flex-none sm:w-28"
                         />
-                        <span className="text-gray-400 text-sm">a</span>
+                        <span className="text-gray-400 text-sm flex-shrink-0">a</span>
                         <input
                           type="time"
                           value={block.endTime}
                           onChange={(e) => updateBlock(day.dayOfWeek, bi, 'endTime', e.target.value)}
-                          className="input-field py-1.5 px-2 text-sm w-28"
+                          className="input-field py-1.5 px-2 text-sm flex-1 min-w-0 sm:flex-none sm:w-28"
                         />
                         {day.blocks.length > 1 && (
                           <button

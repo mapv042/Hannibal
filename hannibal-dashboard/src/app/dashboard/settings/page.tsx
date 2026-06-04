@@ -378,13 +378,13 @@ export default function SettingsPage() {
           <div className="space-y-3 opacity-60 pointer-events-none select-none" aria-hidden="true">
             {['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo'].map(
               (day) => (
-                <div key={day} className="flex items-center gap-4">
+                <div key={day} className="flex flex-wrap items-center gap-x-4 gap-y-2">
                   <label className="w-24 font-medium text-gray-900 text-sm">
                     {day}
                   </label>
-                  <input type="time" className="input-field w-32" disabled />
+                  <input type="time" className="input-field flex-1 min-w-0 sm:flex-none sm:w-32" disabled />
                   <span className="text-gray-500">-</span>
-                  <input type="time" className="input-field w-32" disabled />
+                  <input type="time" className="input-field flex-1 min-w-0 sm:flex-none sm:w-32" disabled />
                 </div>
               )
             )}
