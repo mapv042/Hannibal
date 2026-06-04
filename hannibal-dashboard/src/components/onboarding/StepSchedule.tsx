@@ -233,8 +233,8 @@ export const StepSchedule: React.FC<StepScheduleProps> = ({
         {/* Duration & Buffer */}
         <div className="space-y-3 p-5 bg-white border border-gray-200 rounded-2xl">
           <p className="text-sm font-semibold text-gray-900">Duracion de citas</p>
-          <div className="grid grid-cols-2 gap-4">
-            <div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div className="flex flex-col">
               <label className="block text-sm font-medium text-gray-700 mb-1.5">
                 Duracion primera consulta
               </label>
@@ -247,7 +247,7 @@ export const StepSchedule: React.FC<StepScheduleProps> = ({
                     appointmentDuration: Math.max(val, data.returningPatientDuration),
                   })
                 }}
-                className="input-field"
+                className="input-field mt-auto"
               >
                 <option value={15}>15 minutos</option>
                 <option value={20}>20 minutos</option>
@@ -257,7 +257,7 @@ export const StepSchedule: React.FC<StepScheduleProps> = ({
                 <option value={90}>90 minutos</option>
               </select>
             </div>
-            <div>
+            <div className="flex flex-col">
               <label className="block text-sm font-medium text-gray-700 mb-1.5">
                 Duracion consulta subsecuente
               </label>
@@ -270,7 +270,7 @@ export const StepSchedule: React.FC<StepScheduleProps> = ({
                     appointmentDuration: Math.max(data.newPatientDuration, val),
                   })
                 }}
-                className="input-field"
+                className="input-field mt-auto"
               >
                 <option value={15}>15 minutos</option>
                 <option value={20}>20 minutos</option>
@@ -281,8 +281,8 @@ export const StepSchedule: React.FC<StepScheduleProps> = ({
               </select>
             </div>
           </div>
-          <div className="grid grid-cols-2 gap-4">
-            <div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div className="flex flex-col">
               <label className="block text-sm font-medium text-gray-700 mb-1.5">
                 Descanso entre citas
               </label>
