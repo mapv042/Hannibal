@@ -5,14 +5,18 @@ from __future__ import annotations
 from uuid import UUID
 from typing import List, Optional
 
-from sqlalchemy import select
+from fastapi import HTTPException
+from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Office
+from app.core.constants import ReminderType
+from app.db.models import Office, ReminderRule
 from app.modules.offices.schemas import (
     CreateOfficeRequest,
     UpdateOfficeRequest,
+    ReminderRuleSchema,
 )
+from app.modules.reminders.rules import default_reminder_rules
 from app.core.exceptions import NotFoundError
 from app.utils.logger import get_logger
 
@@ -45,6 +49,12 @@ async def create_office(
         state=data.state,
         address=data.address,
     )
+
+    # Seed the office with the default reminder configuration so doctors get
+    # sensible reminders immediately and can tweak them later.
+    for rule in default_reminder_rules():
+        rule.office = office
+        db.add(rule)
 
     db.add(office)
     await db.commit()
@@ -204,3 +214,86 @@ async def delete_office(
         office_id=str(office_id),
         user_id=str(user_id),
     )
+
+
+async def get_reminder_rules(
+    office_id: UUID,
+    user_id: UUID,
+    db: AsyncSession,
+) -> List[ReminderRule]:
+    """
+    Return the reminder rules configured for an office.
+
+    Falls back to the default rules (without persisting them) for offices that
+    have none yet, so the API always reflects what will actually be sent.
+    """
+    await get_office(office_id, user_id, db)  # authorization check
+
+    result = await db.execute(
+        select(ReminderRule).where(ReminderRule.office_id == office_id)
+    )
+    rules = result.scalars().all()
+    if rules:
+        return rules
+
+    # No rows yet: return defaults so the caller sees the effective config.
+    return default_reminder_rules()
+
+
+async def replace_reminder_rules(
+    office_id: UUID,
+    user_id: UUID,
+    rules: List["ReminderRuleSchema"],
+    db: AsyncSession,
+) -> List[ReminderRule]:
+    """
+    Replace the full set of reminder rules for an office.
+
+    Args:
+        office_id: Office ID
+        user_id: User ID (for authorization)
+        rules: Complete desired set of rules
+        db: Database session
+
+    Returns:
+        The persisted ReminderRule rows
+    """
+    await get_office(office_id, user_id, db)  # authorization check
+
+    # Validate reminder types
+    valid_types = {rt.value for rt in ReminderType}
+    for rule in rules:
+        if rule.reminder_type not in valid_types:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Invalid reminder_type '{rule.reminder_type}'. "
+                    f"Allowed: {', '.join(sorted(valid_types))}"
+                ),
+            )
+
+    # Replace strategy: delete existing rows, insert the new set.
+    await db.execute(
+        delete(ReminderRule).where(ReminderRule.office_id == office_id)
+    )
+
+    new_rules = [
+        ReminderRule(
+            office_id=office_id,
+            reminder_type=rule.reminder_type,
+            offset_minutes=rule.offset_minutes,
+            enabled=rule.enabled,
+        )
+        for rule in rules
+    ]
+    db.add_all(new_rules)
+    await db.commit()
+
+    logger.info(
+        "reminder_rules_updated",
+        office_id=str(office_id),
+        user_id=str(user_id),
+        count=len(new_rules),
+    )
+
+    return new_rules

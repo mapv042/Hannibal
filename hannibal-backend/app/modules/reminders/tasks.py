@@ -17,10 +17,9 @@ from celery import shared_task
 from app.db.base import get_async_session_maker
 from app.db.models import Appointment, Office, Patient, Conversation, Message
 from app.modules.reminders.templates import (
-    reminder_morning,
+    reminder_day_before,
     reminder_4h,
     reminder_1h,
-    reminder_15m,
     post_appointment_followup,
     confirmation_request,
 )
@@ -43,18 +42,16 @@ logger = get_logger(__name__)
 MX_TZ = ZoneInfo("America/Mexico_City")
 
 FLAG_MAP = {
-    "morning": "reminder_morning_sent",
+    "day_before": "reminder_day_before_sent",
     "4h": "reminder_4h_sent",
     "1h": "reminder_1h_sent",
-    "15m": "reminder_15m_sent",
 }
 
 # Free-text builders used while the 24h window is open (one per reminder type).
 FREETEXT_REMINDER_MAP = {
-    "morning": reminder_morning,
+    "day_before": reminder_day_before,
     "4h": reminder_4h,
     "1h": reminder_1h,
-    "15m": reminder_15m,
 }
 
 
@@ -278,14 +275,14 @@ async def _send_reminder(appointment_id: str, reminder_type: str) -> None:
 
 
 @shared_task(bind=True)
-def send_reminder_morning(self, appointment_id: str):
-    """Send morning-of-appointment reminder (8 AM)."""
-    _log(f"send_reminder_morning: START appointment_id={appointment_id}")
+def send_reminder_day_before(self, appointment_id: str):
+    """Send day-before reminder."""
+    _log(f"send_reminder_day_before: START appointment_id={appointment_id}")
     try:
-        asyncio.run(_send_reminder(appointment_id, "morning"))
-        _log(f"send_reminder_morning: DONE appointment_id={appointment_id}")
+        asyncio.run(_send_reminder(appointment_id, "day_before"))
+        _log(f"send_reminder_day_before: DONE appointment_id={appointment_id}")
     except Exception as e:
-        _log_exception("send_reminder_morning", e)
+        _log_exception("send_reminder_day_before", e)
         raise
 
 
@@ -310,18 +307,6 @@ def send_reminder_1h(self, appointment_id: str):
         _log(f"send_reminder_1h: DONE appointment_id={appointment_id}")
     except Exception as e:
         _log_exception("send_reminder_1h", e)
-        raise
-
-
-@shared_task(bind=True)
-def send_reminder_15m(self, appointment_id: str):
-    """Send 15-minute-before reminder."""
-    _log(f"send_reminder_15m: START appointment_id={appointment_id}")
-    try:
-        asyncio.run(_send_reminder(appointment_id, "15m"))
-        _log(f"send_reminder_15m: DONE appointment_id={appointment_id}")
-    except Exception as e:
-        _log_exception("send_reminder_15m", e)
         raise
 
 
@@ -588,47 +573,72 @@ def reconcile_reminders(self):
 
 
 async def _reconcile_reminders_async():
-    """Async implementation of reminder reconciliation."""
+    """Async implementation of reminder reconciliation.
+
+    Per-office reminders are configurable (see ReminderRule). The day-before
+    reminder must be scheduled before the appointment day, so we look at a
+    multi-day window and (re)schedule any reminder that hasn't been sent yet.
+    The Celery tasks are idempotent (guarded by the per-type sent flag), so
+    rescheduling an already-pending reminder is harmless.
+    """
     from app.modules.reminders.scheduler import schedule_reminders
+    from app.modules.reminders.rules import get_active_reminder_rules
+    from app.core.constants import SENT_FLAG_BY_REMINDER_TYPE
+
+    # How far ahead to look. Must cover the earliest reminder offset
+    # (day_before = 24h before) plus margin.
+    LOOKAHEAD_DAYS = 2
 
     async with get_async_session_maker()() as db:
         try:
             now_mx = datetime.now(MX_TZ)
             today = now_mx.date()
+            window_end_date = today + timedelta(days=LOOKAHEAD_DAYS)
 
-            start_of_today = datetime.combine(today, datetime.min.time(), tzinfo=MX_TZ)
-            end_of_today = datetime.combine(today, datetime.max.time(), tzinfo=MX_TZ)
+            start_of_window = datetime.combine(today, datetime.min.time(), tzinfo=MX_TZ)
+            end_of_window = datetime.combine(window_end_date, datetime.max.time(), tzinfo=MX_TZ)
 
-            # Get all active appointments for today
             result = await db.execute(
                 select(Appointment).where(
                     and_(
-                        Appointment.start_datetime >= start_of_today,
-                        Appointment.start_datetime <= end_of_today,
+                        Appointment.start_datetime >= start_of_window,
+                        Appointment.start_datetime <= end_of_window,
                         Appointment.status.in_(["scheduled", "confirmed"]),
                     )
                 )
             )
             appointments = result.scalars().all()
 
-            _log(f"reconcile_reminders: {len(appointments)} appointments for {today}")
+            _log(
+                f"reconcile_reminders: {len(appointments)} appointments in "
+                f"[{today} .. {window_end_date}]"
+            )
+
+            # Cache rules per office to avoid repeated lookups within the run.
+            rules_cache: dict = {}
 
             for appointment in appointments:
-                # Check if any reminders are still missing
-                if (
-                    not appointment.reminder_morning_sent
-                    or not appointment.reminder_4h_sent
-                    or not appointment.reminder_1h_sent
-                    or not appointment.reminder_15m_sent
-                ):
-                    _log(
-                        f"reconcile_reminders: missing reminders for appointment_id={appointment.id} "
-                        f"morning={appointment.reminder_morning_sent} "
-                        f"4h={appointment.reminder_4h_sent} "
-                        f"1h={appointment.reminder_1h_sent} "
-                        f"15m={appointment.reminder_15m_sent}"
+                if appointment.office_id not in rules_cache:
+                    rules_cache[appointment.office_id] = await get_active_reminder_rules(
+                        db, appointment.office_id
                     )
-                    schedule_reminders(appointment.id, appointment.start_datetime)
+                office_rules = rules_cache[appointment.office_id]
+
+                # Only (re)schedule reminders that haven't been sent yet.
+                pending_rules = [
+                    (rtype, offset)
+                    for rtype, offset in office_rules
+                    if not getattr(
+                        appointment,
+                        SENT_FLAG_BY_REMINDER_TYPE.get(rtype, ""),
+                        False,
+                    )
+                ]
+
+                if pending_rules:
+                    schedule_reminders(
+                        appointment.id, appointment.start_datetime, pending_rules
+                    )
 
             _log(f"reconcile_reminders: processed {len(appointments)} appointments")
 

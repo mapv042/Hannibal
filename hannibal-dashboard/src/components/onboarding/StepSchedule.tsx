@@ -15,12 +15,67 @@ export interface ScheduleDay {
   blocks: TimeBlock[]
 }
 
+export type ReminderType = 'day_before' | '4h' | '1h' | 'post_appointment'
+
+/**
+ * Reminder catalog shown in onboarding. The offset (minutes relative to the
+ * appointment start, negative = before) is fixed here; the doctor only chooses
+ * which reminders to enable. Must stay in sync with the backend defaults in
+ * app/core/constants.py (DEFAULT_REMINDER_RULES).
+ */
+export const REMINDER_DEFS: {
+  type: ReminderType
+  label: string
+  description: string
+  offsetMinutes: number
+}[] = [
+  { type: 'day_before', label: 'Un día antes', description: 'Recordatorio el día previo a la cita', offsetMinutes: -1440 },
+  { type: '4h', label: '4 horas antes', description: 'Recordatorio 4 horas antes de la cita', offsetMinutes: -240 },
+  { type: '1h', label: '1 hora antes', description: 'Recordatorio 1 hora antes de la cita', offsetMinutes: -60 },
+  { type: 'post_appointment', label: 'Seguimiento post-consulta', description: 'Mensaje de seguimiento después de la cita', offsetMinutes: 120 },
+]
+
+export type ReminderToggles = Record<ReminderType, boolean>
+
+export const DEFAULT_REMINDER_TOGGLES: ReminderToggles = {
+  day_before: true,
+  '4h': true,
+  '1h': true,
+  post_appointment: true,
+}
+
+/** Build the on/off toggles from a list of reminder rules returned by the API. */
+export function reminderTogglesFromRules(
+  rules?: { reminder_type: string; enabled: boolean }[]
+): ReminderToggles {
+  const toggles: ReminderToggles = { ...DEFAULT_REMINDER_TOGGLES }
+  if (!rules) return toggles
+  for (const rule of rules) {
+    if (rule.reminder_type in toggles) {
+      toggles[rule.reminder_type as ReminderType] = rule.enabled
+    }
+  }
+  return toggles
+}
+
+/** Build the API payload (all reminders, with their fixed offsets) from toggles. */
+export function rulesFromReminderToggles(
+  toggles: ReminderToggles
+): { reminder_type: ReminderType; offset_minutes: number; enabled: boolean }[] {
+  return REMINDER_DEFS.map((def) => ({
+    reminder_type: def.type,
+    offset_minutes: def.offsetMinutes,
+    enabled: toggles[def.type],
+  }))
+}
+
 export interface ScheduleData {
   days: ScheduleDay[]
   appointmentDuration: number
   newPatientDuration: number
   returningPatientDuration: number
   bufferMinutes: number
+  reminders: ReminderToggles
 }
 
 interface StepScheduleProps {
@@ -85,6 +140,10 @@ export const StepSchedule: React.FC<StepScheduleProps> = ({
         : d
     )
     onUpdate({ days: newDays })
+  }
+
+  const toggleReminder = (type: ReminderType) => {
+    onUpdate({ reminders: { ...data.reminders, [type]: !data.reminders[type] } })
   }
 
   const hasAtLeastOneDay = data.days.some((d) => d.enabled && d.blocks.length > 0)
@@ -239,6 +298,49 @@ export const StepSchedule: React.FC<StepScheduleProps> = ({
                 <option value={20}>20 minutos</option>
               </select>
             </div>
+          </div>
+        </div>
+
+        {/* Reminders */}
+        <div className="space-y-3 p-5 bg-white border border-gray-200 rounded-2xl">
+          <div>
+            <p className="text-sm font-semibold text-gray-900">Recordatorios automáticos</p>
+            <p className="text-xs text-gray-500 mt-0.5">
+              Elige qué recordatorios enviará el asistente por WhatsApp a tus pacientes.
+            </p>
+          </div>
+          <div className="space-y-2">
+            {REMINDER_DEFS.map((reminder) => {
+              const enabled = data.reminders[reminder.type]
+              return (
+                <button
+                  key={reminder.type}
+                  type="button"
+                  onClick={() => toggleReminder(reminder.type)}
+                  className={`w-full flex items-center gap-3 p-3 rounded-xl border text-left transition-colors ${
+                    enabled ? 'border-primary-200 bg-primary-50' : 'border-gray-200 bg-gray-50'
+                  }`}
+                >
+                  <span
+                    className={`w-6 h-6 rounded flex items-center justify-center border-2 transition-colors flex-shrink-0 ${
+                      enabled ? 'bg-primary-600 border-primary-600 text-white' : 'bg-white border-gray-300'
+                    }`}
+                  >
+                    {enabled && (
+                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+                      </svg>
+                    )}
+                  </span>
+                  <span>
+                    <span className={`block text-sm font-medium ${enabled ? 'text-gray-900' : 'text-gray-500'}`}>
+                      {reminder.label}
+                    </span>
+                    <span className="block text-xs text-gray-500">{reminder.description}</span>
+                  </span>
+                </button>
+              )
+            })}
           </div>
         </div>
 

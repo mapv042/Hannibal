@@ -121,6 +121,36 @@ class Intent(str, Enum):
     OTHER = "OTHER"  # Other
 
 
+# Reminder Configuration
+class ReminderType(str, Enum):
+    """Per-office reminder kinds. Timing is configurable via ReminderRule."""
+
+    DAY_BEFORE = "day_before"  # Day before the appointment
+    FOUR_HOURS = "4h"  # 4 hours before
+    ONE_HOUR = "1h"  # 1 hour before
+    POST_APPOINTMENT = "post_appointment"  # After the appointment (follow-up)
+
+
+# Default reminder rules applied to every office unless overridden.
+# offset_minutes is signed relative to the appointment start:
+#   negative = before the appointment, positive = after.
+DEFAULT_REMINDER_RULES: list[tuple[ReminderType, int]] = [
+    (ReminderType.DAY_BEFORE, -1440),  # 24h before
+    (ReminderType.FOUR_HOURS, -240),  # 4h before
+    (ReminderType.ONE_HOUR, -60),  # 1h before
+    (ReminderType.POST_APPOINTMENT, 120),  # 2h after
+]
+
+# Maps each reminder type to the Appointment idempotency flag that records
+# whether it has already been sent.
+SENT_FLAG_BY_REMINDER_TYPE: dict[str, str] = {
+    ReminderType.DAY_BEFORE.value: "reminder_day_before_sent",
+    ReminderType.FOUR_HOURS.value: "reminder_4h_sent",
+    ReminderType.ONE_HOUR.value: "reminder_1h_sent",
+    ReminderType.POST_APPOINTMENT.value: "follow_up_sent",
+}
+
+
 # Mexico City Timezone
 MX_TIMEZONE = ZoneInfo("America/Mexico_City")
 

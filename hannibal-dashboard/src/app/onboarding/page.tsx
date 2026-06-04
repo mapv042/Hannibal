@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { createBrowserSupabaseClient } from '@/lib/supabase'
-import { useApi } from '@/lib/api'
+import { useApi, type ReminderRule } from '@/lib/api'
 import type { Office } from '@/lib/supabase'
 
 import {
@@ -13,6 +13,10 @@ import {
 } from '@/components/onboarding/OnboardingWizard'
 import type { ConsultationData } from '@/components/onboarding/StepConsultationDetails'
 import type { PersonalizeData } from '@/components/onboarding/StepPersonalize'
+import {
+  reminderTogglesFromRules,
+  rulesFromReminderToggles,
+} from '@/components/onboarding/StepSchedule'
 
 function buildCustomPrompt(
   consultation: ConsultationData,
@@ -46,6 +50,7 @@ export default function OnboardingPage() {
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const [gcalConnected, setGcalConnected] = useState(false)
+  const [reminderRules, setReminderRules] = useState<ReminderRule[] | null>(null)
 
   const router = useRouter()
   const searchParams = useSearchParams()
@@ -78,6 +83,12 @@ export default function OnboardingPage() {
           setOffice(existingOffice)
           if (existingOffice.google_calendar_token) {
             setGcalConnected(true)
+          }
+
+          // Load the office's reminder configuration to pre-fill the toggles.
+          const rulesRes = await api.getReminderRules(existingOffice.id)
+          if (rulesRes.success && rulesRes.data) {
+            setReminderRules(rulesRes.data)
           }
         }
         // If no office exists, it will be created after step 1
@@ -118,6 +129,7 @@ export default function OnboardingPage() {
         newPatientDuration: office.new_patient_duration_min || 30,
         returningPatientDuration: office.returning_patient_duration_min || 30,
         bufferMinutes: 10,
+        reminders: reminderTogglesFromRules(reminderRules ?? undefined),
       },
       consultation: {
         newPatientCost: office.new_patient_cost || '',
@@ -135,7 +147,7 @@ export default function OnboardingPage() {
             }
           : undefined,
     }
-  }, [office])
+  }, [office, reminderRules])
 
   const handleSubmitOfficeInfo = useCallback(
     async ({ officeInfo }: OnboardingData) => {
@@ -194,6 +206,13 @@ export default function OnboardingPage() {
         })
         if (durationRes.success && durationRes.data) {
           setOffice(durationRes.data)
+        }
+
+        // Persist the reminder configuration chosen via the checkboxes.
+        const rules: ReminderRule[] = rulesFromReminderToggles(schedule.reminders)
+        const rulesRes = await api.updateReminderRules(office.id, rules)
+        if (rulesRes.success && rulesRes.data) {
+          setReminderRules(rulesRes.data)
         }
         return true
       } catch (err) {

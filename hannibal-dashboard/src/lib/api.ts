@@ -15,6 +15,12 @@ export interface PaginatedResponse<T> {
   per_page: number
 }
 
+export interface ReminderRule {
+  reminder_type: string
+  offset_minutes: number
+  enabled: boolean
+}
+
 export class ApiClient {
   private baseUrl: string
   private supabase: ReturnType<typeof createBrowserSupabaseClient> | null = null
@@ -108,6 +114,23 @@ export class ApiClient {
     return this.fetch<Office>(`/api/offices/${office_id}`, {
       method: 'PUT',
       body: JSON.stringify(data),
+    })
+  }
+
+  // Reminder rules (per office)
+  async getReminderRules(office_id: string): Promise<ApiResponse<ReminderRule[]>> {
+    return this.fetch<ReminderRule[]>(`/api/offices/${office_id}/reminder-rules`, {
+      method: 'GET',
+    })
+  }
+
+  async updateReminderRules(
+    office_id: string,
+    rules: ReminderRule[]
+  ): Promise<ApiResponse<ReminderRule[]>> {
+    return this.fetch<ReminderRule[]>(`/api/offices/${office_id}/reminder-rules`, {
+      method: 'PUT',
+      body: JSON.stringify({ rules }),
     })
   }
 

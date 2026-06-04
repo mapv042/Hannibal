@@ -25,6 +25,7 @@ from sqlalchemy import (
     ForeignKey,
     func,
     Index,
+    UniqueConstraint,
 )
 from sqlalchemy.dialects.postgresql import UUID, ARRAY, JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -175,6 +176,12 @@ class Office(Base):
         back_populates="office",
         cascade="all, delete-orphan",
         foreign_keys="GoogleCalendarEvent.office_id",
+    )
+    reminder_rules: Mapped[List[ReminderRule]] = relationship(
+        "ReminderRule",
+        back_populates="office",
+        cascade="all, delete-orphan",
+        foreign_keys="ReminderRule.office_id",
     )
 
     def __repr__(self) -> str:
@@ -421,11 +428,10 @@ class Appointment(Base):
         nullable=True,
     )
 
-    # Reminders & Follow-ups
-    reminder_morning_sent: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Reminders & Follow-ups (idempotency flags, one per active ReminderType)
+    reminder_day_before_sent: Mapped[bool] = mapped_column(Boolean, default=False)
     reminder_4h_sent: Mapped[bool] = mapped_column(Boolean, default=False)
     reminder_1h_sent: Mapped[bool] = mapped_column(Boolean, default=False)
-    reminder_15m_sent: Mapped[bool] = mapped_column(Boolean, default=False)
     follow_up_sent: Mapped[bool] = mapped_column(Boolean, default=False)
     confirmation_request_sent: Mapped[bool] = mapped_column(Boolean, default=False)
 
@@ -460,6 +466,63 @@ class Appointment(Base):
 
     def __repr__(self) -> str:
         return f"<Appointment(id={self.id}, patient_id={self.patient_id}, start_datetime={self.start_datetime})>"
+
+
+class ReminderRule(Base):
+    """
+    Per-office reminder configuration.
+
+    One row per reminder kind (see ReminderType). Lets each office decide which
+    reminders to send and when, relative to the appointment start.
+    """
+
+    __tablename__ = "reminder_rules"
+    __table_args__ = (
+        UniqueConstraint("office_id", "reminder_type", name="uq_reminder_rule_office_type"),
+    )
+
+    # Primary Key
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+
+    # Multi-tenancy
+    office_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("offices.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+
+    # Reminder kind, e.g. "day_before", "4h", "1h", "post_appointment"
+    reminder_type: Mapped[str] = mapped_column(String(50), nullable=False)
+
+    # Signed offset from the appointment start, in minutes.
+    # Negative = before the appointment, positive = after.
+    offset_minutes: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    # Whether this reminder is active for the office
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+    # Timestamps
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=func.now(), nullable=False
+    )
+    updated_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), onupdate=func.now(), nullable=True
+    )
+
+    # Relationships
+    office: Mapped[Office] = relationship(
+        "Office",
+        back_populates="reminder_rules",
+        foreign_keys=[office_id],
+    )
+
+    def __repr__(self) -> str:
+        return (
+            f"<ReminderRule(office_id={self.office_id}, type={self.reminder_type}, "
+            f"offset_minutes={self.offset_minutes}, enabled={self.enabled})>"
+        )
 
 
 class Conversation(Base):

@@ -13,6 +13,8 @@ from app.modules.offices.schemas import (
     CreateOfficeRequest,
     UpdateOfficeRequest,
     OfficeResponse,
+    ReminderRuleSchema,
+    UpdateReminderRulesRequest,
 )
 from app.modules.offices.service import (
     create_office,
@@ -20,6 +22,8 @@ from app.modules.offices.service import (
     list_offices,
     update_office,
     delete_office,
+    get_reminder_rules,
+    replace_reminder_rules,
 )
 from app.utils.logger import get_logger
 
@@ -150,3 +154,42 @@ async def delete_office_endpoint(
         user_id=UUID(current_user.get("sub")),
         db=db,
     )
+
+
+@router.get("/{office_id}/reminder-rules", response_model=List[ReminderRuleSchema])
+async def get_reminder_rules_endpoint(
+    office_id: UUID,
+    current_user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get the reminder configuration for an office (defaults if none set)."""
+    rules = await get_reminder_rules(
+        office_id=office_id,
+        user_id=UUID(current_user.get("sub")),
+        db=db,
+    )
+    return rules
+
+
+@router.put("/{office_id}/reminder-rules", response_model=List[ReminderRuleSchema])
+async def update_reminder_rules_endpoint(
+    office_id: UUID,
+    request: UpdateReminderRulesRequest,
+    current_user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Replace the full set of reminder rules for an office."""
+    logger.info(
+        "update_reminder_rules",
+        office_id=str(office_id),
+        user_id=current_user.get("sub"),
+        count=len(request.rules),
+    )
+
+    rules = await replace_reminder_rules(
+        office_id=office_id,
+        user_id=UUID(current_user.get("sub")),
+        rules=request.rules,
+        db=db,
+    )
+    return rules

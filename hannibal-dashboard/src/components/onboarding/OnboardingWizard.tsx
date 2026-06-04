@@ -4,7 +4,12 @@ import React, { useState } from 'react'
 import { ProgressBar } from '@/components/onboarding/ProgressBar'
 import { StepWelcome } from '@/components/onboarding/StepWelcome'
 import { StepOfficeInfo, type OfficeInfoData } from '@/components/onboarding/StepOfficeInfo'
-import { StepSchedule, type ScheduleData, type ScheduleDay } from '@/components/onboarding/StepSchedule'
+import {
+  StepSchedule,
+  type ScheduleData,
+  type ScheduleDay,
+  DEFAULT_REMINDER_TOGGLES,
+} from '@/components/onboarding/StepSchedule'
 import { StepConsultationDetails, type ConsultationData } from '@/components/onboarding/StepConsultationDetails'
 import { StepPersonalize, type PersonalizeData } from '@/components/onboarding/StepPersonalize'
 import { StepConnectWhatsApp } from '@/components/onboarding/StepConnectWhatsApp'
@@ -52,6 +57,7 @@ const DEFAULTS: OnboardingData = {
     newPatientDuration: 30,
     returningPatientDuration: 30,
     bufferMinutes: 10,
+    reminders: { ...DEFAULT_REMINDER_TOGGLES },
   },
   consultation: { newPatientCost: '', returningPatientCost: '', acceptsInsurance: '', insuranceDetails: '' },
   personalize: { assistantName: '', assistantTone: 'formal', emergencySymptoms: '', welcomeMessage: '' },

@@ -70,6 +70,32 @@ class UpdateOfficeRequest(BaseModel):
     )
 
 
+class ReminderRuleSchema(BaseModel):
+    """A single per-office reminder rule."""
+
+    reminder_type: str = Field(
+        ...,
+        description="Reminder kind: day_before | 4h | 1h | post_appointment",
+    )
+    offset_minutes: int = Field(
+        ...,
+        description="Signed offset from appointment start in minutes "
+        "(negative = before, positive = after)",
+    )
+    enabled: bool = Field(True, description="Whether this reminder is active")
+
+    class Config:
+        from_attributes = True
+
+
+class UpdateReminderRulesRequest(BaseModel):
+    """Replace the full set of reminder rules for an office."""
+
+    rules: list[ReminderRuleSchema] = Field(
+        ..., description="Complete list of reminder rules for the office"
+    )
+
+
 class OfficeResponse(BaseModel):
     """Response model for office data."""
 

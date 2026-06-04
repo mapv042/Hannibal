@@ -5,25 +5,26 @@ from __future__ import annotations
 from typing import Optional
 
 
-def reminder_morning(appointment_data: dict, tone: str = "formal") -> str:
-    """Generate morning-of-appointment reminder (sent at 8 AM)."""
+def reminder_day_before(appointment_data: dict, tone: str = "formal") -> str:
+    """Generate day-before reminder."""
     patient_name = appointment_data.get("patient_name", "estimado cliente")
     time = appointment_data.get("time", "la hora programada")
+    date = appointment_data.get("date", "mañana")
     office_name = appointment_data.get("office_name", "nuestro consultorio")
     assistant_name = appointment_data.get("assistant_name", "Asistente")
 
     if tone == "informal":
         return (
-            f"¡Buenos días, {patient_name}! ☀️\n\n"
-            f"Te recordamos que hoy tienes cita a las {time} en {office_name}.\n\n"
-            f"Si necesitas cancelar o tienes dudas, avísanos. ¡Te esperamos!\n\n"
+            f"Hola {patient_name}.\n\n"
+            f"Te recordamos tu cita de {date} a las {time} en {office_name}.\n\n"
+            f"Si necesitas cancelar o reagendar, avísanos.\n\n"
             f"— {assistant_name}"
         )
     else:
         return (
-            f"Buenos días, {patient_name}.\n\n"
-            f"Le recordamos que el día de hoy tiene cita a las {time} en {office_name}.\n\n"
-            f"Si necesita cancelar o tiene alguna pregunta, no dude en contactarnos.\n\n"
+            f"Estimado(a) {patient_name},\n\n"
+            f"Le recordamos su cita de {date} a las {time} en {office_name}.\n\n"
+            f"Si necesita cancelar o reagendar, no dude en contactarnos.\n\n"
             f"Atentamente,\n{assistant_name}"
         )
 
@@ -37,7 +38,7 @@ def reminder_4h(appointment_data: dict, tone: str = "formal") -> str:
 
     if tone == "informal":
         return (
-            f"¡Hola {patient_name}! 🗓️\n\n"
+            f"Hola {patient_name}.\n\n"
             f"Tu cita es en 4 horas, a las {time} en {office_name}.\n\n"
             f"Si no puedes asistir, avísanos para liberar el horario.\n\n"
             f"— {assistant_name}"
@@ -60,7 +61,7 @@ def reminder_1h(appointment_data: dict, tone: str = "formal") -> str:
 
     if tone == "informal":
         return (
-            f"¡{patient_name}! ⏰\n\n"
+            f"Hola {patient_name}.\n\n"
             f"Tu cita es en 1 hora, a las {time} en {office_name}.\n\n"
             f"¿Vas en camino? Si no puedes venir, avísanos.\n\n"
             f"— {assistant_name}"
@@ -70,29 +71,6 @@ def reminder_1h(appointment_data: dict, tone: str = "formal") -> str:
             f"Estimado(a) {patient_name},\n\n"
             f"Su cita es en 1 hora, a las {time} en {office_name}.\n\n"
             f"Si no puede asistir, comuníquelo a la brevedad.\n\n"
-            f"Atentamente,\n{assistant_name}"
-        )
-
-
-def reminder_15m(appointment_data: dict, tone: str = "formal") -> str:
-    """Generate 15-minute-before reminder."""
-    patient_name = appointment_data.get("patient_name", "estimado cliente")
-    time = appointment_data.get("time", "la hora programada")
-    office_name = appointment_data.get("office_name", "nuestro consultorio")
-    assistant_name = appointment_data.get("assistant_name", "Asistente")
-
-    if tone == "informal":
-        return (
-            f"¡{patient_name}! 🏃\n\n"
-            f"Tu cita es en 15 minutos, a las {time} en {office_name}.\n\n"
-            f"¡Te esperamos!\n\n"
-            f"— {assistant_name}"
-        )
-    else:
-        return (
-            f"Estimado(a) {patient_name},\n\n"
-            f"Su cita es en 15 minutos, a las {time} en {office_name}.\n\n"
-            f"Le esperamos.\n\n"
             f"Atentamente,\n{assistant_name}"
         )
 
@@ -119,7 +97,7 @@ def confirmation_request(appointment_data: dict, tone: str = "formal") -> str:
 
     if tone == "informal":
         return (
-            f"¡Hola {patient_name}! 📋\n\n"
+            f"Hola {patient_name}.\n\n"
             f"Te escribo para confirmar tu cita de mañana {date} a las {time} en {office_name}.\n\n"
             f"Por favor responde:\n"
             f"  *Sí* para confirmar tu asistencia\n"
@@ -160,10 +138,10 @@ def post_appointment_followup(
 
     if tone == "informal":
         return (
-            f"¡Hola {patient_name}! 👋\n\n"
+            f"Hola {patient_name}.\n\n"
             f"Gracias por tu visita hoy. {professional_name} espera que te sientas mejor pronto.\n"
             f"{instructions_text}\n\n"
-            f"Si tienes preguntas, cuéntanos. ¡Estamos aquí para ayudarte!\n\n"
+            f"Si tienes preguntas, cuéntanos. Estamos aquí para ayudarte.\n\n"
             f"— {assistant_name}"
         )
     else:  # formal
@@ -195,12 +173,12 @@ def appointment_confirmation(appointment_data: dict, tone: str = "formal") -> st
 
     if tone == "informal":
         return (
-            f"¡Perfecto, {patient_name}! ✅\n\n"
+            f"Perfecto, {patient_name}.\n\n"
             f"Tu cita está confirmada:\n"
-            f"📅 {date}\n"
-            f"🕒 {time}\n"
-            f"📍 {office_name}\n\n"
-            f"¡Te esperamos! Si hay cambios, avísanos.\n\n"
+            f"Fecha: {date}\n"
+            f"Hora: {time}\n"
+            f"Lugar: {office_name}\n\n"
+            f"Te esperamos. Si hay cambios, avísanos.\n\n"
             f"— {assistant_name}"
         )
     else:  # formal
@@ -233,7 +211,7 @@ def appointment_cancellation(appointment_data: dict, tone: str = "formal") -> st
 
     if tone == "informal":
         return (
-            f"Entendido, {patient_name} 👍\n\n"
+            f"Entendido, {patient_name}.\n\n"
             f"Hemos cancelado tu cita del {date} en {office_name}.\n\n"
             f"Cuando estés listo, agendar de nuevo es muy fácil. ¡Cuéntanos!\n\n"
             f"— {assistant_name}"

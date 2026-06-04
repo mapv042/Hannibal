@@ -1,14 +1,22 @@
 'use client'
 
 import React, { useState, useEffect } from 'react'
-import { useApi } from '@/lib/api'
+import { useApi, type ReminderRule } from '@/lib/api'
 import { createBrowserSupabaseClient } from '@/lib/supabase'
 import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
 import { Badge } from '@/components/ui/Badge'
 import { Card, CardBody, CardHeader } from '@/components/ui/Card'
-import { Settings, Save, Globe, Zap, Clock, LucideIcon } from 'lucide-react'
+import { Settings, Save, Globe, Zap, Clock, Bell, LucideIcon } from 'lucide-react'
 import type { Office } from '@/lib/supabase'
+import {
+  REMINDER_DEFS,
+  DEFAULT_REMINDER_TOGGLES,
+  reminderTogglesFromRules,
+  rulesFromReminderToggles,
+  type ReminderToggles,
+  type ReminderType,
+} from '@/components/onboarding/StepSchedule'
 
 function SectionHeader({
   icon: Icon,
@@ -42,6 +50,9 @@ export default function SettingsPage() {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
+  const [reminders, setReminders] = useState<ReminderToggles>(DEFAULT_REMINDER_TOGGLES)
+  const [savingReminders, setSavingReminders] = useState(false)
+  const [remindersSaved, setRemindersSaved] = useState(false)
   const api = useApi()
   const supabase = createBrowserSupabaseClient()
 
@@ -63,6 +74,11 @@ export default function SettingsPage() {
             tone: officeData.assistant_tone as 'formal' | 'informal',
             custom_prompt: officeData.custom_prompt || '',
           })
+
+          const rulesRes = await api.getReminderRules(officeData.id)
+          if (rulesRes.success && rulesRes.data) {
+            setReminders(reminderTogglesFromRules(rulesRes.data))
+          }
         }
       } catch (error) {
         console.error('Error loading office:', error)
@@ -97,6 +113,28 @@ export default function SettingsPage() {
       console.error('Error saving settings:', error)
     } finally {
       setSaving(false)
+    }
+  }
+
+  const toggleReminder = (type: ReminderType) => {
+    setReminders((prev) => ({ ...prev, [type]: !prev[type] }))
+  }
+
+  const handleSaveReminders = async () => {
+    if (!office) return
+
+    setSavingReminders(true)
+    try {
+      const rules: ReminderRule[] = rulesFromReminderToggles(reminders)
+      const response = await api.updateReminderRules(office.id, rules)
+      if (response.success) {
+        setRemindersSaved(true)
+        setTimeout(() => setRemindersSaved(false), 3000)
+      }
+    } catch (error) {
+      console.error('Error saving reminders:', error)
+    } finally {
+      setSavingReminders(false)
     }
   }
 
@@ -187,6 +225,63 @@ export default function SettingsPage() {
           >
             <Save size={16} />
             Guardar cambios
+          </Button>
+        </CardBody>
+      </Card>
+
+      {/* Reminders */}
+      <Card>
+        <CardHeader>
+          <SectionHeader
+            icon={Bell}
+            title="Recordatorios automáticos"
+            subtitle="Elige qué recordatorios envía el asistente por WhatsApp"
+          />
+        </CardHeader>
+        <CardBody className="space-y-4">
+          {remindersSaved && (
+            <div className="p-3 bg-green-100 border border-green-300 rounded-xl">
+              <p className="text-sm text-green-800">Recordatorios guardados correctamente</p>
+            </div>
+          )}
+
+          <div className="space-y-2">
+            {REMINDER_DEFS.map((reminder) => {
+              const enabled = reminders[reminder.type]
+              return (
+                <button
+                  key={reminder.type}
+                  type="button"
+                  onClick={() => toggleReminder(reminder.type)}
+                  className={`w-full flex items-center gap-3 p-3 rounded-xl border text-left transition-colors ${
+                    enabled ? 'border-primary-200 bg-primary-50' : 'border-gray-200 bg-gray-50'
+                  }`}
+                >
+                  <span
+                    className={`w-6 h-6 rounded flex items-center justify-center border-2 transition-colors flex-shrink-0 ${
+                      enabled ? 'bg-primary-600 border-primary-600 text-white' : 'bg-white border-gray-300'
+                    }`}
+                  >
+                    {enabled && (
+                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+                      </svg>
+                    )}
+                  </span>
+                  <span>
+                    <span className={`block text-sm font-medium ${enabled ? 'text-gray-900' : 'text-gray-500'}`}>
+                      {reminder.label}
+                    </span>
+                    <span className="block text-xs text-gray-500">{reminder.description}</span>
+                  </span>
+                </button>
+              )
+            })}
+          </div>
+
+          <Button onClick={handleSaveReminders} isLoading={savingReminders} className="gap-2">
+            <Save size={16} />
+            Guardar recordatorios
           </Button>
         </CardBody>
       </Card>
