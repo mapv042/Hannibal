@@ -43,7 +43,9 @@ const navItems = [
 ]
 
 export function DashboardShell({ children }: { children: React.ReactNode }) {
-  const [sidebarOpen, setSidebarOpen] = useState(true)
+  // Closed by default so the first mobile paint shows content, not a sidebar
+  // covering it. The sidebar is always visible on lg+ via CSS (lg:translate-x-0).
+  const [sidebarOpen, setSidebarOpen] = useState(false)
   const [user, setUser] = useState<any>(null)
   const [office, setOffice] = useState<Office | null>(null)
   const [loading, setLoading] = useState(true)

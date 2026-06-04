@@ -1,4 +1,5 @@
 import React from 'react'
+import { getStatus, TONE_BADGE } from '@/lib/status'
 
 interface BadgeProps extends React.HTMLAttributes<HTMLSpanElement> {
   variant?: 'success' | 'warning' | 'error' | 'info' | 'primary' | 'default'
@@ -46,36 +47,23 @@ export const Badge: React.FC<BadgeProps> = ({
 
 Badge.displayName = 'Badge'
 
+/**
+ * Status pill driven by the single status source of truth (lib/status.ts).
+ * Pairs an icon with the label so status is never communicated by colour
+ * alone (accessibility) and never falls through to an undefined style.
+ */
 export const StatusBadge: React.FC<{ estado: string; className?: string }> = ({
   estado,
   className = '',
 }) => {
-  const statusMap: Record<string, { variant: BadgeProps['variant']; label: string }> = {
-    // Appointment statuses
-    confirmed: { variant: 'success', label: 'Confirmada' },
-    confirmada: { variant: 'success', label: 'Confirmada' },
-    pending: { variant: 'warning', label: 'Pendiente' },
-    pendiente: { variant: 'warning', label: 'Pendiente' },
-    blocked: { variant: 'info', label: 'Bloqueada' },
-    bloqueada: { variant: 'info', label: 'Bloqueada' },
-    no_show: { variant: 'error', label: 'No asistió' },
-    no_presentado: { variant: 'error', label: 'No asistió' },
-    cancelled: { variant: 'error', label: 'Cancelada' },
-    cancelada: { variant: 'error', label: 'Cancelada' },
-    // Bot statuses
-    active: { variant: 'success', label: 'Activo' },
-    activo: { variant: 'success', label: 'Activo' },
-    paused: { variant: 'warning', label: 'Pausado' },
-    pausado: { variant: 'warning', label: 'Pausado' },
-    inactive: { variant: 'error', label: 'Inactivo' },
-    inactivo: { variant: 'error', label: 'Inactivo' },
-  }
-
-  const status = statusMap[estado] || { variant: 'default', label: estado }
+  const { label, tone, icon: Icon } = getStatus(estado)
 
   return (
-    <Badge variant={status.variant} className={className}>
-      {status.label}
-    </Badge>
+    <span
+      className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium ${TONE_BADGE[tone]} ${className}`}
+    >
+      <Icon size={12} strokeWidth={2.4} aria-hidden="true" />
+      {label}
+    </span>
   )
 }

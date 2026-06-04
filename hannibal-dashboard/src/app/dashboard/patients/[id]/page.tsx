@@ -8,7 +8,10 @@ import { useApi } from '@/lib/api'
 import { Button } from '@/components/ui/Button'
 import { Card, CardBody, CardHeader } from '@/components/ui/Card'
 import { StatusBadge } from '@/components/ui/Badge'
-import { ArrowLeft, Mail, Phone, Calendar } from 'lucide-react'
+import { EmptyState } from '@/components/ui/states/EmptyState'
+import { ErrorState } from '@/components/ui/states/ErrorState'
+import { Skeleton } from '@/components/ui/states/Skeleton'
+import { ArrowLeft, Mail, Phone, Calendar, UserX } from 'lucide-react'
 import type { Patient, Appointment } from '@/lib/supabase'
 
 export default function PatientDetailPage() {
@@ -19,46 +22,81 @@ export default function PatientDetailPage() {
   const [patient, setPatient] = useState<Patient | null>(null)
   const [appointments, setAppointments] = useState<Appointment[]>([])
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState(false)
   const api = useApi()
 
-  useEffect(() => {
-    const loadData = async () => {
-      try {
-        const patientResponse = await api.getPatient(patientId)
-        if (patientResponse.success && patientResponse.data) {
-          setPatient(patientResponse.data)
+  const loadData = React.useCallback(async () => {
+    setLoading(true)
+    setError(false)
+    try {
+      const patientResponse = await api.getPatient(patientId)
+      if (patientResponse.success && patientResponse.data) {
+        setPatient(patientResponse.data)
 
-          // Load appointments for this patient
-          const appointmentsResponse = await api.getAppointments(patientResponse.data.office_id)
-          if (appointmentsResponse.success && appointmentsResponse.data) {
-            const patientAppointments = appointmentsResponse.data.filter(
-              (c) => c.patient_id === patientId
-            )
-            setAppointments(patientAppointments)
-          }
+        // Load appointments for this patient
+        const appointmentsResponse = await api.getAppointments(patientResponse.data.office_id)
+        if (appointmentsResponse.success && appointmentsResponse.data) {
+          const patientAppointments = appointmentsResponse.data.filter(
+            (c) => c.patient_id === patientId
+          )
+          setAppointments(patientAppointments)
         }
-      } catch (error) {
-        console.error('Error loading patient:', error)
-      } finally {
-        setLoading(false)
+      } else {
+        setPatient(null)
       }
+    } catch (err) {
+      console.error('Error loading patient:', err)
+      setError(true)
+    } finally {
+      setLoading(false)
     }
-
-    loadData()
   }, [patientId, api])
+
+  useEffect(() => {
+    loadData()
+  }, [loadData])
 
   if (loading) {
     return (
-      <div className="text-center py-12">
-        <p className="text-gray-600">Cargando...</p>
+      <div className="space-y-6">
+        <Skeleton className="h-9 w-64" />
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <Skeleton className="h-28 w-full rounded-2xl" />
+          <Skeleton className="h-28 w-full rounded-2xl" />
+          <Skeleton className="h-28 w-full rounded-2xl" />
+        </div>
+        <Skeleton className="h-64 w-full rounded-2xl" />
+      </div>
+    )
+  }
+
+  if (error) {
+    return (
+      <div className="space-y-6">
+        <Button variant="ghost" size="sm" onClick={() => router.back()} aria-label="Volver">
+          <ArrowLeft size={16} />
+        </Button>
+        <ErrorState onRetry={loadData} />
       </div>
     )
   }
 
   if (!patient) {
     return (
-      <div className="text-center py-12">
-        <p className="text-gray-600">Paciente no encontrado</p>
+      <div className="space-y-6">
+        <Button variant="ghost" size="sm" onClick={() => router.back()} aria-label="Volver">
+          <ArrowLeft size={16} />
+        </Button>
+        <EmptyState
+          icon={UserX}
+          title="Paciente no encontrado"
+          description="Es posible que el registro se haya eliminado o que el enlace sea incorrecto."
+          action={
+            <Button variant="secondary" onClick={() => router.push('/dashboard/patients')}>
+              Ver todos los pacientes
+            </Button>
+          }
+        />
       </div>
     )
   }
@@ -66,17 +104,20 @@ export default function PatientDetailPage() {
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="flex items-center gap-4">
+      <div className="flex items-center gap-3">
         <Button
           variant="ghost"
           size="sm"
           onClick={() => router.back()}
+          aria-label="Volver"
         >
           <ArrowLeft size={16} />
         </Button>
         <div>
-          <h1 className="text-3xl font-bold text-gray-900">{patient.name}</h1>
-          <p className="text-gray-600 mt-1">Perfil del paciente</p>
+          <h1 className="text-2xl sm:text-[28px] font-bold tracking-tight text-gray-900 leading-tight">
+            {patient.name}
+          </h1>
+          <p className="text-sm text-gray-500 mt-1">Perfil del paciente</p>
         </div>
       </div>
 

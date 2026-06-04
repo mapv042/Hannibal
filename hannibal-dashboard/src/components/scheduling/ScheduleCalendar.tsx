@@ -7,22 +7,14 @@ import timeGridPlugin from '@fullcalendar/timegrid'
 import interactionPlugin from '@fullcalendar/interaction'
 import esLocale from '@fullcalendar/core/locales/es'
 import { useApi } from '@/lib/api'
+import { getStatus, TONE_HEX } from '@/lib/status'
+import { patientLabel } from '@/lib/appointments'
 import type { Appointment } from '@/lib/supabase'
 
 interface ScheduleCalendarProps {
   officeId: string
   onAppointmentClick?: (appointment: Appointment) => void
   onDateClick?: (date: string) => void
-}
-
-type EventStatus = 'confirmed' | 'pending' | 'blocked' | 'no_show' | 'cancelled'
-
-const statusColors: Record<EventStatus, string> = {
-  confirmed: '#10b981',
-  pending: '#f59e0b',
-  blocked: '#6b7280',
-  no_show: '#ef4444',
-  cancelled: '#ef4444',
 }
 
 export const ScheduleCalendar: React.FC<ScheduleCalendarProps> = ({
@@ -52,17 +44,20 @@ export const ScheduleCalendar: React.FC<ScheduleCalendarProps> = ({
     loadAppointments()
   }, [loadAppointments])
 
-  const events = appointments.map((appointment) => ({
-    id: appointment.id,
-    title: appointment.patient_id,
-    start: appointment.date_time,
-    end: new Date(new Date(appointment.date_time).getTime() + appointment.duration_minutes * 60000).toISOString(),
-    backgroundColor: statusColors[appointment.status as EventStatus],
-    borderColor: statusColors[appointment.status as EventStatus],
-    extendedProps: {
-      appointment,
-    },
-  }))
+  const events = appointments.map((appointment) => {
+    const color = TONE_HEX[getStatus(appointment.status).tone]
+    return {
+      id: appointment.id,
+      title: patientLabel(appointment),
+      start: appointment.date_time,
+      end: new Date(new Date(appointment.date_time).getTime() + appointment.duration_minutes * 60000).toISOString(),
+      backgroundColor: color,
+      borderColor: color,
+      extendedProps: {
+        appointment,
+      },
+    }
+  })
 
   const handleEventClick = (info: any) => {
     const appointment = info.event.extendedProps.appointment

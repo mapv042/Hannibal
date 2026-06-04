@@ -5,7 +5,7 @@ import { useApi, type ReminderRule } from '@/lib/api'
 import { createBrowserSupabaseClient } from '@/lib/supabase'
 import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
-import { Badge } from '@/components/ui/Badge'
+import { PageHeader } from '@/components/ui/PageHeader'
 import { Card, CardBody, CardHeader } from '@/components/ui/Card'
 import { Settings, Save, Globe, Zap, Clock, Bell, LucideIcon } from 'lucide-react'
 import type { Office } from '@/lib/supabase'
@@ -18,14 +18,25 @@ import {
   type ReminderType,
 } from '@/components/onboarding/StepSchedule'
 
+/** Marks a section/control that is intentionally not wired up yet (pre-launch). */
+function SoonPill() {
+  return (
+    <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold bg-gray-100 text-gray-500 uppercase tracking-wide">
+      Próximamente
+    </span>
+  )
+}
+
 function SectionHeader({
   icon: Icon,
   title,
   subtitle,
+  soon,
 }: {
   icon: LucideIcon
   title: string
   subtitle?: string
+  soon?: boolean
 }) {
   return (
     <div className="flex items-center gap-3.5">
@@ -33,7 +44,10 @@ function SectionHeader({
         <Icon size={20} className="text-primary-700" />
       </div>
       <div>
-        <h2 className="text-base font-semibold tracking-tight text-gray-900">{title}</h2>
+        <div className="flex items-center gap-2">
+          <h2 className="text-base font-semibold tracking-tight text-gray-900">{title}</h2>
+          {soon && <SoonPill />}
+        </div>
         {subtitle && <p className="text-[13px] text-gray-500 mt-0.5">{subtitle}</p>}
       </div>
     </div>
@@ -148,12 +162,8 @@ export default function SettingsPage() {
 
   return (
     <div className="space-y-6 max-w-2xl">
-      {/* Header */}
-      <div>
-        <Badge variant="primary" className="mb-3">Panel</Badge>
-        <h1 className="text-[28px] font-bold tracking-tight text-gray-900">Configuración</h1>
-        <p className="text-sm text-gray-500 mt-1">Personaliza tu asistente de WhatsApp</p>
-      </div>
+      <PageHeader title="Configuración" subtitle="Personaliza tu asistente de WhatsApp" />
+
 
       {/* Save Notification */}
       {saved && (
@@ -337,13 +347,14 @@ export default function SettingsPage() {
             icon={Globe}
             title="Integraciones"
             subtitle="Conecta tu calendario y otras herramientas"
+            soon
           />
         </CardHeader>
         <CardBody className="space-y-4">
           <p className="text-sm text-gray-600">
             Conecta Google Calendar para sincronizar tus citas automáticamente
           </p>
-          <Button variant="secondary">
+          <Button variant="secondary" disabled>
             Conectar Google Calendar
           </Button>
         </CardBody>
@@ -356,32 +367,29 @@ export default function SettingsPage() {
             icon={Clock}
             title="Horarios de atención"
             subtitle="Disponibilidad semanal. El bot solo agenda dentro de estos bloques."
+            soon
           />
         </CardHeader>
         <CardBody className="space-y-4">
-          <div className="space-y-3">
+          <p className="text-sm text-gray-600">
+            Por ahora puedes configurar tus horarios durante el alta de tu consultorio.
+            La edición desde aquí estará disponible pronto.
+          </p>
+          <div className="space-y-3 opacity-60 pointer-events-none select-none" aria-hidden="true">
             {['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo'].map(
               (day) => (
                 <div key={day} className="flex items-center gap-4">
                   <label className="w-24 font-medium text-gray-900 text-sm">
                     {day}
                   </label>
-                  <input
-                    type="time"
-                    className="input-field w-32"
-                    placeholder="09:00"
-                  />
+                  <input type="time" className="input-field w-32" disabled />
                   <span className="text-gray-500">-</span>
-                  <input
-                    type="time"
-                    className="input-field w-32"
-                    placeholder="17:00"
-                  />
+                  <input type="time" className="input-field w-32" disabled />
                 </div>
               )
             )}
           </div>
-          <Button variant="secondary" className="w-full">
+          <Button variant="secondary" className="w-full" disabled>
             Guardar horarios
           </Button>
         </CardBody>

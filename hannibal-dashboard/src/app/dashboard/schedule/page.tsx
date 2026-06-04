@@ -5,11 +5,13 @@ import { createBrowserSupabaseClient } from '@/lib/supabase'
 import { ScheduleCalendar } from '@/components/scheduling/ScheduleCalendar'
 import { Modal } from '@/components/ui/Modal'
 import { Card, CardBody } from '@/components/ui/Card'
-import { Badge, StatusBadge } from '@/components/ui/Badge'
+import { StatusBadge } from '@/components/ui/Badge'
+import { PageHeader } from '@/components/ui/PageHeader'
+import { Skeleton } from '@/components/ui/states/Skeleton'
+import { patientLabel } from '@/lib/appointments'
 import { format } from 'date-fns'
 import { es } from 'date-fns/locale'
 import type { Appointment } from '@/lib/supabase'
-// import { X } from 'lucide-react'
 
 export default function SchedulePage() {
   const [selectedAppointment, setSelectedAppointment] = useState<Appointment | null>(null)
@@ -26,26 +28,21 @@ export default function SchedulePage() {
     getUser()
   }, [supabase])
 
-  if (!user) {
-    return <div>Cargando...</div>
-  }
-
   return (
     <div className="space-y-6">
-      {/* Header */}
-      <div>
-        <Badge variant="primary" className="mb-3">Panel</Badge>
-        <h1 className="text-[28px] font-bold tracking-tight text-gray-900">Agenda</h1>
-        <p className="text-sm text-gray-500 mt-1">Consulta y administra tu calendario de citas</p>
-      </div>
+      <PageHeader title="Agenda" subtitle="Consulta y administra tu calendario de citas" />
 
       {/* Calendar */}
       <Card>
         <CardBody className="p-6">
-          <ScheduleCalendar
-            officeId={user.id}
-            onAppointmentClick={setSelectedAppointment}
-          />
+          {!user ? (
+            <Skeleton className="h-[560px] w-full rounded-xl" />
+          ) : (
+            <ScheduleCalendar
+              officeId={user.id}
+              onAppointmentClick={setSelectedAppointment}
+            />
+          )}
         </CardBody>
       </Card>
 
@@ -62,7 +59,7 @@ export default function SchedulePage() {
               <div>
                 <p className="text-xs font-medium text-gray-600 uppercase">Paciente</p>
                 <p className="text-lg font-semibold text-gray-900">
-                  {selectedAppointment.patient_id}
+                  {patientLabel(selectedAppointment)}
                 </p>
               </div>
 
