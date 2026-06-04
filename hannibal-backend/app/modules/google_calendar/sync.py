@@ -247,8 +247,8 @@ async def sync_time_block(
                 office_id=office_id,
                 google_event_id=google_event.google_event_id,
                 title=f"Blocked - {time_block.reason or 'Not specified'}",
-                start_time=time_block.start_time,
-                end_time=time_block.end_time,
+                start_time=time_block.start_date,
+                end_time=time_block.end_date,
                 db=db,
             )
             logger.info(
@@ -257,13 +257,13 @@ async def sync_time_block(
                 google_event_id=google_event.google_event_id,
             )
         else:
-            # Create new event (only if source is manual, not google_calendar)
-            if time_block.source == "manual":
+            # Create new event (only if origin is manual, not google_calendar)
+            if time_block.origin == "manual":
                 google_event_id = await create_calendar_event(
                     office_id=office_id,
                     title=f"Blocked - {time_block.reason or 'Not specified'}",
-                    start_time=time_block.start_time,
-                    end_time=time_block.end_time,
+                    start_time=time_block.start_date,
+                    end_time=time_block.end_date,
                     description=f"Type: {time_block.reason}",
                     db=db,
                 )
@@ -272,11 +272,13 @@ async def sync_time_block(
                     office_id=office_id,
                     google_event_id=google_event_id,
                     title=f"Blocked - {time_block.reason or 'Not specified'}",
-                    start_time=time_block.start_time,
-                    end_time=time_block.end_time,
-                    is_time_block=True,
+                    start_date=time_block.start_date,
+                    end_date=time_block.end_date,
+                    is_block=True,
                 )
                 db.add(google_event)
+                # Link the event back to the block so it can be updated/unsynced later
+                time_block.google_event_id = google_event_id
                 await db.commit()
 
                 logger.info(
@@ -292,6 +294,9 @@ async def sync_time_block(
             office_id=str(office_id),
             error=str(e),
         )
+        # Propagate so the caller can roll back the DB block — a block that
+        # exists in the DB but not in Google Calendar is an inconsistency.
+        raise
 
 
 async def unsync_time_block(

@@ -56,7 +56,11 @@ DOCTOR_TOOL_DEFINITIONS = [
     },
     {
         "name": "cancel_appointment",
-        "description": "Cancela una cita.",
+        "description": (
+            "Cancela una cita de forma definitiva: el paciente pierde su lugar y se le "
+            "avisa automáticamente por WhatsApp invitándolo a reagendar. "
+            "Para MOVER una cita a otro horario usa reschedule_appointment, NO cancel."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
@@ -261,7 +265,8 @@ DOCTOR_TOOL_DEFINITIONS = [
         "name": "reschedule_appointment",
         "description": (
             "Reagenda una cita existente a un nuevo horario. Cancela la cita anterior "
-            "y crea una nueva atómicamente. El doctor no necesita confirmación extra."
+            "y crea una nueva atómicamente, y le avisa al paciente automáticamente del "
+            "nuevo horario por WhatsApp. El doctor no necesita confirmación extra."
         ),
         "input_schema": {
             "type": "object",
@@ -464,11 +469,25 @@ async def _handle_cancel_appointment(args: dict, ctx: DoctorToolContext) -> dict
 
     logger.info("doctor_cancelled_appointment", appointment_id=appt_id_str)
 
+    # Always tell the patient — a silent cancellation is unacceptable
+    patient = (
+        await ctx.db.get(Patient, appointment.patient_id)
+        if appointment.patient_id
+        else None
+    )
+    patient_notified = await _notify_patient(
+        ctx,
+        patient,
+        f"Tu cita del {formatted} fue cancelada. Si deseas reagendarla, "
+        f"escríbenos cuando gustes y con gusto te ayudamos.",
+    )
+
     return {
         "success": True,
         "appointment_id": appt_id_str,
         "formatted": formatted,
         "reason": reason,
+        "patient_notified": patient_notified,
     }
 
 
@@ -604,6 +623,76 @@ async def _get_or_create_patient_conversation(
     db.add(conversation)
     await db.flush()
     return conversation
+
+
+async def _notify_patient(ctx: DoctorToolContext, patient: Optional[Patient], text: str) -> bool:
+    """Send a best-effort WhatsApp notification to the patient.
+
+    Used when the doctor cancels or reschedules a cita: the patient must always be
+    told. Returns True if the message was sent (delivery not guaranteed), False
+    otherwise. NEVER raises — the appointment change already happened, so a failed
+    notification must not roll it back; we log it and let the doctor follow up.
+    """
+    if not patient or not patient.whatsapp_id:
+        logger.warning(
+            "patient_notify_no_whatsapp",
+            patient_id=str(patient.id) if patient else None,
+        )
+        return False
+
+    # Same path as send_message_to_patient: free text within the 24h window,
+    # approved template outside it.
+    try:
+        if await service_window_open(ctx.db, ctx.office.id, patient.whatsapp_id):
+            wa_message_id = await ctx.meta_client.send_text_message(
+                phone_number_id=ctx.office.whatsapp_phone_id,
+                token=ctx.office.whatsapp_token,
+                to=patient.whatsapp_id,
+                text=text,
+            )
+            via = "text"
+        else:
+            wa_message_id = await ctx.meta_client.send_template_message(
+                phone_number_id=ctx.office.whatsapp_phone_id,
+                token=ctx.office.whatsapp_token,
+                to=patient.whatsapp_id,
+                template_name=TEMPLATE_OFFICE_MESSAGE,
+                params=build_office_message_params(
+                    patient_name=patient.name or "paciente",
+                    location=ctx.office.name,
+                    text=text,
+                ),
+                language_code=TEMPLATE_LANGUAGE,
+            )
+            via = "template"
+    except Exception as e:
+        logger.error(
+            "patient_notify_failed",
+            patient_id=str(patient.id),
+            to=patient.whatsapp_id,
+            error=str(e),
+            exc_info=True,
+        )
+        return False
+
+    conversation = await _get_or_create_patient_conversation(
+        ctx.db, ctx.office.id, patient.whatsapp_id
+    )
+    msg = Message(
+        id=uuid.uuid4(),
+        conversation_id=conversation.id,
+        content=text,
+        type="text",
+        direction="outgoing",
+        whatsapp_message_id=wa_message_id,
+        delivery_status="sent",
+        extra_metadata={"via": via, "source": "doctor_appointment_change"},
+    )
+    ctx.db.add(msg)
+    await ctx.db.flush()
+
+    logger.info("patient_notified", patient_id=str(patient.id), wa_message_id=wa_message_id)
+    return True
 
 
 @_handler("send_message_to_patient")
@@ -911,6 +1000,22 @@ async def _handle_get_available_slots(args: dict, ctx: DoctorToolContext) -> dic
             a_end = a_start + timedelta(minutes=appt.duration_minutes or 30)
         busy_ranges.append((a_start, a_end))
 
+    # Time blocks overlapping the date (vacations, manual blocks, etc.)
+    block_stmt = select(TimeBlock).where(
+        (TimeBlock.office_id == ctx.office.id)
+        & (TimeBlock.start_date <= time_max)
+        & (TimeBlock.end_date >= time_min)
+    )
+    result = await ctx.db.execute(block_stmt)
+    for block in result.scalars().all():
+        b_start = block.start_date
+        if b_start.tzinfo is None:
+            b_start = b_start.replace(tzinfo=MX_TIMEZONE)
+        b_end = block.end_date
+        if b_end.tzinfo is None:
+            b_end = b_end.replace(tzinfo=MX_TIMEZONE)
+        busy_ranges.append((b_start, b_end))
+
     # Generate slots
     slots = []
     for sched in schedules:
@@ -1092,10 +1197,13 @@ async def _handle_reschedule_appointment(args: dict, ctx: DoctorToolContext) -> 
 
     # Get patient info
     patient_name = ""
-    if appointment.patient_id:
-        patient = await ctx.db.get(Patient, appointment.patient_id)
-        if patient:
-            patient_name = patient.name or ""
+    patient_obj = (
+        await ctx.db.get(Patient, appointment.patient_id)
+        if appointment.patient_id
+        else None
+    )
+    if patient_obj:
+        patient_name = patient_obj.name or ""
 
     duration = timedelta(minutes=appointment.duration_minutes or 30)
     new_end = new_start + duration
@@ -1133,7 +1241,15 @@ async def _handle_reschedule_appointment(args: dict, ctx: DoctorToolContext) -> 
     await ctx.db.flush()
 
     new_day_name = DAYS_ES[new_start.weekday()]
+    new_formatted = f"{new_day_name} {new_start.strftime('%d/%m/%Y')} a las {new_start.strftime('%H:%M')}"
     logger.info("doctor_rescheduled_appointment", old_id=appt_id_str, new_id=str(new_appointment_id))
+
+    # Always tell the patient where their cita moved to
+    patient_notified = await _notify_patient(
+        ctx,
+        patient_obj,
+        f"Tu cita se movió del {old_formatted} al {new_formatted}.",
+    )
 
     return {
         "success": True,
@@ -1143,7 +1259,8 @@ async def _handle_reschedule_appointment(args: dict, ctx: DoctorToolContext) -> 
         "new_date": new_date,
         "new_time": new_time,
         "new_day_name": new_day_name,
-        "new_formatted": f"{new_day_name} {new_start.strftime('%d/%m/%Y')} a las {new_start.strftime('%H:%M')}",
+        "new_formatted": new_formatted,
         "reason": reason,
         "patient_name": patient_name,
+        "patient_notified": patient_notified,
     }

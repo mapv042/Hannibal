@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.constants import DAYS_ES, MX_TIMEZONE
 from app.db.models import (
-    Appointment, Office, Patient, AvailabilitySchedule,
+    Appointment, Office, Patient, AvailabilitySchedule, TimeBlock,
 )
 from app.modules.google_calendar.service import (
     get_freebusy, create_calendar_event, update_event_color,
@@ -281,6 +281,22 @@ async def _handle_get_available_slots(args: dict, ctx: ToolContext) -> dict:
         elif not a_end:
             a_end = a_start + timedelta(minutes=appt.duration_minutes or 30)
         busy_ranges.append((a_start, a_end))
+
+    # Time blocks overlapping the date (vacations, manual blocks, etc.)
+    block_stmt = select(TimeBlock).where(
+        (TimeBlock.office_id == ctx.office.id)
+        & (TimeBlock.start_date <= time_max)
+        & (TimeBlock.end_date >= time_min)
+    )
+    result = await ctx.db.execute(block_stmt)
+    for block in result.scalars().all():
+        b_start = block.start_date
+        if b_start.tzinfo is None:
+            b_start = b_start.replace(tzinfo=MX_TIMEZONE)
+        b_end = block.end_date
+        if b_end.tzinfo is None:
+            b_end = b_end.replace(tzinfo=MX_TIMEZONE)
+        busy_ranges.append((b_start, b_end))
 
     # Generate slots
     slots = []
