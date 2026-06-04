@@ -10,9 +10,10 @@ import sentry_sdk
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import text
 
 from app.config import settings
+from app.db.base import get_async_session_maker
 from app.core.exceptions import (
     NotFoundError,
     ForbiddenError,
@@ -120,9 +121,42 @@ app.add_middleware(
 
 # Health check endpoint
 @app.get("/health")
-async def health_check() -> dict[str, str]:
-    """Health check endpoint."""
-    return {"status": "ok", "service": "hannibal-backend"}
+async def health_check() -> JSONResponse:
+    """Health check endpoint.
+
+    Verifies connectivity to the database and Redis. Returns 503 if either
+    dependency is unreachable so the platform health check fails fast.
+    """
+    db_ok = False
+    redis_ok = False
+
+    # Check database
+    try:
+        async with get_async_session_maker()() as session:
+            await session.execute(text("SELECT 1"))
+        db_ok = True
+    except Exception as e:
+        logger.error("health_check_db_failed", error=str(e))
+
+    # Check Redis
+    try:
+        if redis_client is None:
+            raise RuntimeError("Redis client not initialized")
+        await redis_client.ping()
+        redis_ok = True
+    except Exception as e:
+        logger.error("health_check_redis_failed", error=str(e))
+
+    healthy = db_ok and redis_ok
+    return JSONResponse(
+        status_code=200 if healthy else 503,
+        content={
+            "status": "ok" if healthy else "degraded",
+            "service": "hannibal-backend",
+            "database": "ok" if db_ok else "error",
+            "redis": "ok" if redis_ok else "error",
+        },
+    )
 
 
 # Error handlers for custom exceptions

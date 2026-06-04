@@ -54,9 +54,6 @@ class Settings(BaseSettings):
     confirmation_request_minute: int = 0  # Minute (0-59) to send confirmation requests
     earliest_reminder_hour: int = 8  # Don't send reminders before this hour (Mexico City TZ)
 
-    # AI mode: use tool-based conversation (v2) instead of intent/state-machine (v1)
-    use_tool_based_ai: bool = False
-
     # Frontend
     frontend_url: str = "http://localhost:3000"
 

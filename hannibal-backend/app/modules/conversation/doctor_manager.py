@@ -12,7 +12,7 @@ from app.utils.logger import get_logger
 from app.core.exceptions import ConversationError
 from app.db.models import Office
 from app.modules.ai import get_ai_service
-from app.modules.ai.prompts.doctor_v2 import build_doctor_system_prompt
+from app.modules.ai.prompts.doctor import build_doctor_system_prompt
 from app.modules.ai.doctor_tools import (
     DOCTOR_TOOL_DEFINITIONS,
     DoctorToolContext,

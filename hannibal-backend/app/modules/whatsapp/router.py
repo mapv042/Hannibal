@@ -26,7 +26,6 @@ from app.modules.whatsapp.coexistence import (
     is_doctor_echo,
 )
 from app.modules.conversation.manager import ConversationManager
-from app.modules.conversation.manager_v2 import ConversationManagerV2
 from app.modules.conversation.doctor_manager import DoctorConversationManager
 from app.modules.conversation.session_store import SessionStore
 from app.modules.whatsapp.meta_client import MetaCloudClient
@@ -289,13 +288,10 @@ async def _process_message(
             )
             return
 
-        # Route to conversation manager (v1 or v2 based on feature flag)
+        # Route to the tool-use conversation manager
         session_store = SessionStore(redis_client)
         meta_client = MetaCloudClient()
-        if settings.use_tool_based_ai:
-            manager = ConversationManagerV2(session_store, meta_client)
-        else:
-            manager = ConversationManager(session_store, meta_client)
+        manager = ConversationManager(session_store, meta_client)
 
         # Reconstruct payload in the format ConversationManager expects
         conversation_payload = {
