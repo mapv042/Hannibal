@@ -491,6 +491,7 @@ class ReminderRule(Base):
         UUID(as_uuid=True),
         ForeignKey("offices.id", ondelete="CASCADE"),
         nullable=False,
+        index=True,
     )
 
     # Reminder kind, e.g. "day_before", "4h", "1h", "post_appointment"
