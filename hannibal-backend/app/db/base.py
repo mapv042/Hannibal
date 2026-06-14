@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from uuid import uuid4
+
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
 
@@ -25,7 +27,16 @@ def get_engine():
             pool_pre_ping=True,
             pool_size=20,
             max_overflow=0,
-            connect_args={"statement_cache_size": 0},
+            pool_recycle=300,  # recycle before Supabase's pooler drops idle connections
+            connect_args={
+                # Supabase Supavisor runs in transaction mode (port 6543), which does
+                # not support cached/named prepared statements shared across server
+                # connections. Disable caching and give each statement a unique name
+                # so they can't collide on a reused pooled connection.
+                "statement_cache_size": 0,
+                "prepared_statement_cache_size": 0,
+                "prepared_statement_name_func": lambda: f"__asyncpg_{uuid4()}__",
+            },
         )
     return _engine
 
