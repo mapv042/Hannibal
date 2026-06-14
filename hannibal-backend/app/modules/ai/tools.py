@@ -63,10 +63,8 @@ TOOL_DEFINITIONS = [
     {
         "name": "create_appointment",
         "description": (
-            "Crea una nueva cita. SOLO llama esta herramienta DESPUÉS de que el paciente haya "
-            "confirmado explícitamente todos los datos (nombre, fecha, hora, motivo). "
-            "Primero presenta un resumen y espera que el paciente diga 'sí', 'correcto', 'dale', etc. "
-            "NUNCA llames esta herramienta sin confirmación explícita del paciente."
+            "Crea una nueva cita. Llámala una vez que el paciente confirme un resumen con los datos "
+            "de la cita (nombre, fecha, hora, motivo). No la llames sin esa confirmación."
         ),
         "input_schema": {
             "type": "object",
