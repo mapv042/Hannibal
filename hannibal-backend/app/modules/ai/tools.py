@@ -64,7 +64,8 @@ TOOL_DEFINITIONS = [
         "name": "create_appointment",
         "description": (
             "Crea una nueva cita. Llámala una vez que el paciente confirme un resumen con los datos "
-            "de la cita (nombre, fecha, hora, motivo). No la llames sin esa confirmación."
+            "de la cita (nombre, fecha, hora, motivo). Al crearla, la cita queda agendada y lista. "
+            "No la llames sin esa confirmación."
         ),
         "input_schema": {
             "type": "object",
@@ -138,8 +139,9 @@ TOOL_DEFINITIONS = [
     {
         "name": "confirm_appointment",
         "description": (
-            "Confirma la asistencia del paciente a una cita programada. "
-            "Usa cuando el paciente responde afirmativamente a un recordatorio de cita."
+            "Registra que el paciente confirma su asistencia, en respuesta a una solicitud de "
+            "confirmación o recordatorio que el consultorio le envió previamente. Una cita recién "
+            "agendada ya queda lista y no necesita este paso."
         ),
         "input_schema": {
             "type": "object",
