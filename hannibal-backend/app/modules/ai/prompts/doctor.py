@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
 from typing import TYPE_CHECKING
 
 from app.core.constants import DAYS_ES
@@ -16,6 +17,9 @@ def build_doctor_system_prompt(office: Office) -> str:
     now = now_mx()
     today_str = now.strftime("%Y-%m-%d")
     day_name = DAYS_ES[now.weekday()]
+    tomorrow = now + timedelta(days=1)
+    tomorrow_str = tomorrow.strftime("%Y-%m-%d")
+    tomorrow_day = DAYS_ES[tomorrow.weekday()]
 
     tone_desc = (
         "formal y profesional, de usted"
@@ -31,9 +35,10 @@ def build_doctor_system_prompt(office: Office) -> str:
     return f"""Eres el asistente administrativo del consultorio {office.name}. Estás hablando directamente con el doctor/profesional dueño del consultorio por WhatsApp.
 
 FECHA Y HORA ACTUAL: {today_str} ({day_name}), {now.strftime("%H:%M")} hrs
+HOY es {today_str} ({day_name}). MAÑANA es {tomorrow_str} ({tomorrow_day}).
 ZONA HORARIA: Centro de México (CST)
 
-IMPORTANTE: Cuando el doctor diga "mañana", "pasado mañana", "esta semana", "el lunes", etc., calcula las fechas correctas usando la fecha actual como referencia. "La semana" significa de lunes a domingo de la semana actual.
+IMPORTANTE: Para "hoy" y "mañana" usa exactamente las fechas de arriba, no las recalcules. Para "pasado mañana", un día de la semana ("el lunes") o "esta semana", calcula desde HOY. "La semana" significa de lunes a domingo de la semana actual.
 
 CÓMO COMUNICARTE:
 - Respuestas concisas y directas (ideal para WhatsApp, máximo 2-3 párrafos)

@@ -57,10 +57,7 @@ DOCTOR_TOOL_DEFINITIONS = [
     {
         "name": "cancel_appointment",
         "description": (
-            "Cancela una cita de forma definitiva: el paciente pierde su lugar. El horario "
-            "queda libre y el bot podría volver a ofrecerlo a otro paciente, así que tras "
-            "cancelar pregúntale al doctor si quiere que bloquees ese horario (block_time) para "
-            "que no se reagende, o si prefiere dejarlo abierto — no lo asumas. "
+            "Cancela una cita de forma definitiva: el paciente pierde su lugar. "
             "Para MOVER una cita a otro horario usa reschedule_appointment, NO cancel."
         ),
         "input_schema": {
@@ -479,12 +476,19 @@ async def _handle_cancel_appointment(args: dict, ctx: DoctorToolContext) -> dict
 
     # The model writes and sends the patient notification itself via
     # send_message_to_patient (see the doctor prompt) — we only return the facts.
+    # next_step steers the reply: it fires at reply-composition time (unlike the tool
+    # description, read at selection time), so the freed-slot question reliably happens.
     return {
         "success": True,
         "appointment_id": appt_id_str,
         "formatted": formatted,
         "reason": reason,
         "patient_name": patient.name if patient else None,
+        "next_step": (
+            f"El horario {formatted} quedó libre y el bot podría reofrecerlo a otro "
+            "paciente. Pregúntale al doctor si quiere que lo bloquees con block_time para "
+            "que no se reagende, o si prefiere dejarlo abierto — no lo asumas."
+        ),
     }
 
 
@@ -715,7 +719,7 @@ async def _handle_send_message(args: dict, ctx: DoctorToolContext) -> dict:
         "success": True,
         "patient_name": patient.name,
         "message_sent": message,
-        "note": "El mensaje fue enviado pero la entrega NO está confirmada. Usa check_message_delivery para verificar si llegó.",
+        "next_step": "El mensaje fue enviado pero la entrega NO está confirmada. Usa check_message_delivery para verificar si llegó.",
     }
 
 

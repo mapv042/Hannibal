@@ -20,6 +20,7 @@ from app.db.models import (
 from app.modules.scheduling.schemas import AvailableSlot
 from app.modules.google_calendar.service import get_freebusy
 from app.core.exceptions import GoogleCalendarError
+from app.utils.dates import now_mx
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -325,7 +326,7 @@ async def get_upcoming_slots(
         List of available slots sorted by date
     """
     all_slots = []
-    today = date.today()
+    today = now_mx().date()  # Mexico City date, not the server's UTC date
 
     for i in range(days):
         check_date = today + timedelta(days=i)
