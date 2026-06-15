@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, date as date_cls, time as time_type, timedelta
-from typing import Any, Optional
+from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 import redis.asyncio as redis
@@ -57,7 +57,10 @@ DOCTOR_TOOL_DEFINITIONS = [
     {
         "name": "cancel_appointment",
         "description": (
-            "Cancela una cita de forma definitiva: el paciente pierde su lugar. "
+            "Cancela una cita de forma definitiva: el paciente pierde su lugar. El horario "
+            "queda libre y el bot podría volver a ofrecerlo a otro paciente, así que tras "
+            "cancelar pregúntale al doctor si quiere que bloquees ese horario (block_time) para "
+            "que no se reagende, o si prefiere dejarlo abierto — no lo asumas. "
             "Para MOVER una cita a otro horario usa reschedule_appointment, NO cancel."
         ),
         "input_schema": {
