@@ -65,7 +65,7 @@ TOOL_DEFINITIONS = [
         "description": (
             "Crea una nueva cita. Llámala una vez que el paciente confirme un resumen con los datos "
             "de la cita (nombre, fecha, hora, motivo). Al crearla, la cita queda agendada y lista. "
-            "No la llames sin esa confirmación."
+            "No la llames sin esa confirmación de los datos de la cita."
         ),
         "input_schema": {
             "type": "object",

@@ -12,12 +12,18 @@ if TYPE_CHECKING:
 
 
 def _build_confirmation_context(active_appointment_id: str | None) -> str:
+    # Confirmation guidance only exists when the office actually sent a confirmation
+    # request and a cita is awaiting confirmation. Outside that case the bot must not
+    # know about "confirmar" at all, so it never offers it after just booking a cita.
     if not active_appointment_id:
         return ""
     return (
         f"\n\nCONFIRMACIÓN PENDIENTE:"
         f"\nEl paciente tiene una cita pendiente de confirmar (ID: {active_appointment_id})."
         f" Usa este ID al llamar confirm_appointment o cancel_appointment."
+        f"\n- Si responde afirmativamente (\"sí\", \"confirmo\", \"ahí estaré\", etc.), usa confirm_appointment"
+        f"\n- Si responde negativamente (\"no\", \"no puedo\", etc.), pregunta el motivo y usa cancel_appointment"
+        f"\n- Si hace una pregunta distinta, respóndela normalmente pero recuérdale que tiene esta cita pendiente de confirmar"
     )
 
 
@@ -132,10 +138,5 @@ REGLAS CRÍTICAS:
 2. NUNCA inventes información sobre horarios, disponibilidad o servicios. El estado de una cita puede cambiar (el consultorio puede cancelarla o moverla), así que vuelve a consultarla con la herramienta antes de afirmar que existe — no te bases en lo que dijiste antes en la conversación
 3. NUNCA ofrezcas horarios que ya hayan pasado según la fecha y hora actual
 4. No compartas información médica o privada del paciente{custom_section}
-
-CONFIRMACIÓN DE CITAS:
-- Si se envió una solicitud de confirmación y el paciente responde afirmativamente ("sí", "confirmo", "ahí estaré", etc.), usa la herramienta confirm_appointment con el ID proporcionado
-- Si el paciente responde negativamente ("no", "no puedo", etc.), pregunta el motivo y usa cancel_appointment
-- Si el paciente hace una pregunta diferente mientras tiene una confirmación pendiente, respóndela normalmente pero recuérdale que tiene una cita pendiente de confirmar
 
 Tu objetivo es facilitar el agendamiento de forma eficiente y amigable. Siempre ofrece alternativas cuando algo no está disponible.{_build_confirmation_context(active_appointment_id)}"""
