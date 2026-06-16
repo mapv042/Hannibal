@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Any, Optional
 from uuid import UUID
 
 from pydantic import BaseModel, Field
+
+from app.utils.dates import now_mx
 
 
 class SessionContext(BaseModel):
@@ -53,7 +54,7 @@ class SessionContext(BaseModel):
 
     # Activity tracking
     last_message_at: str = Field(
-        default_factory=lambda: datetime.utcnow().isoformat(),
+        default_factory=lambda: now_mx().isoformat(),
         description="ISO timestamp of last message",
     )
 

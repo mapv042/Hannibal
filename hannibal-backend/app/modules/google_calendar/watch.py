@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from uuid import UUID
-from datetime import datetime, timedelta
+from datetime import timedelta
 import uuid
 import httpx
 
@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.models import Office
 from app.modules.google_calendar.auth import get_valid_google_token
 from app.core.exceptions import GoogleCalendarError
+from app.utils.dates import now_mx
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -43,7 +44,9 @@ async def create_watch_channel(
         calendar_id = office.google_calendar_id or "primary"
 
         channel_id = str(uuid.uuid4())
-        expiration = int((datetime.utcnow() + timedelta(days=29)).timestamp() * 1000)
+        # Aware datetime: .timestamp() on a naive datetime would assume local
+        # time and send Google an expiration offset by the server's UTC offset.
+        expiration = int((now_mx() + timedelta(days=29)).timestamp() * 1000)
 
         watch_body = {
             "id": channel_id,
@@ -72,7 +75,7 @@ async def create_watch_channel(
 
             # Store watch info in office
             office.google_watch_channel_id = channel_id
-            office.google_watch_expiry = datetime.utcnow() + timedelta(days=29)
+            office.google_watch_expiry = now_mx() + timedelta(days=29)
 
             await db.commit()
 

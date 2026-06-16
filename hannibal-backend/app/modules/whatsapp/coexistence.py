@@ -10,6 +10,7 @@ from sqlalchemy import select
 
 import redis.asyncio as redis
 
+from app.utils.dates import now_mx
 from app.utils.logger import get_logger
 from app.db.models import Conversation, Office
 
@@ -114,7 +115,7 @@ async def handle_echo(
         conversation = await db.get(Conversation, conversation_id)
         if conversation:
             conversation.taken_by_doctor = True
-            conversation.doctor_took_control_at = datetime.utcnow()
+            conversation.doctor_took_control_at = now_mx()
             conversation.status = "paused"
             db.add(conversation)
             await db.commit()

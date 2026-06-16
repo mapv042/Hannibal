@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-from datetime import timedelta
 from typing import TYPE_CHECKING, Optional
 
-from app.core.constants import DAYS_ES
-from app.utils.dates import now_mx
+from app.utils.dates import build_date_reference_block, now_mx
 
 if TYPE_CHECKING:
     from app.db.models import Office
@@ -36,11 +34,7 @@ def build_doctor_system_prompt(
 ) -> str:
     """Build system prompt for doctor commands via WhatsApp."""
     now = now_mx()
-    today_str = now.strftime("%Y-%m-%d")
-    day_name = DAYS_ES[now.weekday()]
-    tomorrow = now + timedelta(days=1)
-    tomorrow_str = tomorrow.strftime("%Y-%m-%d")
-    tomorrow_day = DAYS_ES[tomorrow.weekday()]
+    date_reference = build_date_reference_block(now)
 
     tone_desc = (
         "formal y profesional, de usted"
@@ -55,11 +49,9 @@ def build_doctor_system_prompt(
 
     return f"""Eres el asistente administrativo del consultorio {office.name}. Estás hablando directamente con el doctor/profesional dueño del consultorio por WhatsApp.
 
-FECHA Y HORA ACTUAL: {today_str} ({day_name}), {now.strftime("%H:%M")} hrs
-HOY es {today_str} ({day_name}). MAÑANA es {tomorrow_str} ({tomorrow_day}).
-ZONA HORARIA: Centro de México (CST)
+{date_reference}
 
-IMPORTANTE: Para "hoy" y "mañana" usa exactamente las fechas de arriba, no las recalcules. Para "pasado mañana", un día de la semana ("el lunes") o "esta semana", calcula desde HOY. "La semana" significa de lunes a domingo de la semana actual.
+IMPORTANTE: "La semana" significa de lunes a domingo de la semana actual.
 
 CÓMO COMUNICARTE:
 - Respuestas concisas y directas (ideal para WhatsApp, máximo 2-3 párrafos)

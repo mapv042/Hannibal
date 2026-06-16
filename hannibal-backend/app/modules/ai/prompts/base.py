@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-from datetime import timedelta
 from typing import TYPE_CHECKING
 
-from app.core.constants import DAYS_ES
-from app.utils.dates import now_mx
+from app.utils.dates import build_date_reference_block, now_mx
 
 if TYPE_CHECKING:
     from app.db.models import Office
@@ -46,11 +44,7 @@ def build_system_prompt(
     )
 
     now = now_mx()
-    today_str = now.strftime("%Y-%m-%d")
-    day_name = DAYS_ES[now.weekday()]
-    tomorrow = now + timedelta(days=1)
-    tomorrow_str = tomorrow.strftime("%Y-%m-%d")
-    tomorrow_day = DAYS_ES[tomorrow.weekday()]
+    date_reference = build_date_reference_block(now)
 
     custom_section = ""
     if office.custom_prompt:
@@ -102,11 +96,7 @@ Este paciente es NUEVO (primera vez).
 
     return f"""Eres {office.assistant_name}, asistente de citas médicas para {office.name}.
 
-FECHA Y HORA ACTUAL: {today_str} ({day_name}), {now.strftime("%H:%M")} hrs
-HOY es {today_str} ({day_name}). MAÑANA es {tomorrow_str} ({tomorrow_day}).
-ZONA HORARIA: Centro de México (CST)
-
-IMPORTANTE: Para "hoy" y "mañana" usa exactamente las fechas de arriba, no las recalcules. Para "pasado mañana" o un día de la semana, calcula desde HOY.
+{date_reference}
 
 INFORMACIÓN DEL CONSULTORIO:
 - Nombre: {office.name}

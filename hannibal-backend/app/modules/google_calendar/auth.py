@@ -13,6 +13,7 @@ from sqlalchemy import select
 from app.config import settings
 from app.db.models import Office
 from app.core.exceptions import GoogleCalendarError
+from app.utils.dates import now_mx
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -68,7 +69,7 @@ async def exchange_code_for_token(
         GoogleCalendarError: If token exchange fails
     """
     import httpx
-    from datetime import datetime, timedelta
+    from datetime import datetime, timedelta, timezone
 
     try:
         async with httpx.AsyncClient() as client:
@@ -96,7 +97,7 @@ async def exchange_code_for_token(
             # Add expiry time
             if "expires_in" in token_data:
                 token_data["expires_at"] = (
-                    datetime.utcnow() + timedelta(seconds=token_data["expires_in"])
+                    now_mx() + timedelta(seconds=token_data["expires_in"])
                 ).isoformat()
 
             # Store token in office
@@ -143,7 +144,7 @@ async def refresh_google_token(
         GoogleCalendarError: If refresh fails
     """
     import httpx
-    from datetime import datetime, timedelta
+    from datetime import datetime, timedelta, timezone
 
     try:
         office = await db.get(Office, office_id)
@@ -180,7 +181,7 @@ async def refresh_google_token(
                 refresh_token  # Preserve refresh token
             )
             new_token_data["expires_at"] = (
-                datetime.utcnow() + timedelta(seconds=new_token_data["expires_in"])
+                now_mx() + timedelta(seconds=new_token_data["expires_in"])
             ).isoformat()
 
             office.google_calendar_token = new_token_data
@@ -219,7 +220,7 @@ async def get_valid_google_token(
     Raises:
         GoogleCalendarError: If token is not available
     """
-    from datetime import datetime, timedelta
+    from datetime import datetime, timedelta, timezone
 
     office = await db.get(Office, office_id)
     if not office or not office.google_calendar_token:
@@ -232,7 +233,11 @@ async def get_valid_google_token(
     # Check if token is expired or about to expire (5 min buffer)
     if expires_at_str:
         expires_at = datetime.fromisoformat(expires_at_str)
-        if datetime.utcnow() >= expires_at - timedelta(minutes=5):
+        # Tokens persisted before the tz migration are naive UTC wall-clock —
+        # normalize them to UTC so the comparison never mixes naive and aware.
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        if now_mx() >= expires_at - timedelta(minutes=5):
             # Token expired, refresh it
             new_token = await refresh_google_token(office_id, db)
             return new_token.get("access_token", access_token)

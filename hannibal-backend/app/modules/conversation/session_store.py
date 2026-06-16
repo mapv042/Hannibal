@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import uuid as uuid_module
-from datetime import datetime
+from app.utils.dates import now_mx
 from typing import Optional
 
 import redis.asyncio as redis
@@ -292,5 +292,5 @@ async def append_outgoing_message(
             collected_data={},
         )
     session.claude_history.append({"role": "assistant", "content": content})
-    session.last_message_at = datetime.utcnow().isoformat()
+    session.last_message_at = now_mx().isoformat()
     await store.save_session(whatsapp_id, office_id_str, session)

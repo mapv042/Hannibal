@@ -11,13 +11,13 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.constants import DAYS_ES, MX_TIMEZONE
-from app.db.models import (
-    Appointment, Office, Patient, AvailabilitySchedule, TimeBlock,
-)
+from app.db.models import Appointment, Office, Patient
 from app.modules.google_calendar.service import (
-    get_freebusy, create_calendar_event, update_event_color,
+    create_calendar_event, update_event_color,
 )
 from app.modules.google_calendar.sync import cancel_appointment_in_calendar
+from app.modules.scheduling.availability import compute_day_availability
+from app.utils.dates import relative_day_label, spanish_date_label
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -259,108 +259,43 @@ async def _handle_get_available_slots(args: dict, ctx: ToolContext) -> dict:
     except ValueError:
         return {"error": f"Fecha inválida: {date_str}. Usa formato YYYY-MM-DD."}
 
-    now = datetime.now(tz=MX_TIMEZONE)
+    today = datetime.now(tz=MX_TIMEZONE).date()
+    # Ground the date relative to today so the model never treats "mañana" and
+    # its absolute date ("miércoles 17") as two different days.
+    relative_day = relative_day_label(target_date, today)
+    date_label = spanish_date_label(target_date, today)
+    day_name = DAYS_ES[target_date.weekday()]
 
-    # Get schedules for the target day
-    db_day = (target_date.weekday() + 1) % 7  # Python Mon=0 → DB Sun=0
-    stmt = select(AvailabilitySchedule).where(
-        (AvailabilitySchedule.office_id == ctx.office.id)
-        & (AvailabilitySchedule.is_active == True)
-        & (AvailabilitySchedule.day_of_week == db_day)
-    )
-    result = await ctx.db.execute(stmt)
-    schedules = result.scalars().all()
+    try:
+        result = await compute_day_availability(
+            ctx.office.id, target_date, ctx.db, only_future=True,
+        )
+    except Exception as e:
+        logger.warning("tool_availability_failed", error=str(e))
+        return {"error": "No se pudo consultar la disponibilidad del calendario. Intenta de nuevo en unos minutos."}
 
-    if not schedules:
-        day_name = DAYS_ES[target_date.weekday()]
+    if not result.has_schedule:
         return {
             "date": date_str,
             "day_name": day_name,
+            "relative_day": relative_day,
             "slots": [],
-            "message": f"No hay horario de atención configurado para {day_name}.",
+            "message": f"No hay horario de atención configurado para {date_label}.",
         }
 
-    # Google Calendar freebusy
-    time_min = datetime.combine(target_date, datetime.min.time()).replace(tzinfo=MX_TIMEZONE)
-    time_max = datetime.combine(target_date, datetime.max.time()).replace(tzinfo=MX_TIMEZONE)
-    busy_ranges = []
-    if ctx.office.google_calendar_token:
-        try:
-            busy_periods = await get_freebusy(ctx.office.id, time_min, time_max, ctx.db)
-            for bp in busy_periods:
-                start = datetime.fromisoformat(bp["start"].replace("Z", "+00:00")).astimezone(MX_TIMEZONE)
-                end = datetime.fromisoformat(bp["end"].replace("Z", "+00:00")).astimezone(MX_TIMEZONE)
-                busy_ranges.append((start, end))
-        except Exception as e:
-            logger.warning("tool_freebusy_failed", error=str(e))
-            return {"error": "No se pudo consultar la disponibilidad del calendario. Intenta de nuevo en unos minutos."}
-
-    # Existing appointments for the date
-    stmt = select(Appointment).where(
-        (Appointment.office_id == ctx.office.id)
-        & (Appointment.start_datetime >= time_min)
-        & (Appointment.start_datetime <= time_max)
-        & (Appointment.status.in_(["scheduled", "confirmed"]))
-    )
-    result = await ctx.db.execute(stmt)
-    existing_appts = result.scalars().all()
-    for appt in existing_appts:
-        a_start = appt.start_datetime
-        if a_start.tzinfo is None:
-            a_start = a_start.replace(tzinfo=MX_TIMEZONE)
-        a_end = appt.end_datetime
-        if a_end and a_end.tzinfo is None:
-            a_end = a_end.replace(tzinfo=MX_TIMEZONE)
-        elif not a_end:
-            a_end = a_start + timedelta(minutes=appt.duration_minutes or 30)
-        busy_ranges.append((a_start, a_end))
-
-    # Time blocks overlapping the date (vacations, manual blocks, etc.)
-    block_stmt = select(TimeBlock).where(
-        (TimeBlock.office_id == ctx.office.id)
-        & (TimeBlock.start_date <= time_max)
-        & (TimeBlock.end_date >= time_min)
-    )
-    result = await ctx.db.execute(block_stmt)
-    for block in result.scalars().all():
-        b_start = block.start_date
-        if b_start.tzinfo is None:
-            b_start = b_start.replace(tzinfo=MX_TIMEZONE)
-        b_end = block.end_date
-        if b_end.tzinfo is None:
-            b_end = b_end.replace(tzinfo=MX_TIMEZONE)
-        busy_ranges.append((b_start, b_end))
-
-    # Generate slots
-    slots = []
-    for sched in schedules:
-        slot_duration = timedelta(minutes=sched.appointment_duration_min)
-        buffer = timedelta(minutes=sched.buffer_minutes)
-        slot_time = datetime.combine(target_date, sched.start_time).replace(tzinfo=MX_TIMEZONE)
-        end_time = datetime.combine(target_date, sched.end_time).replace(tzinfo=MX_TIMEZONE)
-
-        while slot_time + slot_duration <= end_time:
-            slot_end = slot_time + slot_duration
-
-            if slot_time > now:
-                is_busy = any(
-                    slot_time < busy_end and slot_end > busy_start
-                    for busy_start, busy_end in busy_ranges
-                )
-                if not is_busy:
-                    slots.append({
-                        "time": slot_time.strftime("%H:%M"),
-                        "period": "mañana" if slot_time.hour < 12 else "tarde",
-                    })
-
-            slot_time = slot_time + slot_duration + buffer
-
-    day_name = DAYS_ES[target_date.weekday()]
+    slots = [
+        {
+            "time": s.start_time.strftime("%H:%M"),
+            "period": "mañana" if s.start_time.hour < 12 else "tarde",
+        }
+        for s in result.slots
+    ]
     return {
         "date": date_str,
         "day_name": day_name,
+        "relative_day": relative_day,
         "slots": slots,
-        "message": f"{'No hay' if not slots else str(len(slots))} horarios disponibles para {day_name} {target_date.strftime('%d/%m/%Y')}.",
+        "message": f"{'No hay' if not slots else str(len(slots))} horarios disponibles para {date_label}.",
     }
 
 

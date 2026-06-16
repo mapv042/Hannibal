@@ -3,15 +3,13 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
 from typing import TYPE_CHECKING, Any, Optional
-from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.utils.dates import now_mx
 from app.utils.logger import get_logger
-from app.core.constants import MX_TIMEZONE
 from app.core.exceptions import ConversationError
 from app.db.models import Appointment, Office, Patient, Conversation, Message
 from app.modules.ai import get_ai_service
@@ -72,7 +70,7 @@ class ConversationManager:
 
             # 2. Check if bot is paused
             if office.bot_paused_until:
-                now = datetime.now(tz=ZoneInfo("UTC"))
+                now = now_mx()
                 if now < office.bot_paused_until:
                     logger.info("bot_paused", office_id=str(office.id))
                     await self._save_incoming_message(db, office.id, whatsapp_id, message_text, message_id)
@@ -181,8 +179,8 @@ class ConversationManager:
             await self._save_outgoing_message(db, conversation_obj.id, response_text)
 
             # 11. Update conversation state
-            session.last_message_at = datetime.utcnow().isoformat()
-            conversation_obj.last_message_at = datetime.now(tz=ZoneInfo("UTC"))
+            session.last_message_at = now_mx().isoformat()
+            conversation_obj.last_message_at = now_mx()
 
             await db.commit()
 
