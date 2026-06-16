@@ -468,6 +468,73 @@ class Appointment(Base):
         return f"<Appointment(id={self.id}, patient_id={self.patient_id}, start_datetime={self.start_datetime})>"
 
 
+class UrgencyRequest(Base):
+    """
+    A patient's request for an urgent appointment, awaiting the doctor's approval.
+
+    The bot never overbooks on its own: when a patient signals urgency it creates
+    one of these (status "pending"), notifies the doctor via WhatsApp, and only
+    books the (possibly overbooked) appointment once the doctor approves. A Celery
+    timeout marks it "expired" and offers the patient a normal slot instead.
+    """
+
+    __tablename__ = "urgency_requests"
+
+    # Primary Key
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+
+    # Foreign Keys
+    office_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("offices.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    patient_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("patients.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+
+    # How to reach the patient back without re-resolving the patient record.
+    patient_whatsapp_id: Mapped[str] = mapped_column(String(50), nullable=False)
+
+    # Request details
+    reason: Mapped[str] = mapped_column(String(500), nullable=False)
+    # Patient's preferred time; null means "as soon as possible".
+    preferred_time: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    # Lifecycle (see UrgencyStatus)
+    status: Mapped[str] = mapped_column(
+        String(50), default="pending", nullable=False
+    )
+    resolution_note: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+
+    # Set once approved and the urgent appointment is booked.
+    appointment_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("appointments.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    # Which channel reached the doctor ("text" in-window, "template" out-of-window).
+    doctor_notified_via: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+
+    # Timestamps
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=func.now(), nullable=False
+    )
+    resolved_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    def __repr__(self) -> str:
+        return f"<UrgencyRequest(id={self.id}, patient_id={self.patient_id}, status={self.status})>"
+
+
 class ReminderRule(Base):
     """
     Per-office reminder configuration.

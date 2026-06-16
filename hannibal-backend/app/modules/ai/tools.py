@@ -154,6 +154,39 @@ TOOL_DEFINITIONS = [
             "required": ["appointment_id"],
         },
     },
+    {
+        "name": "request_urgent_appointment",
+        "description": (
+            "Registra una solicitud de cita URGENTE cuando el paciente expresa que necesita ser "
+            "atendido lo antes posible o antes de los horarios disponibles. NO agenda la cita: "
+            "avisa al doctor para que la apruebe, porque una urgencia puede requerir sobreagenda y "
+            "solo el doctor puede autorizarla. Úsala solo cuando el paciente realmente indique "
+            "urgencia; para una cita normal usa create_appointment. Antes de llamarla pregunta el "
+            "motivo de la urgencia."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "reason": {
+                    "type": "string",
+                    "description": "Motivo de la urgencia descrito por el paciente.",
+                },
+                "patient_name": {
+                    "type": "string",
+                    "description": "Nombre del paciente, si ya lo conoces.",
+                },
+                "preferred_date": {
+                    "type": "string",
+                    "description": "Fecha preferida YYYY-MM-DD, si el paciente indicó una. Omitir si pide 'lo antes posible'.",
+                },
+                "preferred_time": {
+                    "type": "string",
+                    "description": "Hora preferida HH:MM (24 horas), si el paciente indicó una.",
+                },
+            },
+            "required": ["reason"],
+        },
+    },
 ]
 
 
@@ -658,4 +691,64 @@ async def _handle_confirm_appointment(args: dict, ctx: ToolContext) -> dict:
         "formatted": f"{DAYS_ES[dt.weekday()]} {dt.strftime('%d/%m/%Y')} a las {dt.strftime('%H:%M')}",
         "office_name": ctx.office.name,
         "office_address": ctx.office.address or "",
+    }
+
+
+@_handler("request_urgent_appointment")
+async def _handle_request_urgent_appointment(args: dict, ctx: ToolContext) -> dict:
+    # Local imports avoid pulling Celery into the module import graph.
+    from app.modules.urgencies.service import create_urgency_request
+    from app.modules.urgencies.tasks import enqueue_urgency_flow
+
+    reason = args.get("reason", "").strip()
+    if not reason:
+        return {"error": "Necesito el motivo de la urgencia antes de avisar al doctor."}
+
+    patient_name = args.get("patient_name", "").strip()
+
+    # Optional preferred date+time — both required to build a concrete datetime.
+    preferred_time = None
+    pdate = args.get("preferred_date", "").strip()
+    ptime = args.get("preferred_time", "").strip()
+    if pdate and ptime:
+        try:
+            preferred_time = datetime.strptime(f"{pdate} {ptime}", "%Y-%m-%d %H:%M").replace(tzinfo=MX_TIMEZONE)
+        except ValueError:
+            preferred_time = None
+
+    # Ensure a patient record exists (name may still be unknown — it's nullable).
+    patient = None
+    if ctx.patient_id:
+        patient = await ctx.db.get(Patient, ctx.patient_id)
+    if not patient:
+        patient = Patient(
+            id=uuid.uuid4(),
+            office_id=ctx.office.id,
+            whatsapp_id=ctx.whatsapp_id,
+            phone=ctx.whatsapp_id,
+            name=patient_name or None,
+        )
+        ctx.db.add(patient)
+        await ctx.db.flush()
+        ctx.patient_id = patient.id
+    elif not patient.name and patient_name:
+        patient.name = patient_name
+
+    request = await create_urgency_request(
+        ctx.db,
+        ctx.office.id,
+        patient.id,
+        ctx.whatsapp_id,
+        reason,
+        preferred_time,
+    )
+    enqueue_urgency_flow(request.id)
+
+    logger.info("tool_urgency_requested", request_id=str(request.id), office_id=str(ctx.office.id))
+    return {
+        "success": True,
+        "next_step": (
+            "Dile al paciente que estás consultando con el doctor para conseguirle un espacio "
+            "urgente y que le avisarás en cuanto el doctor responda. No prometas un horario todavía."
+        ),
     }

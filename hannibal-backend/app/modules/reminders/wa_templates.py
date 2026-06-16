@@ -12,6 +12,7 @@ in the WhatsApp Manager. Current approved templates (language es_MX):
   appointment_follow_up               -> patient_name, location
   appointment_confirmation_day_before -> patient_name, location, appointment_date, appointment_time
   appointment_reminder                -> patient_name, appointment_date, appointment_time, location
+  urgency_alert                       -> patient_name   (doctor-facing, out-of-window)
 """
 
 from __future__ import annotations
@@ -29,6 +30,12 @@ TEMPLATE_OFFICE_MESSAGE = "office_message"
 TEMPLATE_FOLLOW_UP = "appointment_follow_up"
 TEMPLATE_CONFIRMATION_DAY_BEFORE = "appointment_confirmation_day_before"
 TEMPLATE_REMINDER = "appointment_reminder"
+# Doctor-facing "alert that opens the window": sent to the doctor's WhatsApp
+# when their 24h window is closed, so they reply and the bot can then send the
+# urgency details as free text. Suggested body:
+#   "Tienes una solicitud de cita urgente de {{patient_name}} pendiente.
+#    Responde a este mensaje para gestionarla."
+TEMPLATE_URGENCY_ALERT = "urgency_alert"
 
 # Set to False if the templates were created with positional params ({{1}}, {{2}})
 # instead of named params ({{patient_name}}). Named is the modern default and
@@ -115,4 +122,11 @@ def build_office_message_params(
         _param("patient_name", patient_name),
         _param("location", location),
         _param("text", text),
+    ]
+
+
+def build_urgency_alert_params(patient_name: str) -> List[Dict[str, str]]:
+    """urgency_alert: patient_name (doctor-facing alert that opens the window)."""
+    return [
+        _param("patient_name", patient_name),
     ]

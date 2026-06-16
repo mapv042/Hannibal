@@ -22,6 +22,7 @@ hannibal/
 │   │   │   ├── ai/                   # Claude/OpenAI integration (tool-use), prompts, patient + doctor tools
 │   │   │   ├── conversation/         # Session store (Redis), conversation manager (patient + doctor)
 │   │   │   ├── scheduling/           # Availability engine, appointments CRUD, blocks
+│   │   │   ├── urgencies/            # Urgent-appointment requests (doctor-in-the-loop overbooking): service, templates, Celery notify + timeout
 │   │   │   ├── reminders/            # Celery tasks (day_before, 4h, 1h, post-appointment), confirmation requests, reconciliation
 │   │   │   ├── offices/              # Office/practice CRUD
 │   │   │   ├── patients/             # Patient CRUD
@@ -63,12 +64,13 @@ hannibal/
 ### Multi-tenancy
 Every table has `office_id`. All queries must filter by office. Supabase RLS enforces isolation at DB level. Never query without `office_id`.
 
-### Database models (app/db/models.py) — 9 models
+### Database models (app/db/models.py) — 10 models
 - `Office` — the practice/consultorio (tenant)
 - `AvailabilitySchedule` — weekly schedule (day_of_week, start_time, end_time, duration, buffer)
 - `TimeBlock` — unavailable periods (vacations, etc.)
 - `Patient` — identified by whatsapp_id
 - `Appointment` — the core entity (status: scheduled → confirmed → completed)
+- `UrgencyRequest` — a patient's urgent-appointment request awaiting doctor approval (status: pending → approved/rejected/expired); on approval it books a (possibly overbooked) `type="urgent"` appointment
 - `ReminderRule` — per-office reminder configuration (reminder_type, offset_minutes, enabled)
 - `Conversation` — WhatsApp conversation thread
 - `Message` — individual messages (incoming/outgoing, with delivery_status)
@@ -91,11 +93,15 @@ The doctor can use WhatsApp on their phone simultaneously with the bot. When the
 ### Availability engine (modules/scheduling/availability.py)
 Calculates free slots by: getting weekly schedules → generating all possible slots → subtracting existing appointments → subtracting time blocks → checking Google Calendar freebusy. Results cached in Redis (5 min TTL). Slot locking via Redis SETNX (60s) prevents double-booking.
 
+### Urgencias (urgent appointments) — doctor-in-the-loop
+Patient signals urgency → patient tool `request_urgent_appointment` creates an `UrgencyRequest` (pending) and enqueues two Celery tasks (`app/modules/urgencies/tasks.py`): `notify_doctor_urgency_task` (countdown ~5s, so the request commits first) pings the doctor on WhatsApp, and `expire_urgency_request_task` (eta = now + `URGENCY_APPROVAL_TIMEOUT_MINUTES`) is the timeout fallback. The doctor approves/rejects by replying — `DoctorConversationManager` injects pending requests into the doctor prompt (`URGENCIAS PENDIENTES`) and the doctor tool `resolve_urgent_request` books the (overbooked) `type="urgent"` appointment and notifies the patient. The bot never overbooks without the doctor's approval. If the doctor doesn't reply in time, the timeout marks the request `expired` and offers the patient the next normal slot. Doctor 24h-window detection uses a Redis key (`doctor_last_inbound:{office_id}`), not the `Message` table, because doctor messages aren't persisted there. Requires a Meta-approved template `urgency_alert` (param: patient_name) for the out-of-window doctor alert.
+
 ### Redis key patterns
 - `session:{whatsapp_id}:{office_id}` — conversation context (TTL 24h)
 - `bot_pause:{office_id}:{conversation_id}` — coexistence pause
 - `avail_cache:{office_id}:{date}` — availability cache (TTL 5min)
 - `slot_lock:{office_id}:{datetime}` — anti-collision lock (TTL 60s)
+- `doctor_last_inbound:{office_id}` — doctor's last inbound timestamp (TTL 24h), for the doctor service-window check
 
 ## Common commands
 
@@ -148,7 +154,9 @@ SUPABASE_SERVICE_KEY=eyJ...
 REDIS_URL=redis://localhost:6379
 AI_PROVIDER=openai              # "openai" (default) or "anthropic"
 OPEN_AI_KEY=sk-...             # required when AI_PROVIDER=openai
+OPEN_AI_MODEL=gpt-4.1-mini      # required when AI_PROVIDER=openai
 ANTHROPIC_API_KEY=sk-ant-...   # required when AI_PROVIDER=anthropic
+ANTHROPIC_AI_MODEL=claude-haiku-4-5-20251001     # required when AI_PROVIDER=anthropic
 META_VERIFY_TOKEN=your-custom-string
 META_APP_SECRET=from-meta-developers
 META_APP_ID=from-meta-developers

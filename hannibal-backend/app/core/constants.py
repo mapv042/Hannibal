@@ -60,6 +60,16 @@ class CancelledBy(str, Enum):
     SYSTEM = "system"  # System
 
 
+# Urgency Request Status
+class UrgencyStatus(str, Enum):
+    """Lifecycle of a patient urgent-appointment request awaiting doctor approval."""
+
+    PENDING = "pending"  # Waiting for the doctor's decision
+    APPROVED = "approved"  # Doctor approved and the urgent appointment was booked
+    REJECTED = "rejected"  # Doctor declined the urgent request
+    EXPIRED = "expired"  # Doctor did not respond within the timeout window
+
+
 # Conversation Status
 class ConversationStatus(str, Enum):
     """Status of a conversation with a patient."""
@@ -149,6 +159,17 @@ SENT_FLAG_BY_REMINDER_TYPE: dict[str, str] = {
     ReminderType.ONE_HOUR.value: "reminder_1h_sent",
     ReminderType.POST_APPOINTMENT.value: "follow_up_sent",
 }
+
+
+# Urgency handling
+# Minutes the bot waits for the doctor's approval of an urgent request before
+# falling back to offering the patient the next normal available slot.
+URGENCY_APPROVAL_TIMEOUT_MINUTES = 20
+
+# Google Calendar color ids used per appointment state.
+#   "9"  -> normal pending (light blue)   "10" -> confirmed (green)
+#   "11" -> urgent (red)
+GCAL_COLOR_URGENT = "11"
 
 
 # Mexico City Timezone

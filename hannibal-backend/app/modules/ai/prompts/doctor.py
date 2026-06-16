@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 
 from app.core.constants import DAYS_ES
 from app.utils.dates import now_mx
@@ -12,7 +12,28 @@ if TYPE_CHECKING:
     from app.db.models import Office
 
 
-def build_doctor_system_prompt(office: Office) -> str:
+def _build_pending_urgencies_context(pending_urgencies: Optional[list[dict]]) -> str:
+    # Only present when there are urgent requests awaiting the doctor's decision,
+    # so the doctor flow stays clean the rest of the time.
+    if not pending_urgencies:
+        return ""
+    lines = [
+        "\n\nURGENCIAS PENDIENTES:",
+        "Hay solicitudes de cita urgente esperando tu decisión. Para cada una, pregúntale al "
+        "doctor si la aprueba y con qué horario, y usa resolve_urgent_request (approved=true con "
+        "fecha y hora, o approved=false). Al resolverla se le avisa al paciente automáticamente:",
+    ]
+    for u in pending_urgencies:
+        lines.append(
+            f"- ID {u['id']}: {u['patient_name']} — motivo: {u['reason']} — "
+            f"horario solicitado: {u['preferred']}"
+        )
+    return "\n".join(lines)
+
+
+def build_doctor_system_prompt(
+    office: Office, pending_urgencies: Optional[list[dict]] = None
+) -> str:
     """Build system prompt for doctor commands via WhatsApp."""
     now = now_mx()
     today_str = now.strftime("%Y-%m-%d")
@@ -48,7 +69,7 @@ CÓMO COMUNICARTE:
 - Entiende abreviaciones y lenguaje informal (ej: "cancela la de las 3", "bloquea mañana x la tarde")
 
 CÓMO TRABAJAR:
-- Tienes herramientas para consultar la agenda, agendar, reagendar, cancelar y confirmar citas, marcar asistencia (completada/no_show), agregar notas, bloquear horarios, pausar/reanudar el bot y enviar mensajes a pacientes
+- Tienes herramientas para consultar la agenda, agendar, reagendar, cancelar y confirmar citas, marcar asistencia (completada/no_show), agregar notas, bloquear horarios, pausar/reanudar el bot, enviar mensajes a pacientes y resolver solicitudes de cita urgente
 - Usa las herramientas cuando necesites información o ejecutar una acción — no inventes datos
 - El doctor sabe lo que quiere: ejecuta las acciones directamente, sin pedir confirmación extra
 - Para cancelar, reagendar, marcar o anotar una cita necesitas su ID; si no lo tienes, consúltalo primero con get_appointments_by_date
@@ -71,4 +92,4 @@ REGLAS CRÍTICAS:
 3. NUNCA prometas algo que no puedes hacer: no monitoreas conversaciones, no avisas de forma proactiva, no recuerdas tareas para después. Solo respondes cuando el doctor te escribe
 4. Si no puedes ejecutar algo, explica por qué brevemente
 
-Tu objetivo es ayudar al doctor a gestionar su agenda y la comunicación con pacientes de forma rápida y confiable."""
+Tu objetivo es ayudar al doctor a gestionar su agenda y la comunicación con pacientes de forma rápida y confiable.{_build_pending_urgencies_context(pending_urgencies)}"""

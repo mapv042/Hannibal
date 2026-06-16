@@ -286,6 +286,42 @@ DOCTOR_TOOL_DEFINITIONS = [
             "required": ["appointment_id", "new_date", "new_time"],
         },
     },
+    {
+        "name": "resolve_urgent_request",
+        "description": (
+            "Aprueba o rechaza una solicitud de cita URGENTE pendiente (las verás listadas en "
+            "URGENCIAS PENDIENTES cuando existan). Si la apruebas, agenda la cita urgente en la "
+            "fecha y hora que indique el doctor —puede sobreagendar fuera del horario normal— y le "
+            "avisa al paciente automáticamente. Si la rechazas, también le avisa al paciente. "
+            "El doctor no necesita confirmación extra."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "request_id": {
+                    "type": "string",
+                    "description": "ID de la solicitud de urgencia (de la lista URGENCIAS PENDIENTES).",
+                },
+                "approved": {
+                    "type": "boolean",
+                    "description": "true si el doctor acepta atender la urgencia, false si la rechaza.",
+                },
+                "date": {
+                    "type": "string",
+                    "description": "Fecha de la cita YYYY-MM-DD. Requerido si approved=true.",
+                },
+                "time": {
+                    "type": "string",
+                    "description": "Hora de la cita HH:MM (24 horas). Requerido si approved=true.",
+                },
+                "note": {
+                    "type": "string",
+                    "description": "Nota o motivo del doctor (opcional).",
+                },
+            },
+            "required": ["request_id", "approved"],
+        },
+    },
 ]
 
 
@@ -1189,3 +1225,32 @@ async def _handle_reschedule_appointment(args: dict, ctx: DoctorToolContext) -> 
         "reason": reason,
         "patient_name": patient_name,
     }
+
+
+@_handler("resolve_urgent_request")
+async def _handle_resolve_urgent_request(args: dict, ctx: DoctorToolContext) -> dict:
+    from app.modules.urgencies.service import resolve_urgency_request
+
+    req_id_str = args.get("request_id", "")
+    try:
+        req_id = uuid.UUID(req_id_str)
+    except ValueError:
+        return {"error": f"ID de solicitud invalido: {req_id_str}"}
+
+    approved = bool(args.get("approved", False))
+    note = (args.get("note") or "").strip() or None
+
+    start_dt = None
+    if approved:
+        date_str = args.get("date", "")
+        time_str = args.get("time", "")
+        if not (date_str and time_str):
+            return {"error": "Para aprobar la urgencia necesito la fecha y la hora."}
+        try:
+            start_dt = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M").replace(tzinfo=MX_TIMEZONE)
+        except ValueError:
+            return {"error": f"Fecha u hora invalida: {date_str} {time_str}"}
+
+    return await resolve_urgency_request(
+        ctx.db, ctx.office, ctx.meta_client, req_id, approved, start_dt, note
+    )
