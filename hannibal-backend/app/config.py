@@ -22,9 +22,11 @@ class Settings(BaseSettings):
 
     # Anthropic
     anthropic_api_key: str = ""
+    anthropic_ai_model: str = ""
 
     # OpenAI
     open_ai_key: str = ""
+    open_ai_model: str = ""
 
     # Meta/WhatsApp
     meta_verify_token: str = ""

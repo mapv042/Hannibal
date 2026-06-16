@@ -27,7 +27,7 @@ class AnthropicService(BaseAIService):
             timeout=timeout,
         )
         self.max_retries = max_retries
-        self.model = "claude-haiku-4-5-20251001"
+        self.model = settings.anthropic_ai_model
 
     async def _raw_chat(
         self,

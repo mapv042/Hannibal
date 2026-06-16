@@ -27,7 +27,7 @@ class OpenAIService(BaseAIService):
             timeout=timeout,
         )
         self.max_retries = max_retries
-        self.model = "gpt-4.1-mini"
+        self.model = settings.open_ai_model
 
     async def _raw_chat(
         self,
