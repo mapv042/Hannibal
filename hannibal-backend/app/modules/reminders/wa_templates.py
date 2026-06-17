@@ -36,6 +36,12 @@ TEMPLATE_REMINDER = "appointment_reminder"
 #   "Tienes una solicitud de cita urgente de {{patient_name}} pendiente.
 #    Responde a este mensaje para gestionarla."
 TEMPLATE_URGENCY_ALERT = "urgency_alert"
+# Doctor-facing notice sent when a patient reschedules a slot the DOCTOR had
+# cancelled, and the doctor's 24h window is closed. Lets the doctor see how the
+# freed slot ended up. Suggested body:
+#   "{{patient_name}} reagendó su cita. Nueva cita: {{new_slot}}.
+#    Responde aquí si necesitas ajustarla."
+TEMPLATE_RESCHEDULE_NOTICE = "reschedule_notice"
 
 # Set to False if the templates were created with positional params ({{1}}, {{2}})
 # instead of named params ({{patient_name}}). Named is the modern default and
@@ -129,4 +135,14 @@ def build_urgency_alert_params(patient_name: str) -> List[Dict[str, str]]:
     """urgency_alert: patient_name (doctor-facing alert that opens the window)."""
     return [
         _param("patient_name", patient_name),
+    ]
+
+
+def build_reschedule_notice_params(
+    patient_name: str, new_slot: str
+) -> List[Dict[str, str]]:
+    """reschedule_notice: patient_name, new_slot (doctor-facing reschedule alert)."""
+    return [
+        _param("patient_name", patient_name),
+        _param("new_slot", new_slot),
     ]

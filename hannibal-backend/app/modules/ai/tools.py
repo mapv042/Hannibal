@@ -17,6 +17,8 @@ from app.modules.google_calendar.service import (
 )
 from app.modules.google_calendar.sync import cancel_appointment_in_calendar
 from app.modules.scheduling.availability import compute_day_availability
+from app.modules.scheduling.reschedule_notify import link_pending_doctor_cancellation
+from app.modules.scheduling.tasks import enqueue_reschedule_notification
 from app.utils.dates import relative_day_label, spanish_date_label
 from app.utils.logger import get_logger
 
@@ -427,6 +429,10 @@ async def _handle_create_appointment(args: dict, ctx: ToolContext) -> dict:
     ctx.db.add(appointment)
     await ctx.db.flush()
 
+    # If this booking answers a slot the doctor cancelled, report back to the doctor.
+    if await link_pending_doctor_cancellation(ctx.db, appointment):
+        enqueue_reschedule_notification(appointment.id)
+
     day_name = DAYS_ES[start_dt.weekday()]
     logger.info("tool_appointment_created", appointment_id=str(appointment_id), office_id=str(ctx.office.id))
 
@@ -569,6 +575,10 @@ async def _handle_reschedule_appointment(args: dict, ctx: ToolContext) -> dict:
     )
     ctx.db.add(new_appointment)
     await ctx.db.flush()
+
+    # If this booking answers a slot the doctor cancelled, report back to the doctor.
+    if await link_pending_doctor_cancellation(ctx.db, new_appointment):
+        enqueue_reschedule_notification(new_appointment.id)
 
     new_day_name = DAYS_ES[new_start.weekday()]
     logger.info("tool_appointment_rescheduled", old_id=appt_id_str, new_id=str(new_appointment_id))

@@ -61,3 +61,4 @@ celery_app.autodiscover_tasks([
 # Ensure task modules are imported so Celery registers them
 import app.modules.reminders.tasks  # noqa: F401
 import app.modules.urgencies.tasks  # noqa: F401
+import app.modules.scheduling.tasks  # noqa: F401
