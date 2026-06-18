@@ -105,7 +105,9 @@ DOCTOR_TOOL_DEFINITIONS = [
         "name": "block_time",
         "description": (
             "Bloquea un rango de tiempo para que no se agenden citas. "
-            "Puede ser un bloque de horas en un día o un rango de días completos."
+            "Puede ser un bloque de horas en un día o un rango de días completos. "
+            "Si ya hay citas agendadas dentro del rango, NO bloquea: devuelve la lista "
+            "de citas en conflicto para que el doctor decida qué hacer."
         ),
         "input_schema": {
             "type": "object",
@@ -129,6 +131,10 @@ DOCTOR_TOOL_DEFINITIONS = [
                 "reason": {
                     "type": "string",
                     "description": "Motivo del bloqueo (ej: 'Vacaciones', 'Junta', 'Personal').",
+                },
+                "confirm_overlap": {
+                    "type": "boolean",
+                    "description": "Pon true SOLO cuando el doctor ya fue avisado de que hay citas en ese horario y aun así quiere bloquearlo. Por defecto false.",
                 },
             },
             "required": ["start_date", "reason"],
@@ -588,6 +594,61 @@ async def _handle_block_time(args: dict, ctx: DoctorToolContext) -> dict:
 
     start_dt = datetime.combine(start_date, s_time).replace(tzinfo=MX_TIMEZONE)
     end_dt = datetime.combine(end_date, e_time).replace(tzinfo=MX_TIMEZONE)
+
+    # Check for appointments inside the range — the doctor decides what to do with them.
+    # We never block silently over existing citas.
+    confirm_overlap = bool(args.get("confirm_overlap", False))
+    if not confirm_overlap:
+        conflicts_stmt = (
+            select(Appointment)
+            .where(
+                (Appointment.office_id == ctx.office.id)
+                & (Appointment.status.in_(["scheduled", "confirmed"]))
+                & (Appointment.start_datetime < end_dt)
+                & (Appointment.end_datetime > start_dt)
+            )
+            .order_by(Appointment.start_datetime)
+        )
+        conflicts = (await ctx.db.execute(conflicts_stmt)).scalars().all()
+
+        if conflicts:
+            conflict_list = []
+            for appt in conflicts:
+                dt = appt.start_datetime
+                dt = dt.astimezone(MX_TIMEZONE) if dt.tzinfo else dt.replace(tzinfo=MX_TIMEZONE)
+
+                patient_name = "Sin nombre"
+                if appt.patient_id:
+                    patient = await ctx.db.get(Patient, appt.patient_id)
+                    if patient and patient.name:
+                        patient_name = patient.name
+
+                conflict_list.append({
+                    "id": str(appt.id),
+                    "date": dt.strftime("%Y-%m-%d"),
+                    "day_name": DAYS_ES[dt.weekday()],
+                    "time": dt.strftime("%H:%M"),
+                    "patient_name": patient_name,
+                    "reason": appt.consultation_reason or "Consulta",
+                    "status": appt.status,
+                })
+
+            logger.info(
+                "doctor_block_conflict",
+                conflict_count=len(conflict_list),
+                start=start_dt.isoformat(),
+                end=end_dt.isoformat(),
+            )
+            return {
+                "needs_confirmation": True,
+                "conflicts": conflict_list,
+                "next_step": (
+                    "Hay citas en ese horario. Informa al doctor cuáles son y "
+                    "pregúntale si quiere bloquear de todos modos (las citas se "
+                    "mantienen) o cancelarlas/reagendarlas primero — no lo asumas. "
+                    "Si confirma bloquear, vuelve a llamar block_time con confirm_overlap=true."
+                ),
+            }
 
     is_all_day = not start_time_str
     block = TimeBlock(

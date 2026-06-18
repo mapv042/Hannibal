@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 from uuid import UUID
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 import httpx
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.google_calendar.auth import get_valid_google_token
+from app.core.constants import MX_TIMEZONE
 from app.core.exceptions import GoogleCalendarError
 from app.utils.logger import get_logger
 
@@ -89,6 +90,7 @@ async def create_calendar_event(
     description: Optional[str],
     db: AsyncSession,
     color_id: str = "9",  # 9=Blueberry(blue/scheduled), 10=Basil(green/confirmed)
+    all_day: bool = False,
 ) -> str:
     """
     Create an event in Google Calendar.
@@ -118,10 +120,18 @@ async def create_calendar_event(
         event = {
             "summary": title,
             "description": description or "",
-            "start": {"dateTime": start_time.isoformat(), "timeZone": "America/Mexico_City"},
-            "end": {"dateTime": end_time.isoformat(), "timeZone": "America/Mexico_City"},
             "colorId": color_id,
         }
+        if all_day:
+            # Google all-day events use `date` (no time) and an EXCLUSIVE end date,
+            # so the last blocked day must be represented as end_date + 1.
+            start_local = start_time.astimezone(MX_TIMEZONE).date()
+            end_local = end_time.astimezone(MX_TIMEZONE).date()
+            event["start"] = {"date": start_local.isoformat()}
+            event["end"] = {"date": (end_local + timedelta(days=1)).isoformat()}
+        else:
+            event["start"] = {"dateTime": start_time.isoformat(), "timeZone": "America/Mexico_City"}
+            event["end"] = {"dateTime": end_time.isoformat(), "timeZone": "America/Mexico_City"}
 
         async with httpx.AsyncClient() as client:
             response = await client.post(
@@ -295,6 +305,7 @@ async def update_calendar_event(
     end_time: Optional[datetime] = None,
     description: Optional[str] = None,
     db: AsyncSession = None,
+    all_day: bool = False,
 ) -> None:
     """
     Update an existing Google Calendar event.
@@ -336,10 +347,19 @@ async def update_calendar_event(
                 event["summary"] = title
             if description is not None:
                 event["description"] = description
-            if start_time:
-                event["start"]["dateTime"] = start_time.isoformat()
-            if end_time:
-                event["end"]["dateTime"] = end_time.isoformat()
+            if all_day:
+                # Replace start/end wholesale so Google never gets both `date` and
+                # `dateTime`. End date is exclusive, so add one day to the last day.
+                if start_time:
+                    event["start"] = {"date": start_time.astimezone(MX_TIMEZONE).date().isoformat()}
+                if end_time:
+                    end_local = end_time.astimezone(MX_TIMEZONE).date()
+                    event["end"] = {"date": (end_local + timedelta(days=1)).isoformat()}
+            else:
+                if start_time:
+                    event["start"]["dateTime"] = start_time.isoformat()
+                if end_time:
+                    event["end"]["dateTime"] = end_time.isoformat()
 
             # Perform update
             update_response = await client.put(

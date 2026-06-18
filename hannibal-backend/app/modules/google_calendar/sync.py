@@ -250,6 +250,7 @@ async def sync_time_block(
                 start_time=time_block.start_date,
                 end_time=time_block.end_date,
                 db=db,
+                all_day=time_block.is_all_day,
             )
             logger.info(
                 "time_block_synced_updated",
@@ -266,6 +267,7 @@ async def sync_time_block(
                     end_time=time_block.end_date,
                     description=f"Type: {time_block.reason}",
                     db=db,
+                    all_day=time_block.is_all_day,
                 )
 
                 google_event = GoogleCalendarEvent(
