@@ -7,8 +7,37 @@ import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { Card, CardBody, CardHeader } from '@/components/ui/Card'
-import { Settings, Save, Globe, Zap, Clock, Bell, LucideIcon } from 'lucide-react'
+import { Settings, Save, Globe, Zap, Clock, Bell, BellRing, LucideIcon } from 'lucide-react'
 import type { Office } from '@/lib/supabase'
+
+type NotifKey =
+  | 'notify_new_appointment'
+  | 'notify_cancellation'
+  | 'notify_new_patient'
+  | 'notify_unconfirmed'
+
+const NOTIFICATION_DEFS: { key: NotifKey; label: string; description: string }[] = [
+  {
+    key: 'notify_new_appointment',
+    label: 'Cita nueva agendada',
+    description: 'Te avisamos cuando el asistente agenda una cita.',
+  },
+  {
+    key: 'notify_cancellation',
+    label: 'Cancelación de paciente',
+    description: 'Te avisamos cuando un paciente cancela su cita.',
+  },
+  {
+    key: 'notify_new_patient',
+    label: 'Paciente nuevo',
+    description: 'Te avisamos cuando se registra un paciente nuevo.',
+  },
+  {
+    key: 'notify_unconfirmed',
+    label: 'Citas sin confirmar',
+    description: 'Resumen al inicio del día con las citas de hoy sin confirmar.',
+  },
+]
 import {
   REMINDER_DEFS,
   DEFAULT_REMINDER_TOGGLES,
@@ -67,6 +96,14 @@ export default function SettingsPage() {
   const [reminders, setReminders] = useState<ReminderToggles>(DEFAULT_REMINDER_TOGGLES)
   const [savingReminders, setSavingReminders] = useState(false)
   const [remindersSaved, setRemindersSaved] = useState(false)
+  const [notifications, setNotifications] = useState<Record<NotifKey, boolean>>({
+    notify_new_appointment: true,
+    notify_cancellation: true,
+    notify_new_patient: true,
+    notify_unconfirmed: true,
+  })
+  const [savingNotifications, setSavingNotifications] = useState(false)
+  const [notificationsSaved, setNotificationsSaved] = useState(false)
   const api = useApi()
   const supabase = createBrowserSupabaseClient()
 
@@ -87,6 +124,13 @@ export default function SettingsPage() {
             assistant_name: officeData.assistant_name,
             tone: officeData.assistant_tone as 'formal' | 'informal',
             custom_prompt: officeData.custom_prompt || '',
+          })
+
+          setNotifications({
+            notify_new_appointment: officeData.notify_new_appointment,
+            notify_cancellation: officeData.notify_cancellation,
+            notify_new_patient: officeData.notify_new_patient,
+            notify_unconfirmed: officeData.notify_unconfirmed,
           })
 
           const rulesRes = await api.getReminderRules(officeData.id)
@@ -132,6 +176,27 @@ export default function SettingsPage() {
 
   const toggleReminder = (type: ReminderType) => {
     setReminders((prev) => ({ ...prev, [type]: !prev[type] }))
+  }
+
+  const toggleNotification = (key: NotifKey) => {
+    setNotifications((prev) => ({ ...prev, [key]: !prev[key] }))
+  }
+
+  const handleSaveNotifications = async () => {
+    if (!office) return
+
+    setSavingNotifications(true)
+    try {
+      const response = await api.updateOffice(office.id, notifications)
+      if (response.success) {
+        setNotificationsSaved(true)
+        setTimeout(() => setNotificationsSaved(false), 3000)
+      }
+    } catch (error) {
+      console.error('Error saving notifications:', error)
+    } finally {
+      setSavingNotifications(false)
+    }
   }
 
   const handleSaveReminders = async () => {
@@ -292,6 +357,63 @@ export default function SettingsPage() {
           <Button onClick={handleSaveReminders} isLoading={savingReminders} className="gap-2">
             <Save size={16} />
             Guardar recordatorios
+          </Button>
+        </CardBody>
+      </Card>
+
+      {/* Doctor Notifications */}
+      <Card>
+        <CardHeader>
+          <SectionHeader
+            icon={BellRing}
+            title="Notificaciones al doctor"
+            subtitle="Elige de qué eventos quieres que el asistente te avise por WhatsApp"
+          />
+        </CardHeader>
+        <CardBody className="space-y-4">
+          {notificationsSaved && (
+            <div className="p-3 bg-green-100 border border-green-300 rounded-xl">
+              <p className="text-sm text-green-800">Notificaciones guardadas correctamente</p>
+            </div>
+          )}
+
+          <div className="space-y-2">
+            {NOTIFICATION_DEFS.map((notif) => {
+              const enabled = notifications[notif.key]
+              return (
+                <button
+                  key={notif.key}
+                  type="button"
+                  onClick={() => toggleNotification(notif.key)}
+                  className={`w-full flex items-center gap-3 p-3 rounded-xl border text-left transition-colors ${
+                    enabled ? 'border-primary-200 bg-primary-50' : 'border-gray-200 bg-gray-50'
+                  }`}
+                >
+                  <span
+                    className={`w-6 h-6 rounded flex items-center justify-center border-2 transition-colors flex-shrink-0 ${
+                      enabled ? 'bg-primary-600 border-primary-600 text-white' : 'bg-white border-gray-300'
+                    }`}
+                  >
+                    {enabled && (
+                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+                      </svg>
+                    )}
+                  </span>
+                  <span>
+                    <span className={`block text-sm font-medium ${enabled ? 'text-gray-900' : 'text-gray-500'}`}>
+                      {notif.label}
+                    </span>
+                    <span className="block text-xs text-gray-500">{notif.description}</span>
+                  </span>
+                </button>
+              )
+            })}
+          </div>
+
+          <Button onClick={handleSaveNotifications} isLoading={savingNotifications} className="gap-2">
+            <Save size={16} />
+            Guardar notificaciones
           </Button>
         </CardBody>
       </Card>

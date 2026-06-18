@@ -144,6 +144,10 @@ export default function OnboardingPage() {
               assistantTone: office.assistant_tone as 'formal' | 'informal',
               emergencySymptoms: '',
               welcomeMessage: office.welcome_message || '',
+              notifyNewAppointment: office.notify_new_appointment,
+              notifyCancellation: office.notify_cancellation,
+              notifyNewPatient: office.notify_new_patient,
+              notifyUnconfirmed: office.notify_unconfirmed,
             }
           : undefined,
     }
@@ -260,6 +264,10 @@ export default function OnboardingPage() {
           assistant_tone: personalize.assistantTone,
           custom_prompt: customPrompt || undefined,
           welcome_message: personalize.welcomeMessage || undefined,
+          notify_new_appointment: personalize.notifyNewAppointment,
+          notify_cancellation: personalize.notifyCancellation,
+          notify_new_patient: personalize.notifyNewPatient,
+          notify_unconfirmed: personalize.notifyUnconfirmed,
         })
         if (!res.success) throw new Error(res.error)
         setOffice(res.data!)

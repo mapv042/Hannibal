@@ -60,7 +60,16 @@ const DEFAULTS: OnboardingData = {
     reminders: { ...DEFAULT_REMINDER_TOGGLES },
   },
   consultation: { newPatientCost: '', returningPatientCost: '', acceptsInsurance: '', insuranceDetails: '' },
-  personalize: { assistantName: '', assistantTone: 'formal', emergencySymptoms: '', welcomeMessage: '' },
+  personalize: {
+    assistantName: '',
+    assistantTone: 'formal',
+    emergencySymptoms: '',
+    welcomeMessage: '',
+    notifyNewAppointment: true,
+    notifyCancellation: true,
+    notifyNewPatient: true,
+    notifyUnconfirmed: true,
+  },
 }
 
 /** A step submit handler returns false to stay on the step (e.g. on error). */

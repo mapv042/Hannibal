@@ -19,6 +19,10 @@ from app.modules.google_calendar.sync import cancel_appointment_in_calendar
 from app.modules.scheduling.availability import compute_day_availability
 from app.modules.scheduling.reschedule_notify import link_pending_doctor_cancellation
 from app.modules.scheduling.tasks import enqueue_reschedule_notification
+from app.modules.notifications.tasks import (
+    enqueue_appointment_notification,
+    enqueue_cancellation_notification,
+)
 from app.utils.dates import relative_day_label, spanish_date_label
 from app.utils.logger import get_logger
 
@@ -363,6 +367,7 @@ async def _handle_create_appointment(args: dict, ctx: ToolContext) -> dict:
     if ctx.patient_id:
         patient = await ctx.db.get(Patient, ctx.patient_id)
 
+    is_new_patient = False
     if not patient:
         # Create patient
         patient = Patient(
@@ -375,6 +380,7 @@ async def _handle_create_appointment(args: dict, ctx: ToolContext) -> dict:
         ctx.db.add(patient)
         await ctx.db.flush()
         ctx.patient_id = patient.id
+        is_new_patient = True
     elif not patient.name:
         patient.name = patient_name
 
@@ -429,9 +435,13 @@ async def _handle_create_appointment(args: dict, ctx: ToolContext) -> dict:
     ctx.db.add(appointment)
     await ctx.db.flush()
 
-    # If this booking answers a slot the doctor cancelled, report back to the doctor.
+    # If this booking answers a slot the doctor cancelled, report back to the
+    # doctor via the reschedule notice (which already covers the event); otherwise
+    # send the configurable new-appointment / new-patient notification.
     if await link_pending_doctor_cancellation(ctx.db, appointment):
         enqueue_reschedule_notification(appointment.id)
+    else:
+        enqueue_appointment_notification(appointment.id, is_new_patient)
 
     day_name = DAYS_ES[start_dt.weekday()]
     logger.info("tool_appointment_created", appointment_id=str(appointment_id), office_id=str(ctx.office.id))
@@ -480,6 +490,9 @@ async def _handle_cancel_appointment(args: dict, ctx: ToolContext) -> dict:
     appointment.status = "cancelled"
     appointment.cancelled_by = "patient"
     appointment.cancellation_reason = reason
+
+    # Notify the doctor of the patient cancellation (configurable per office).
+    enqueue_cancellation_notification(appointment.id)
 
     # Google Calendar
     try:

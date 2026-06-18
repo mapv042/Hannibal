@@ -175,6 +175,14 @@ async def update_office(
         office.new_patient_cost = data.new_patient_cost
     if data.returning_patient_cost is not None:
         office.returning_patient_cost = data.returning_patient_cost
+    if data.notify_new_appointment is not None:
+        office.notify_new_appointment = data.notify_new_appointment
+    if data.notify_cancellation is not None:
+        office.notify_cancellation = data.notify_cancellation
+    if data.notify_new_patient is not None:
+        office.notify_new_patient = data.notify_new_patient
+    if data.notify_unconfirmed is not None:
+        office.notify_unconfirmed = data.notify_unconfirmed
 
     await db.commit()
     await db.refresh(office)

@@ -68,6 +68,18 @@ class UpdateOfficeRequest(BaseModel):
     onboarding_completed: Optional[bool] = Field(
         None, description="Whether onboarding has been completed"
     )
+    notify_new_appointment: Optional[bool] = Field(
+        None, description="Notify the doctor when the bot books a new appointment"
+    )
+    notify_cancellation: Optional[bool] = Field(
+        None, description="Notify the doctor when a patient cancels an appointment"
+    )
+    notify_new_patient: Optional[bool] = Field(
+        None, description="Notify the doctor when a new patient registers"
+    )
+    notify_unconfirmed: Optional[bool] = Field(
+        None, description="Notify the doctor of today's unconfirmed appointments"
+    )
 
 
 class ReminderRuleSchema(BaseModel):
@@ -118,6 +130,10 @@ class OfficeResponse(BaseModel):
     returning_patient_cost: Optional[str]
     is_active: bool
     onboarding_completed: bool
+    notify_new_appointment: bool
+    notify_cancellation: bool
+    notify_new_patient: bool
+    notify_unconfirmed: bool
     plan: str
 
     class Config:

@@ -45,6 +45,11 @@ celery_app.conf.update(
             "schedule": crontab(minute=settings.confirmation_request_minute, hour=settings.confirmation_request_hour),
             "options": {"queue": "celery"},
         },
+        "send-unconfirmed-summaries": {
+            "task": "app.modules.notifications.tasks.send_unconfirmed_summaries",
+            "schedule": crontab(minute="*/15"),  # checks each office; fires 1h before its first block
+            "options": {"queue": "celery"},
+        },
     },
 )
 
@@ -62,3 +67,4 @@ celery_app.autodiscover_tasks([
 import app.modules.reminders.tasks  # noqa: F401
 import app.modules.urgencies.tasks  # noqa: F401
 import app.modules.scheduling.tasks  # noqa: F401
+import app.modules.notifications.tasks  # noqa: F401

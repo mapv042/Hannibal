@@ -9,7 +9,24 @@ export interface PersonalizeData {
   assistantTone: 'formal' | 'informal'
   emergencySymptoms: string
   welcomeMessage: string
+  notifyNewAppointment: boolean
+  notifyCancellation: boolean
+  notifyNewPatient: boolean
+  notifyUnconfirmed: boolean
 }
+
+type NotifKey =
+  | 'notifyNewAppointment'
+  | 'notifyCancellation'
+  | 'notifyNewPatient'
+  | 'notifyUnconfirmed'
+
+const NOTIFICATION_DEFS: { key: NotifKey; label: string; description: string }[] = [
+  { key: 'notifyNewAppointment', label: 'Cita nueva agendada', description: 'Cuando el asistente agenda una cita.' },
+  { key: 'notifyCancellation', label: 'Cancelación de paciente', description: 'Cuando un paciente cancela su cita.' },
+  { key: 'notifyNewPatient', label: 'Paciente nuevo', description: 'Cuando se registra un paciente nuevo.' },
+  { key: 'notifyUnconfirmed', label: 'Citas sin confirmar', description: 'Resumen al inicio del día con las citas de hoy sin confirmar.' },
+]
 
 interface StepPersonalizeProps {
   data: PersonalizeData
@@ -103,6 +120,48 @@ export const StepPersonalize: React.FC<StepPersonalizeProps> = ({
             rows={3}
             className="input-field resize-none"
           />
+        </div>
+
+        <div>
+          <label className="block text-sm font-semibold text-gray-700 mb-1">
+            Notificaciones al doctor
+          </label>
+          <p className="text-xs text-gray-500 mb-2.5">
+            Elige de que eventos quieres que el asistente te avise por WhatsApp. Puedes cambiarlo despues.
+          </p>
+          <div className="space-y-2">
+            {NOTIFICATION_DEFS.map((notif) => {
+              const enabled = data[notif.key]
+              return (
+                <button
+                  key={notif.key}
+                  type="button"
+                  onClick={() => onUpdate({ [notif.key]: !enabled } as Partial<PersonalizeData>)}
+                  className={`w-full flex items-center gap-3 p-3 rounded-xl border text-left transition-colors ${
+                    enabled ? 'border-primary-200 bg-primary-50' : 'border-gray-200 bg-gray-50'
+                  }`}
+                >
+                  <span
+                    className={`w-6 h-6 rounded flex items-center justify-center border-2 transition-colors flex-shrink-0 ${
+                      enabled ? 'bg-primary-600 border-primary-600 text-white' : 'bg-white border-gray-300'
+                    }`}
+                  >
+                    {enabled && (
+                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+                      </svg>
+                    )}
+                  </span>
+                  <span>
+                    <span className={`block text-sm font-medium ${enabled ? 'text-gray-900' : 'text-gray-500'}`}>
+                      {notif.label}
+                    </span>
+                    <span className="block text-xs text-gray-500">{notif.description}</span>
+                  </span>
+                </button>
+              )
+            })}
+          </div>
         </div>
 
         <div className="flex gap-3 pt-2">

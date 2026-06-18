@@ -127,6 +127,20 @@ class Office(Base):
         DateTime(timezone=True), nullable=True
     )
 
+    # Doctor notification preferences (per-office toggles, default on)
+    notify_new_appointment: Mapped[bool] = mapped_column(
+        Boolean, default=True, nullable=False
+    )
+    notify_cancellation: Mapped[bool] = mapped_column(
+        Boolean, default=True, nullable=False
+    )
+    notify_new_patient: Mapped[bool] = mapped_column(
+        Boolean, default=True, nullable=False
+    )
+    notify_unconfirmed: Mapped[bool] = mapped_column(
+        Boolean, default=True, nullable=False
+    )
+
     # Status & Plan
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     onboarding_completed: Mapped[bool] = mapped_column(Boolean, default=False)

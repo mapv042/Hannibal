@@ -43,6 +43,21 @@ TEMPLATE_URGENCY_ALERT = "urgency_alert"
 #    Responde aquí si necesitas ajustarla."
 TEMPLATE_RESCHEDULE_NOTICE = "reschedule_notice"
 
+# Doctor-facing notifications (configurable per office) sent when the doctor's
+# 24h window is closed. In-window the same events are sent as free text. Each is
+# its own approved template. Meta forbids a body that STARTS or ENDS with a
+# variable, so the suggested bodies wrap every {{var}} in surrounding text:
+#   doctor_new_appointment          -> "El paciente {{patient_name}} agendó una cita para el {{slot}}. Revisa tu agenda."
+#   doctor_new_patient_appointment  -> "Nuevo paciente: {{patient_name}}. Agendó su primera cita para el {{slot}}. Revisa tu agenda."
+#   doctor_cancellation             -> "El paciente {{patient_name}} canceló su cita del {{slot}}. El espacio quedó libre."
+#   doctor_new_patient              -> "Se registró un nuevo paciente: {{patient_name}}. Ya está en tu lista."
+#   doctor_unconfirmed_summary      -> "Recordatorio: hoy tienes {{count}} cita(s) que tus pacientes aún no han confirmado."
+TEMPLATE_DOCTOR_NEW_APPOINTMENT = "doctor_new_appointment"
+TEMPLATE_DOCTOR_NEW_PATIENT_APPOINTMENT = "doctor_new_patient_appointment"
+TEMPLATE_DOCTOR_CANCELLATION = "doctor_cancellation"
+TEMPLATE_DOCTOR_NEW_PATIENT = "doctor_new_patient"
+TEMPLATE_DOCTOR_UNCONFIRMED_SUMMARY = "doctor_unconfirmed_summary"
+
 # Set to False if the templates were created with positional params ({{1}}, {{2}})
 # instead of named params ({{patient_name}}). Named is the modern default and
 # matches how these templates were written.
@@ -145,4 +160,48 @@ def build_reschedule_notice_params(
     return [
         _param("patient_name", patient_name),
         _param("new_slot", new_slot),
+    ]
+
+
+def build_doctor_new_appointment_params(
+    patient_name: str, slot: str
+) -> List[Dict[str, str]]:
+    """doctor_new_appointment: patient_name, slot."""
+    return [
+        _param("patient_name", patient_name),
+        _param("slot", slot),
+    ]
+
+
+def build_doctor_new_patient_appointment_params(
+    patient_name: str, slot: str
+) -> List[Dict[str, str]]:
+    """doctor_new_patient_appointment: patient_name, slot (new patient + first appt)."""
+    return [
+        _param("patient_name", patient_name),
+        _param("slot", slot),
+    ]
+
+
+def build_doctor_cancellation_params(
+    patient_name: str, slot: str
+) -> List[Dict[str, str]]:
+    """doctor_cancellation: patient_name, slot."""
+    return [
+        _param("patient_name", patient_name),
+        _param("slot", slot),
+    ]
+
+
+def build_doctor_new_patient_params(patient_name: str) -> List[Dict[str, str]]:
+    """doctor_new_patient: patient_name."""
+    return [
+        _param("patient_name", patient_name),
+    ]
+
+
+def build_doctor_unconfirmed_summary_params(count: str) -> List[Dict[str, str]]:
+    """doctor_unconfirmed_summary: count (today's unconfirmed appointments)."""
+    return [
+        _param("count", count),
     ]

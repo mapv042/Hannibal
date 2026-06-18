@@ -1,181 +1,176 @@
-"""Service layer for notifications (sending alerts to medical professional)."""
+"""Configurable doctor notifications: new appointment, cancellation, new patient,
+and the daily unconfirmed-appointments summary.
+
+Each notification respects a per-office toggle on Office (notify_*). Sending uses
+the shared window-aware helper (app/modules/whatsapp/doctor_notify.py): free text
+while the doctor's 24h window is open, approved Meta template otherwise.
+
+Functions return "notified" | "skipped" | "not_found". "not_found" lets the
+Celery task retry when the patient turn that triggered the event hasn't committed
+yet (the tool handler commits in the conversation manager, after the task is
+enqueued).
+"""
 
 from __future__ import annotations
 
+from datetime import datetime, time
 from uuid import UUID
-from typing import Optional, Dict, Any
 
+import redis.asyncio as aioredis
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.constants import MX_TIMEZONE
+from app.db.models import Appointment, Office, Patient
+from app.modules.notifications import templates
+from app.modules.reminders.wa_templates import (
+    TEMPLATE_DOCTOR_CANCELLATION,
+    TEMPLATE_DOCTOR_NEW_APPOINTMENT,
+    TEMPLATE_DOCTOR_NEW_PATIENT,
+    TEMPLATE_DOCTOR_NEW_PATIENT_APPOINTMENT,
+    TEMPLATE_DOCTOR_UNCONFIRMED_SUMMARY,
+    build_doctor_cancellation_params,
+    build_doctor_new_appointment_params,
+    build_doctor_new_patient_appointment_params,
+    build_doctor_new_patient_params,
+    build_doctor_unconfirmed_summary_params,
+)
+from app.modules.whatsapp.doctor_notify import send_doctor_alert
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
 
-async def notify_doctor(
-    office_id: UUID,
-    notification_type: str,
-    data: Dict[str, Any],
-) -> None:
+async def notify_appointment(
+    db: AsyncSession,
+    redis_client: aioredis.Redis,
+    meta_client,
+    appointment_id: UUID,
+    is_new_patient: bool,
+) -> str:
+    """Notify the doctor that the bot booked a new appointment.
+
+    When the patient is brand-new and both toggles are on, a single combined
+    message is sent. Otherwise each toggle is honored independently.
     """
-    Send notification to medical professional.
+    appointment = await db.get(Appointment, appointment_id)
+    if not appointment:
+        return "not_found"
 
-    Types:
-        new_appointment: New appointment created
-        appointment_cancelled: Appointment cancelled
-        patient_not_confirmed: Patient hasn't confirmed appointment
-        new_patient: New patient registered
-        urgent_message: Urgent message from patient
+    office = await db.get(Office, appointment.office_id)
+    patient = await db.get(Patient, appointment.patient_id)
+    if not office or not patient:
+        return "skipped"
 
-    Args:
-        office_id: Office ID
-        notification_type: Notification type
-        data: Notification data (varies by type)
+    tone = office.assistant_tone
+    patient_name = patient.name or "El paciente"
+    slot = templates.format_slot(appointment.start_datetime)
 
-    Example data structures:
-        new_appointment: {appointment_id, patient_name, date_time, reason}
-        appointment_cancelled: {appointment_id, patient_name, reason}
-        patient_not_confirmed: {appointment_id, patient_name, hours_until_appointment}
-        new_patient: {patient_name, phone, main_reason}
-        urgent_message: {patient_name, message}
+    want_appointment = office.notify_new_appointment
+    want_new_patient = is_new_patient and office.notify_new_patient
+
+    if is_new_patient and want_appointment and office.notify_new_patient:
+        text = templates.doctor_new_patient_appointment(patient_name, slot, tone)
+        template_name = TEMPLATE_DOCTOR_NEW_PATIENT_APPOINTMENT
+        params = build_doctor_new_patient_appointment_params(patient_name, slot)
+        log_event = "doctor_new_patient_appointment"
+    elif want_appointment:
+        text = templates.doctor_new_appointment(patient_name, slot, tone)
+        template_name = TEMPLATE_DOCTOR_NEW_APPOINTMENT
+        params = build_doctor_new_appointment_params(patient_name, slot)
+        log_event = "doctor_new_appointment"
+    elif want_new_patient:
+        text = templates.doctor_new_patient(patient_name, tone)
+        template_name = TEMPLATE_DOCTOR_NEW_PATIENT
+        params = build_doctor_new_patient_params(patient_name)
+        log_event = "doctor_new_patient"
+    else:
+        return "skipped"
+
+    return await send_doctor_alert(
+        redis_client,
+        meta_client,
+        office,
+        text=text,
+        template_name=template_name,
+        template_params=params,
+        log_event=log_event,
+    )
+
+
+async def notify_cancellation(
+    db: AsyncSession,
+    redis_client: aioredis.Redis,
+    meta_client,
+    appointment_id: UUID,
+) -> str:
+    """Notify the doctor that a patient cancelled their appointment."""
+    appointment = await db.get(Appointment, appointment_id)
+    if not appointment:
+        return "not_found"
+
+    office = await db.get(Office, appointment.office_id)
+    patient = await db.get(Patient, appointment.patient_id)
+    if not office or not patient:
+        return "skipped"
+    if not office.notify_cancellation:
+        return "skipped"
+
+    patient_name = patient.name or "El paciente"
+    slot = templates.format_slot(appointment.start_datetime)
+
+    return await send_doctor_alert(
+        redis_client,
+        meta_client,
+        office,
+        text=templates.doctor_cancellation(patient_name, slot, office.assistant_tone),
+        template_name=TEMPLATE_DOCTOR_CANCELLATION,
+        template_params=build_doctor_cancellation_params(patient_name, slot),
+        log_event="doctor_cancellation",
+    )
+
+
+async def notify_unconfirmed_summary(
+    db: AsyncSession,
+    redis_client: aioredis.Redis,
+    meta_client,
+    office: Office,
+) -> str:
+    """Send the doctor a digest of today's still-unconfirmed appointments.
+
+    The caller (beat task) decides WHEN to run this and guards idempotency; here
+    we just gather today's scheduled (unconfirmed) appointments and send.
     """
-    try:
-        logger.info(
-            "notify_doctor",
-            office_id=str(office_id),
-            notification_type=notification_type,
-            data=data,
+    if not office.notify_unconfirmed:
+        return "skipped"
+
+    now = datetime.now(MX_TIMEZONE)
+    start_of_day = datetime.combine(now.date(), time.min, tzinfo=MX_TIMEZONE)
+    end_of_day = datetime.combine(now.date(), time.max, tzinfo=MX_TIMEZONE)
+
+    result = await db.execute(
+        select(Appointment)
+        .where(
+            (Appointment.office_id == office.id)
+            & (Appointment.status == "scheduled")
+            & (Appointment.start_datetime >= start_of_day)
+            & (Appointment.start_datetime <= end_of_day)
         )
-
-        # TODO: Implement actual notification sending:
-        # - Push notification via Firebase Cloud Messaging
-        # - WhatsApp direct message to doctor
-        # - Email to doctor
-        # - In-app notification dashboard
-
-        match notification_type:
-            case "new_appointment":
-                await _notify_new_appointment(office_id, data)
-            case "appointment_cancelled":
-                await _notify_appointment_cancelled(office_id, data)
-            case "patient_not_confirmed":
-                await _notify_patient_not_confirmed(office_id, data)
-            case "new_patient":
-                await _notify_new_patient(office_id, data)
-            case "urgent_message":
-                await _notify_urgent_message(office_id, data)
-            case _:
-                logger.warning(
-                    "unknown_notification_type",
-                    notification_type=notification_type,
-                    office_id=str(office_id),
-                )
-
-    except Exception as e:
-        logger.error(
-            "error_notify_doctor",
-            office_id=str(office_id),
-            notification_type=notification_type,
-            error=str(e),
-        )
-
-
-async def _notify_new_appointment(
-    office_id: UUID,
-    data: Dict[str, Any],
-) -> None:
-    """Send notification for new appointment."""
-    message = (
-        f"New appointment scheduled\n"
-        f"Patient: {data.get('patient_name', 'N/A')}\n"
-        f"Date/Time: {data.get('date_time', 'N/A')}\n"
-        f"Reason: {data.get('reason', 'N/A')}"
+        .order_by(Appointment.start_datetime.asc())
     )
+    appointments = result.scalars().all()
+    if not appointments:
+        return "skipped"
 
-    logger.info(
-        "notify_new_appointment",
-        office_id=str(office_id),
-        message=message,
+    slots = [templates.format_slot(a.start_datetime) for a in appointments]
+    text = templates.doctor_unconfirmed_summary(slots, office.assistant_tone)
+
+    return await send_doctor_alert(
+        redis_client,
+        meta_client,
+        office,
+        text=text,
+        template_name=TEMPLATE_DOCTOR_UNCONFIRMED_SUMMARY,
+        template_params=build_doctor_unconfirmed_summary_params(str(len(slots))),
+        log_event="doctor_unconfirmed_summary",
     )
-
-    # TODO: Send to doctor via FCM, WhatsApp, email
-
-
-async def _notify_appointment_cancelled(
-    office_id: UUID,
-    data: Dict[str, Any],
-) -> None:
-    """Send notification for cancelled appointment."""
-    message = (
-        f"Appointment cancelled\n"
-        f"Patient: {data.get('patient_name', 'N/A')}\n"
-        f"Reason: {data.get('reason', 'N/A')}"
-    )
-
-    logger.info(
-        "notify_appointment_cancelled",
-        office_id=str(office_id),
-        message=message,
-    )
-
-    # TODO: Send to doctor
-
-
-async def _notify_patient_not_confirmed(
-    office_id: UUID,
-    data: Dict[str, Any],
-) -> None:
-    """Send notification if patient hasn't confirmed appointment."""
-    hours = data.get("hours_until_appointment", "N/A")
-    message = (
-        f"⚠️ Appointment not confirmed\n"
-        f"Patient: {data.get('patient_name', 'N/A')}\n"
-        f"Time until appointment: {hours} hours"
-    )
-
-    logger.info(
-        "notify_patient_not_confirmed",
-        office_id=str(office_id),
-        message=message,
-    )
-
-    # TODO: Send to doctor
-
-
-async def _notify_new_patient(
-    office_id: UUID,
-    data: Dict[str, Any],
-) -> None:
-    """Send notification for new patient registration."""
-    message = (
-        f"New patient registered\n"
-        f"Name: {data.get('patient_name', 'N/A')}\n"
-        f"Phone: {data.get('phone', 'N/A')}\n"
-        f"Reason: {data.get('main_reason', 'N/A')}"
-    )
-
-    logger.info(
-        "notify_new_patient",
-        office_id=str(office_id),
-        message=message,
-    )
-
-    # TODO: Send to doctor
-
-
-async def _notify_urgent_message(
-    office_id: UUID,
-    data: Dict[str, Any],
-) -> None:
-    """Send notification for urgent message from patient."""
-    message = (
-        f"🚨 Urgent message\n"
-        f"Patient: {data.get('patient_name', 'N/A')}\n"
-        f"Message: {data.get('message', 'N/A')}"
-    )
-
-    logger.info(
-        "notify_urgent_message",
-        office_id=str(office_id),
-        message=message,
-    )
-
-    # TODO: Send to doctor immediately via all channels

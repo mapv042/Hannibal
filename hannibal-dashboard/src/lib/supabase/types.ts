@@ -18,6 +18,10 @@ export type Office = {
   returning_patient_cost: string | null
   is_active: boolean
   onboarding_completed: boolean
+  notify_new_appointment: boolean
+  notify_cancellation: boolean
+  notify_new_patient: boolean
+  notify_unconfirmed: boolean
   google_calendar_token: Record<string, unknown> | null
   plan: string
   created_at: string
