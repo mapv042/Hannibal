@@ -18,11 +18,23 @@ branch_labels = None
 depends_on = None
 
 
+def _existing_columns(table_name: str) -> set[str]:
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    return {col['name'] for col in inspector.get_columns(table_name)}
+
+
 def upgrade() -> None:
-    op.add_column('offices', sa.Column('google_watch_resource_id', sa.String(length=255), nullable=True))
-    op.add_column('offices', sa.Column('google_sync_token', sa.Text(), nullable=True))
+    existing = _existing_columns('offices')
+    if 'google_watch_resource_id' not in existing:
+        op.add_column('offices', sa.Column('google_watch_resource_id', sa.String(length=255), nullable=True))
+    if 'google_sync_token' not in existing:
+        op.add_column('offices', sa.Column('google_sync_token', sa.Text(), nullable=True))
 
 
 def downgrade() -> None:
-    op.drop_column('offices', 'google_sync_token')
-    op.drop_column('offices', 'google_watch_resource_id')
+    existing = _existing_columns('offices')
+    if 'google_sync_token' in existing:
+        op.drop_column('offices', 'google_sync_token')
+    if 'google_watch_resource_id' in existing:
+        op.drop_column('offices', 'google_watch_resource_id')
