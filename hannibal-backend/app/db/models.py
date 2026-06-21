@@ -20,6 +20,7 @@ from sqlalchemy import (
     DateTime,
     Date,
     String,
+    Text,
     Integer,
     Time,
     ForeignKey,
@@ -123,9 +124,15 @@ class Office(Base):
     google_watch_channel_id: Mapped[Optional[str]] = mapped_column(
         String(255), nullable=True
     )
+    google_watch_resource_id: Mapped[Optional[str]] = mapped_column(
+        String(255), nullable=True
+    )  # maps inbound push notifications back to this office
     google_watch_expiry: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    google_sync_token: Mapped[Optional[str]] = mapped_column(
+        Text, nullable=True
+    )  # incremental events.list token for inbound sync
 
     # Doctor notification preferences (per-office toggles, default on)
     notify_new_appointment: Mapped[bool] = mapped_column(

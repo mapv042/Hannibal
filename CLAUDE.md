@@ -142,7 +142,7 @@ npm run dev
 2. **Webhook returns 200 immediately** — processing happens in FastAPI `BackgroundTasks`
 3. **Verification endpoint** returns `PlainTextResponse` with just the challenge value (Meta requirement)
 4. **Session context stored in Redis** (not DB) for speed — persisted to DB on conversation close
-5. **Celery Beat** schedule (`celery_app.py`): reminder reconciliation (daily 7am), confirmation requests (daily, `CONFIRMATION_REQUEST_HOUR`), Google Calendar watch renewal (every 24h). ⚠️ The watch-renewal entry points at `app.modules.google_calendar.tasks.renew_google_watches`, which **does not exist** — see Known gaps. Per-appointment reminders are enqueued with `eta` by `reminders/scheduler.py` (real `shared_task`).
+5. **Celery Beat** schedule (`celery_app.py`): reminder reconciliation (daily 7am), confirmation requests (daily, `CONFIRMATION_REQUEST_HOUR`), Google Calendar watch renewal (every 24h via `app.modules.google_calendar.tasks.renew_google_watches`, which renews channels expiring within `RENEWAL_BUFFER_DAYS`). Per-appointment reminders are enqueued with `eta` by `reminders/scheduler.py` (real `shared_task`).
 6. **DB base.py uses lazy initialization** — `get_engine()` and `get_async_session_maker()` create connections on first use, not at import time (required for Alembic to work)
 
 ## Environment variables (minimum required)
@@ -163,6 +163,7 @@ META_APP_ID=from-meta-developers
 ENCRYPTION_KEY=64-char-hex-string
 JWT_SECRET=from-supabase-settings
 FRONTEND_URL=https://...        # used for CORS allow-origin (single origin)
+BACKEND_URL=https://...         # backend public URL; builds the Google Calendar push webhook address
 # Optional
 SENTRY_DSN=...
 TWILIO_ACCOUNT_SID=...          # only if using Twilio number purchase

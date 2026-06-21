@@ -12,9 +12,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.modules.google_calendar.auth import get_valid_google_token
 from app.core.constants import MX_TIMEZONE
 from app.core.exceptions import GoogleCalendarError
+from app.utils.dates import now_mx
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+# How far ahead a full (token-less) sync looks for events.
+SYNC_HORIZON_DAYS = 60
 
 
 async def get_freebusy(
@@ -80,6 +84,98 @@ async def get_freebusy(
             error=str(e),
         )
         raise GoogleCalendarError(f"Failed to query Google Calendar: {e}")
+
+
+class _SyncTokenExpired(Exception):
+    """Internal sentinel: Google returned 410 (sync token no longer valid)."""
+
+
+async def list_events_incremental(
+    office_id: UUID,
+    db: AsyncSession,
+    sync_token: Optional[str],
+) -> tuple[list[dict], Optional[str]]:
+    """List calendar events that changed since the last sync.
+
+    Uses Google's incremental sync: when a `sync_token` is given, only events
+    changed since it are returned (including deletions as `status="cancelled"`).
+    With no token (or an expired one — HTTP 410), it falls back to a full list
+    over the next SYNC_HORIZON_DAYS to re-seed the token.
+
+    Returns:
+        (items, next_sync_token). next_sync_token is None if Google didn't
+        return one (shouldn't happen on success), in which case the caller
+        keeps its previous token.
+    """
+    access_token = await get_valid_google_token(office_id, db)
+
+    from app.db.models import Office
+
+    office = await db.get(Office, office_id)
+    calendar_id = office.google_calendar_id or "primary"
+
+    base_url = (
+        f"https://www.googleapis.com/calendar/v3/calendars/{calendar_id}/events"
+    )
+
+    def _base_params() -> dict:
+        params = {"singleEvents": "true", "showDeleted": "true", "maxResults": "250"}
+        if sync_token:
+            params["syncToken"] = sync_token
+        else:
+            # syncToken is mutually exclusive with timeMin/timeMax.
+            params["timeMin"] = now_mx().isoformat()
+            params["timeMax"] = (now_mx() + timedelta(days=SYNC_HORIZON_DAYS)).isoformat()
+        return params
+
+    async def _fetch(params: dict) -> tuple[list[dict], Optional[str]]:
+        items: list[dict] = []
+        next_token: Optional[str] = None
+        page_token: Optional[str] = None
+        async with httpx.AsyncClient() as client:
+            while True:
+                page_params = dict(params)
+                if page_token:
+                    page_params["pageToken"] = page_token
+                response = await client.get(
+                    base_url,
+                    params=page_params,
+                    headers={"Authorization": f"Bearer {access_token}"},
+                )
+                if response.status_code == 410:
+                    # syncToken expired — signal caller to retry full sync.
+                    raise _SyncTokenExpired()
+                if response.status_code != 200:
+                    logger.error(
+                        "google_events_list_failed",
+                        status_code=response.status_code,
+                        response=response.text,
+                    )
+                    raise GoogleCalendarError(
+                        f"Google Calendar events.list failed (status {response.status_code})"
+                    )
+                data = response.json()
+                items.extend(data.get("items", []))
+                next_token = data.get("nextSyncToken") or next_token
+                page_token = data.get("nextPageToken")
+                if not page_token:
+                    break
+        return items, next_token
+
+    try:
+        items, next_token = await _fetch(_base_params())
+    except _SyncTokenExpired:
+        logger.warning("google_sync_token_expired", office_id=str(office_id))
+        sync_token = None  # force the full-list branch
+        items, next_token = await _fetch(_base_params())
+
+    logger.info(
+        "google_events_listed",
+        office_id=str(office_id),
+        count=len(items),
+        incremental=bool(sync_token),
+    )
+    return items, next_token
 
 
 async def create_calendar_event(

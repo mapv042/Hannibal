@@ -68,3 +68,4 @@ import app.modules.reminders.tasks  # noqa: F401
 import app.modules.urgencies.tasks  # noqa: F401
 import app.modules.scheduling.tasks  # noqa: F401
 import app.modules.notifications.tasks  # noqa: F401
+import app.modules.google_calendar.tasks  # noqa: F401

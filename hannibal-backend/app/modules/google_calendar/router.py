@@ -5,15 +5,16 @@ from __future__ import annotations
 from uuid import UUID
 import base64
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.dependencies import get_db, get_current_user
+from app.core.dependencies import get_db, get_current_user, get_redis
 from app.db.models import Office
 from app.modules.google_calendar.auth import (
     get_google_oauth_url,
     exchange_code_for_token,
 )
+from app.modules.google_calendar.sync import import_calendar_changes
 from app.modules.google_calendar.watch import (
     create_watch_channel,
     delete_watch_channel,
@@ -140,7 +141,9 @@ async def disconnect_google_calendar(
         office.google_calendar_token = None
         office.google_calendar_id = None
         office.google_watch_channel_id = None
+        office.google_watch_resource_id = None
         office.google_watch_expiry = None
+        office.google_sync_token = None
 
         await db.commit()
 
@@ -231,44 +234,69 @@ async def disable_watch(
         raise GoogleCalendarError(f"Failed to disable watch: {str(e)}")
 
 
+async def _process_calendar_push(office_id: UUID) -> None:
+    """Background worker: pull and apply Google Calendar changes for an office.
+
+    Runs after the webhook returns 200, with its own DB session and Redis
+    client (the request-scoped ones are already closed by then).
+    """
+    import redis.asyncio as aioredis
+
+    from app.config import settings
+    from app.db.base import get_async_session_maker
+
+    redis_client = aioredis.from_url(settings.redis_url, decode_responses=True)
+    try:
+        async with get_async_session_maker()() as db:
+            await import_calendar_changes(office_id, db, redis_client)
+    finally:
+        await redis_client.close()
+
+
 @router.post("/webhook")
 async def process_calendar_webhook(
     request: Request,
+    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
 ):
     """
     Webhook endpoint for Google Calendar push notifications.
 
-    This is NOT protected by JWT as it's called by Google's servers.
-
-    Handles:
-        - New/modified events in Google Calendar
-        - Syncs changes back to Hannibal database
+    This is NOT protected by JWT as it's called by Google's servers. Returns 200
+    immediately and syncs the changed events in a background task (Google retries
+    on non-2xx, so we must respond fast).
     """
     try:
-        logger.info("webhook_received", method=request.method)
-
-        # Get headers
         headers = dict(request.headers)
         resource_id = headers.get("x-goog-resource-id")
         resource_state = headers.get("x-goog-resource-state")
 
-        if resource_state == "sync":
-            # Verification request from Google
-            logger.info("webhook_verification", resource_id=resource_id)
-            return {"success": True}
-
-        # TODO: Process actual calendar change notification
-        # 1. Find office by resource_id
-        # 2. Fetch updated events from Google Calendar
-        # 3. Sync changes back to database
-
         logger.info(
-            "webhook_processed",
+            "webhook_received",
             resource_id=resource_id,
             resource_state=resource_state,
         )
 
+        if resource_state == "sync":
+            # Initial handshake from Google when the channel is created.
+            return {"success": True}
+
+        if not resource_id:
+            logger.warning("webhook_missing_resource_id")
+            return {"success": True}
+
+        office = (
+            await db.execute(
+                select(Office).where(Office.google_watch_resource_id == resource_id)
+            )
+        ).scalar_one_or_none()
+
+        if not office:
+            # Stale channel (e.g. office disconnected) — ack so Google stops retrying.
+            logger.warning("webhook_office_not_found", resource_id=resource_id)
+            return {"success": True}
+
+        background_tasks.add_task(_process_calendar_push, office.id)
         return {"success": True}
 
     except Exception as e:

@@ -59,6 +59,9 @@ class Settings(BaseSettings):
     # Frontend
     frontend_url: str = "http://localhost:3000"
 
+    # Backend public URL (used to build the Google Calendar push webhook address)
+    backend_url: str = ""
+
     @computed_field
     @property
     def async_database_url(self) -> str:

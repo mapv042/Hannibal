@@ -9,6 +9,7 @@ import httpx
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.db.models import Office
 from app.modules.google_calendar.auth import get_valid_google_token
 from app.core.exceptions import GoogleCalendarError
@@ -16,6 +17,15 @@ from app.utils.dates import now_mx
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+
+def build_webhook_url() -> str:
+    """Public URL Google posts calendar push notifications to.
+
+    Built from BACKEND_URL so the renewal task (which has no HTTP request to
+    derive a host from) and the router share one source of truth.
+    """
+    return f"{settings.backend_url.rstrip('/')}/api/google-calendar/webhook"
 
 
 async def create_watch_channel(
@@ -73,9 +83,13 @@ async def create_watch_channel(
             watch_data = response.json()
             resource_id = watch_data.get("resourceId")
 
-            # Store watch info in office
+            # Store watch info in office. resource_id maps inbound push
+            # notifications back to this office; reset the sync token so the
+            # first push triggers a full incremental sync.
             office.google_watch_channel_id = channel_id
+            office.google_watch_resource_id = resource_id
             office.google_watch_expiry = now_mx() + timedelta(days=29)
+            office.google_sync_token = None
 
             await db.commit()
 
@@ -145,7 +159,9 @@ async def delete_watch_channel(
 
         # Clear watch info
         office.google_watch_channel_id = None
+        office.google_watch_resource_id = None
         office.google_watch_expiry = None
+        office.google_sync_token = None
         await db.commit()
 
         logger.info(
