@@ -12,6 +12,7 @@ import redis.asyncio as redis
 
 from app.config import settings
 from app.core.dependencies import get_db, get_redis
+from app.db.base import get_async_session_maker
 from app.utils.logger import get_logger
 from app.modules.whatsapp.validator import validate_webhook_signature
 from app.modules.whatsapp.schemas import (
@@ -108,7 +109,6 @@ async def verify_webhook(
 async def receive_webhook(
     request: Request,
     background_tasks: BackgroundTasks,
-    db: AsyncSession = Depends(get_db),
     redis_client: redis.Redis = Depends(get_redis),
 ) -> Dict[str, int]:
     """
@@ -163,7 +163,6 @@ async def receive_webhook(
     background_tasks.add_task(
         _process_webhook_async,
         payload,
-        db,
         redis_client,
     )
 
@@ -172,57 +171,61 @@ async def receive_webhook(
 
 async def _process_webhook_async(
     payload: Dict[str, Any],
-    db: AsyncSession,
     redis_client: redis.Redis,
 ) -> None:
     """
     Async webhook processing (happens in background).
 
     Extracts messages/statuses and routes them appropriately.
+
+    Opens its own DB session: the request-scoped session from `get_db` is
+    closed once the 200 response is sent, so it cannot be reused here (the
+    background task runs after the request completes).
     """
     try:
-        entries = payload.get("entry", [])
+        async with get_async_session_maker()() as db:
+            entries = payload.get("entry", [])
 
-        for entry in entries:
-            changes = entry.get("changes", [])
+            for entry in entries:
+                changes = entry.get("changes", [])
 
-            for change in changes:
-                value = change.get("value", {})
+                for change in changes:
+                    value = change.get("value", {})
 
-                # Get phone_number_id to identify office
-                phone_number_id = value.get("metadata", {}).get("phone_number_id")
-                if not phone_number_id:
-                    logger.warning("webhook_no_phone_number_id")
-                    continue
+                    # Get phone_number_id to identify office
+                    phone_number_id = value.get("metadata", {}).get("phone_number_id")
+                    if not phone_number_id:
+                        logger.warning("webhook_no_phone_number_id")
+                        continue
 
-                # Find office
-                office = await get_office_by_phone_id(phone_number_id, db)
-                if not office:
-                    logger.warning(
-                        "webhook_office_not_found",
-                        phone_number_id=phone_number_id,
-                    )
-                    continue
+                    # Find office
+                    office = await get_office_by_phone_id(phone_number_id, db)
+                    if not office:
+                        logger.warning(
+                            "webhook_office_not_found",
+                            phone_number_id=phone_number_id,
+                        )
+                        continue
 
-                # Process messages
-                messages = value.get("messages", [])
-                for message in messages:
-                    await _process_message(
-                        message,
-                        office,
-                        db,
-                        redis_client,
-                    )
+                    # Process messages
+                    messages = value.get("messages", [])
+                    for message in messages:
+                        await _process_message(
+                            message,
+                            office,
+                            db,
+                            redis_client,
+                        )
 
-                # Process status updates
-                statuses = value.get("statuses", [])
-                for status_update in statuses:
-                    await _process_status(
-                        status_update,
-                        office,
-                        db,
-                        redis_client,
-                    )
+                    # Process status updates
+                    statuses = value.get("statuses", [])
+                    for status_update in statuses:
+                        await _process_status(
+                            status_update,
+                            office,
+                            db,
+                            redis_client,
+                        )
 
     except Exception as e:
         logger.error("webhook_process_error", error=str(e), exc_info=True)
