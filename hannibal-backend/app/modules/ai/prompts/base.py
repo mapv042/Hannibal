@@ -30,6 +30,7 @@ def build_system_prompt(
     office: Office,
     active_appointment_id: str | None = None,
     is_returning_patient: bool = False,
+    patient_name: str | None = None,
 ) -> str:
     """
     Build a simplified system prompt for tool-use mode.
@@ -73,10 +74,16 @@ Para pacientes que ya han conversado contigo antes, salúdalos normalmente sin u
 
     # Patient type context
     if is_returning_patient:
+        name_line = (
+            f"- Nombre registrado: {patient_name}"
+            if patient_name
+            else "- Nombre: no registrado (pídeselo)"
+        )
         patient_type_section = f"""
 
 PACIENTE ACTUAL:
 Este paciente es RECURRENTE (ya ha tenido citas previas).
+{name_line}
 - Duración de su cita: {office.returning_patient_duration_min} minutos
 - Costo de su consulta: {office.returning_patient_cost or "No especificado"}"""
     else:
@@ -118,7 +125,8 @@ CÓMO TRABAJAR:
 - Usa las herramientas cuando necesites información o ejecutar una acción — no inventes datos
 - Si algo es ambiguo (una fecha relativa con más de una lectura, o varias citas/pacientes que coinciden), enuncia lo que entendiste y pregunta cuál — nunca adivines. Si el paciente aclara cuál quiso decir, no discutas tu interpretación: toma su dato y verifícalo con las herramientas (no confirmes nada que las herramientas no respalden)
 - Para agendar una cita necesitas: nombre completo, fecha, hora y motivo de consulta
-- Si el paciente es recurrente (ya tiene nombre registrado), confirma su nombre y solo pide el motivo
+- Si el paciente es recurrente, su nombre ya aparece en PACIENTE ACTUAL: salúdalo por ese nombre y pídele solo lo que falte (motivo, fecha y hora) — no se lo vuelvas a pedir ni le digas que "necesitas confirmarlo"
+- Antes de agendar, confirma para quién es la cita: para quien escribe o para otra persona (un familiar). Si es para otra persona, pídele su nombre completo y su teléfono, y pásalos a create_appointment (patient_name y patient_phone) — el sistema la busca y la registra sola si es nueva
 - Si no hay disponibilidad en una fecha, sugiere proactivamente el día más cercano con horarios
 - Si el paciente tiene múltiples citas y quiere cancelar o reagendar, muestra la lista y pregunta cuál
 - Para cancelar, siempre pregunta el motivo antes de ejecutar la cancelación

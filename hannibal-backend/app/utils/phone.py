@@ -41,6 +41,27 @@ def normalize_phone(phone: str) -> str:
     return f"+52{cleaned}"
 
 
+def phone_core_digits(phone: str) -> str:
+    """Return the 10-digit national core of a Mexican number (raises on invalid)."""
+    return normalize_phone(phone)[3:]  # drop the leading "+52"
+
+
+def to_whatsapp_id(phone: str) -> str:
+    """Best-effort WhatsApp (Meta) id for a Mexican number: 521 + 10 digits.
+
+    Matches the format Meta sends for Mexican mobiles, so a third party
+    registered by phone is found if they later message the bot themselves.
+    """
+    return f"521{phone_core_digits(phone)}"
+
+
+def phone_match_variants(phone: str) -> list[str]:
+    """Equivalent string forms of a number, for matching DB columns that may
+    store it un-normalized (raw WhatsApp id, +52…, 52…, or 10-digit)."""
+    d = phone_core_digits(phone)
+    return [f"+52{d}", f"52{d}", f"521{d}", d]
+
+
 def format_display(phone: str) -> str:
     """
     Format phone number for display (readable format).

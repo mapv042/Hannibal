@@ -25,6 +25,12 @@ from app.modules.notifications.tasks import (
 )
 from app.utils.dates import relative_day_label, spanish_date_label
 from app.utils.logger import get_logger
+from app.utils.phone import (
+    normalize_phone,
+    phone_core_digits,
+    phone_match_variants,
+    to_whatsapp_id,
+)
 
 logger = get_logger(__name__)
 
@@ -71,14 +77,20 @@ TOOL_DEFINITIONS = [
         "description": (
             "Crea una nueva cita. Llámala una vez que el paciente confirme un resumen con los datos "
             "de la cita (nombre, fecha, hora, motivo). Al crearla, la cita queda agendada y lista. "
-            "No la llames sin esa confirmación de los datos de la cita."
+            "No la llames sin esa confirmación de los datos de la cita. "
+            "La cita es para quien escribe, a menos que se indique patient_phone: en ese caso la cita "
+            "se agenda a nombre de esa otra persona (familiar/tercero), buscándola por teléfono y "
+            "registrándola automáticamente si aún no existe."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "patient_name": {
                     "type": "string",
-                    "description": "Nombre completo del paciente.",
+                    "description": (
+                        "Nombre completo de la persona que será atendida. Si la cita es para un "
+                        "familiar/tercero, es el nombre de ese familiar, no el de quien escribe."
+                    ),
                 },
                 "date": {
                     "type": "string",
@@ -91,6 +103,14 @@ TOOL_DEFINITIONS = [
                 "reason": {
                     "type": "string",
                     "description": "Motivo de la consulta.",
+                },
+                "patient_phone": {
+                    "type": "string",
+                    "description": (
+                        "Teléfono de la persona que será atendida, SOLO cuando la cita es para "
+                        "alguien distinto a quien escribe (un familiar/tercero). Omítelo si la cita "
+                        "es para quien escribe."
+                    ),
                 },
             },
             "required": ["patient_name", "date", "time", "reason"],
@@ -353,6 +373,7 @@ async def _handle_create_appointment(args: dict, ctx: ToolContext) -> dict:
     date_str = args.get("date", "")
     time_str = args.get("time", "")
     reason = args.get("reason", "Consulta")
+    patient_phone = (args.get("patient_phone") or "").strip()
 
     if not all([patient_name, date_str, time_str, reason]):
         return {"error": "Faltan datos para crear la cita. Se requiere: nombre, fecha, hora y motivo."}
@@ -362,27 +383,79 @@ async def _handle_create_appointment(args: dict, ctx: ToolContext) -> dict:
     except ValueError:
         return {"error": f"Fecha u hora inválida: {date_str} {time_str}"}
 
-    # Ensure patient record exists
-    patient = None
-    if ctx.patient_id:
-        patient = await ctx.db.get(Patient, ctx.patient_id)
+    # Is this booking for a third party (a family member), or for whoever writes?
+    # It's third-party only when a phone is given that differs from the writer's own.
+    try:
+        writer_core = phone_core_digits(ctx.whatsapp_id)
+    except ValueError:
+        writer_core = None
+
+    booking_for_third_party = False
+    if patient_phone:
+        try:
+            booking_for_third_party = phone_core_digits(patient_phone) != writer_core
+        except ValueError:
+            return {
+                "error": (
+                    f"El teléfono '{patient_phone}' no es válido. Pídele al paciente un número "
+                    "de 10 dígitos."
+                )
+            }
 
     is_new_patient = False
-    if not patient:
-        # Create patient
-        patient = Patient(
-            id=uuid.uuid4(),
-            office_id=ctx.office.id,
-            whatsapp_id=ctx.whatsapp_id,
-            phone=ctx.whatsapp_id,
-            name=patient_name,
+    if booking_for_third_party:
+        # Resolve the third party by phone; register them if not found.
+        variants = phone_match_variants(patient_phone)
+        result = await ctx.db.execute(
+            select(Patient).where(
+                (Patient.office_id == ctx.office.id)
+                & (
+                    Patient.whatsapp_id.in_(variants)
+                    | Patient.phone.in_(variants)
+                )
+            ).limit(1)
         )
-        ctx.db.add(patient)
-        await ctx.db.flush()
-        ctx.patient_id = patient.id
-        is_new_patient = True
-    elif not patient.name:
-        patient.name = patient_name
+        patient = result.scalars().first()
+        if not patient:
+            patient = Patient(
+                id=uuid.uuid4(),
+                office_id=ctx.office.id,
+                whatsapp_id=to_whatsapp_id(patient_phone),
+                phone=normalize_phone(patient_phone),
+                name=patient_name,
+            )
+            ctx.db.add(patient)
+            await ctx.db.flush()
+            is_new_patient = True
+        elif not patient.name:
+            patient.name = patient_name
+        # Do NOT touch ctx.patient_id: the session still belongs to the writer.
+    else:
+        # Booking for whoever is writing — use (or create) their own record.
+        patient = None
+        if ctx.patient_id:
+            patient = await ctx.db.get(Patient, ctx.patient_id)
+        if not patient:
+            # whatsapp_id stays the raw Meta id (used to match incoming messages);
+            # phone is normalized for a uniform column, falling back to raw if the
+            # id isn't a parseable MX number.
+            try:
+                writer_phone = normalize_phone(ctx.whatsapp_id)
+            except ValueError:
+                writer_phone = ctx.whatsapp_id
+            patient = Patient(
+                id=uuid.uuid4(),
+                office_id=ctx.office.id,
+                whatsapp_id=ctx.whatsapp_id,
+                phone=writer_phone,
+                name=patient_name,
+            )
+            ctx.db.add(patient)
+            await ctx.db.flush()
+            ctx.patient_id = patient.id
+            is_new_patient = True
+        elif not patient.name:
+            patient.name = patient_name
 
     # Determine duration based on patient type (new vs returning)
     existing_appt = await ctx.db.execute(

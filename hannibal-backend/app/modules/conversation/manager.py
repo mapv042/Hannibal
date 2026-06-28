@@ -126,6 +126,7 @@ class ConversationManager:
                 office,
                 active_appointment_id=active_appt_id,
                 is_returning_patient=is_returning,
+                patient_name=patient.name if patient else None,
             )
             session.claude_history.append({"role": "user", "content": message_text})
 
