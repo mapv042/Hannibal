@@ -26,6 +26,7 @@ from app.modules.notifications.tasks import (
 from app.utils.dates import relative_day_label, spanish_date_label
 from app.utils.logger import get_logger
 from app.utils.phone import (
+    display_or_raw,
     normalize_phone,
     phone_core_digits,
     phone_match_variants,
@@ -107,13 +108,13 @@ TOOL_DEFINITIONS = [
                 "patient_phone": {
                     "type": "string",
                     "description": (
-                        "Teléfono de la persona que será atendida, SOLO cuando la cita es para "
-                        "alguien distinto a quien escribe (un familiar/tercero). Omítelo si la cita "
-                        "es para quien escribe."
+                        "Teléfono de contacto (10 dígitos) de la persona que será atendida. "
+                        "Pídelo siempre. Si la cita es para un familiar/tercero, es el teléfono de "
+                        "esa persona, no el de quien escribe."
                     ),
                 },
             },
-            "required": ["patient_name", "date", "time", "reason"],
+            "required": ["patient_name", "patient_phone", "date", "time", "reason"],
         },
     },
     {
@@ -375,8 +376,8 @@ async def _handle_create_appointment(args: dict, ctx: ToolContext) -> dict:
     reason = args.get("reason", "Consulta")
     patient_phone = (args.get("patient_phone") or "").strip()
 
-    if not all([patient_name, date_str, time_str, reason]):
-        return {"error": "Faltan datos para crear la cita. Se requiere: nombre, fecha, hora y motivo."}
+    if not all([patient_name, patient_phone, date_str, time_str, reason]):
+        return {"error": "Faltan datos para crear la cita. Se requiere: nombre, teléfono, fecha, hora y motivo."}
 
     try:
         start_dt = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M").replace(tzinfo=MX_TIMEZONE)
@@ -432,30 +433,29 @@ async def _handle_create_appointment(args: dict, ctx: ToolContext) -> dict:
         # Do NOT touch ctx.patient_id: the session still belongs to the writer.
     else:
         # Booking for whoever is writing — use (or create) their own record.
+        # patient_phone is the contact number they gave (already validated above);
+        # store it normalized. whatsapp_id stays the raw Meta id (used to match
+        # incoming messages).
+        contact_phone = normalize_phone(patient_phone)
         patient = None
         if ctx.patient_id:
             patient = await ctx.db.get(Patient, ctx.patient_id)
         if not patient:
-            # whatsapp_id stays the raw Meta id (used to match incoming messages);
-            # phone is normalized for a uniform column, falling back to raw if the
-            # id isn't a parseable MX number.
-            try:
-                writer_phone = normalize_phone(ctx.whatsapp_id)
-            except ValueError:
-                writer_phone = ctx.whatsapp_id
             patient = Patient(
                 id=uuid.uuid4(),
                 office_id=ctx.office.id,
                 whatsapp_id=ctx.whatsapp_id,
-                phone=writer_phone,
+                phone=contact_phone,
                 name=patient_name,
             )
             ctx.db.add(patient)
             await ctx.db.flush()
             ctx.patient_id = patient.id
             is_new_patient = True
-        elif not patient.name:
-            patient.name = patient_name
+        else:
+            patient.phone = contact_phone
+            if not patient.name:
+                patient.name = patient_name
 
     # Determine duration based on patient type (new vs returning)
     existing_appt = await ctx.db.execute(
@@ -484,7 +484,11 @@ async def _handle_create_appointment(args: dict, ctx: ToolContext) -> dict:
                 title=f"Cita: {patient_name}",
                 start_time=start_dt,
                 end_time=end_dt,
-                description=f"Motivo: {reason}\nAgendada por WhatsApp",
+                description=(
+                    f"Motivo: {reason}\n"
+                    f"Teléfono: {display_or_raw(patient.phone)}\n"
+                    f"Agendada por WhatsApp"
+                ),
                 db=ctx.db,
                 color_id="9",
             )
@@ -623,14 +627,18 @@ async def _handle_reschedule_appointment(args: dict, ctx: ToolContext) -> dict:
 
     # Create new
     patient_name = ""
+    patient_phone_display = ""
     if appointment.patient_id:
         patient = await ctx.db.get(Patient, appointment.patient_id)
         if patient:
             patient_name = patient.name or ""
+            patient_phone_display = display_or_raw(patient.phone) if patient.phone else ""
 
     duration = timedelta(minutes=appointment.duration_minutes or 30)
     new_end = new_start + duration
     reason = appointment.consultation_reason or "Consulta"
+
+    phone_line = f"Teléfono: {patient_phone_display}\n" if patient_phone_display else ""
 
     google_event_id = None
     if ctx.office.google_calendar_token:
@@ -640,7 +648,7 @@ async def _handle_reschedule_appointment(args: dict, ctx: ToolContext) -> dict:
                 title=f"Cita: {patient_name}",
                 start_time=new_start,
                 end_time=new_end,
-                description=f"Motivo: {reason}\nReagendada por WhatsApp",
+                description=f"Motivo: {reason}\n{phone_line}Reagendada por WhatsApp",
                 db=ctx.db,
                 color_id="9",
             )

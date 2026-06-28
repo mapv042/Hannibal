@@ -83,3 +83,11 @@ def format_display(phone: str) -> str:
 
     # Format as (555) 123-4567
     return f"({digits[:3]}) {digits[3:6]}-{digits[6:]}"
+
+
+def display_or_raw(phone: str) -> str:
+    """Readable display for a phone, falling back to the raw value if unparseable."""
+    try:
+        return format_display(phone)
+    except ValueError:
+        return phone

@@ -26,6 +26,7 @@ from app.modules.reminders.wa_templates import (
 )
 from app.utils.dates import relative_day_label, spanish_date_label
 from app.utils.logger import get_logger
+from app.utils.phone import display_or_raw, normalize_phone, to_whatsapp_id
 
 logger = get_logger(__name__)
 
@@ -225,8 +226,8 @@ DOCTOR_TOOL_DEFINITIONS = [
         "name": "create_appointment",
         "description": (
             "Crea una nueva cita para un paciente. Identifica al paciente por nombre. "
-            "Si el paciente no existe en el sistema, se crea automáticamente. "
-            "El doctor no necesita confirmación extra — ejecuta directamente."
+            "Si el paciente no existe en el sistema, se crea automáticamente (en ese caso "
+            "se requiere su teléfono). El doctor no necesita confirmación extra — ejecuta directamente."
         ),
         "input_schema": {
             "type": "object",
@@ -246,6 +247,13 @@ DOCTOR_TOOL_DEFINITIONS = [
                 "reason": {
                     "type": "string",
                     "description": "Motivo de la consulta.",
+                },
+                "patient_phone": {
+                    "type": "string",
+                    "description": (
+                        "Teléfono del paciente (10 dígitos). OBLIGATORIO cuando el paciente es "
+                        "nuevo (no está registrado); para un paciente ya registrado puede omitirse."
+                    ),
                 },
             },
             "required": ["patient_name", "date", "time", "reason"],
@@ -1021,6 +1029,7 @@ async def _handle_create_appointment(args: dict, ctx: DoctorToolContext) -> dict
     date_str = args.get("date", "")
     time_str = args.get("time", "")
     reason = args.get("reason", "Consulta")
+    patient_phone = (args.get("patient_phone") or "").strip()
 
     if not all([patient_name, date_str, time_str]):
         return {"error": "Faltan datos. Se requiere: nombre del paciente, fecha y hora."}
@@ -1047,11 +1056,31 @@ async def _handle_create_appointment(args: dict, ctx: DoctorToolContext) -> dict
 
     if patients:
         patient = patients[0]
+        # Backfill the contact phone if we don't have one yet and the doctor gave it.
+        if patient_phone and not patient.phone:
+            try:
+                patient.phone = normalize_phone(patient_phone)
+            except ValueError:
+                return {"error": f"El teléfono '{patient_phone}' no es válido. Usa 10 dígitos."}
     else:
+        # New patient: phone is required (and fixes the NOT NULL phone/whatsapp_id columns).
+        if not patient_phone:
+            return {
+                "error": (
+                    f"'{patient_name}' es un paciente nuevo. Necesito su teléfono (10 dígitos) "
+                    "para registrarlo y agendar la cita."
+                )
+            }
+        try:
+            new_phone = normalize_phone(patient_phone)
+        except ValueError:
+            return {"error": f"El teléfono '{patient_phone}' no es válido. Usa 10 dígitos."}
         patient = Patient(
             id=uuid.uuid4(),
             office_id=ctx.office.id,
             name=patient_name,
+            phone=new_phone,
+            whatsapp_id=to_whatsapp_id(patient_phone),
         )
         ctx.db.add(patient)
         await ctx.db.flush()
@@ -1083,7 +1112,11 @@ async def _handle_create_appointment(args: dict, ctx: DoctorToolContext) -> dict
                 title=f"Cita: {patient.name}",
                 start_time=start_dt,
                 end_time=end_dt,
-                description=f"Motivo: {reason}\nAgendada por el doctor",
+                description=(
+                    f"Motivo: {reason}\n"
+                    + (f"Teléfono: {display_or_raw(patient.phone)}\n" if patient.phone else "")
+                    + "Agendada por el doctor"
+                ),
                 db=ctx.db,
                 color_id="9",
             )
@@ -1163,6 +1196,7 @@ async def _handle_reschedule_appointment(args: dict, ctx: DoctorToolContext) -> 
 
     # Get patient info
     patient_name = ""
+    patient_phone_display = ""
     patient_obj = (
         await ctx.db.get(Patient, appointment.patient_id)
         if appointment.patient_id
@@ -1170,10 +1204,13 @@ async def _handle_reschedule_appointment(args: dict, ctx: DoctorToolContext) -> 
     )
     if patient_obj:
         patient_name = patient_obj.name or ""
+        patient_phone_display = display_or_raw(patient_obj.phone) if patient_obj.phone else ""
 
     duration = timedelta(minutes=appointment.duration_minutes or 30)
     new_end = new_start + duration
     reason = appointment.consultation_reason or "Consulta"
+
+    phone_line = f"Teléfono: {patient_phone_display}\n" if patient_phone_display else ""
 
     # Create new Google Calendar event
     google_event_id = None
@@ -1184,7 +1221,7 @@ async def _handle_reschedule_appointment(args: dict, ctx: DoctorToolContext) -> 
                 title=f"Cita: {patient_name}",
                 start_time=new_start,
                 end_time=new_end,
-                description=f"Motivo: {reason}\nReagendada por el doctor",
+                description=f"Motivo: {reason}\n{phone_line}Reagendada por el doctor",
                 db=ctx.db,
                 color_id="9",
             )

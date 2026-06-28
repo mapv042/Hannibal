@@ -39,6 +39,7 @@ from app.modules.reminders.wa_templates import (
 )
 from app.modules.urgencies import templates
 from app.utils.logger import get_logger
+from app.utils.phone import display_or_raw
 
 logger = get_logger(__name__)
 
@@ -307,7 +308,11 @@ async def _create_urgent_appointment(
                 title=f"URGENCIA: {patient.name}",
                 start_time=start_dt,
                 end_time=end_dt,
-                description=f"Motivo: {reason}\nCita urgente aprobada por el doctor",
+                description=(
+                    f"Motivo: {reason}\n"
+                    + (f"Teléfono: {display_or_raw(patient.phone)}\n" if patient.phone else "")
+                    + "Cita urgente aprobada por el doctor"
+                ),
                 db=db,
                 color_id=GCAL_COLOR_URGENT,
             )
