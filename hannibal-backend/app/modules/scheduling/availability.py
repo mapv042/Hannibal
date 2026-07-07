@@ -214,6 +214,58 @@ async def compute_day_availability(
     return DayAvailability(available, has_schedule=True)
 
 
+async def check_slot_bookable(
+    office_id: UUID,
+    start_dt: datetime,
+    end_dt: datetime,
+    db: AsyncSession,
+) -> Optional[str]:
+    """Validate that a concrete slot can be booked right now.
+
+    Checks that the slot falls inside the office's working hours for that
+    weekday and that it doesn't overlap existing appointments, time blocks, or
+    Google Calendar busy periods. Google Calendar is best-effort (not required).
+
+    Returns None when bookable, or a Spanish reason string when not — meant to
+    be relayed to the user by the LLM or wrapped in SlotNotAvailableError.
+    """
+    date_ = start_dt.astimezone(MX_TIMEZONE).date()
+
+    db_day_of_week = (date_.weekday() + 1) % 7
+    schedules = (await db.execute(
+        select(AvailabilitySchedule).where(
+            and_(
+                AvailabilitySchedule.office_id == office_id,
+                AvailabilitySchedule.day_of_week == db_day_of_week,
+                AvailabilitySchedule.is_active == True,  # noqa: E712
+            )
+        )
+    )).scalars().all()
+    if not schedules:
+        return "No hay horario de atención configurado para ese día."
+
+    in_working_hours = False
+    for schedule in schedules:
+        window_start = datetime.combine(date_, schedule.start_time, tzinfo=MX_TIMEZONE)
+        window_end = datetime.combine(date_, schedule.end_time, tzinfo=MX_TIMEZONE)
+        if start_dt >= window_start and end_dt <= window_end:
+            in_working_hours = True
+            break
+    if not in_working_hours:
+        return "El horario está fuera del horario de atención del consultorio."
+
+    day_start = datetime.combine(date_, time.min, tzinfo=MX_TIMEZONE)
+    day_end = datetime.combine(date_, time.max, tzinfo=MX_TIMEZONE)
+    busy = await _collect_busy_ranges(
+        office_id, day_start, day_end, db, google_required=False,
+    )
+    for b_start, b_end in busy:
+        if not (end_dt <= b_start or start_dt >= b_end):
+            return "El horario ya está ocupado por otra cita o bloqueo."
+
+    return None
+
+
 async def get_available_slots(
     office_id: UUID,
     date_: date,

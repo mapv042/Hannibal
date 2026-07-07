@@ -13,7 +13,9 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
 from app.config import settings
+from app.core.dependencies import close_redis as close_shared_redis
 from app.db.base import get_async_session_maker
+from app.middleware.rate_limiter import limiter, setup_rate_limiter
 from app.core.exceptions import (
     NotFoundError,
     ForbiddenError,
@@ -98,6 +100,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Shutdown
     logger.info("Shutting down Hannibal backend")
     await close_redis()
+    await close_shared_redis()
     await close_db()
 
 
@@ -118,9 +121,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Rate limiting (default limits for all routes; webhook/health are exempt)
+setup_rate_limiter(app)
+
 
 # Health check endpoint
 @app.get("/health")
+@limiter.exempt
 async def health_check() -> JSONResponse:
     """Health check endpoint.
 

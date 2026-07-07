@@ -148,6 +148,11 @@ async def resolve_urgency_request(
 
     appointment = await _create_urgent_appointment(db, office, patient, start_dt, request.reason)
 
+    # Urgent bookings skip slot validation (overbooking is the point), but they
+    # still get the office's reminders.
+    from app.modules.reminders.scheduler import schedule_reminders_for_appointment
+    await schedule_reminders_for_appointment(db, office.id, appointment.id, start_dt)
+
     request.status = UrgencyStatus.APPROVED.value
     request.appointment_id = appointment.id
     request.resolution_note = note

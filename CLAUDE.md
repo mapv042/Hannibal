@@ -88,7 +88,7 @@ All enums use string values in English:
 > **Vestigial enums** (defined but unused — safe to ignore/remove): `Intent`, `SubscriptionPlan`, `AppointmentType`. `Intent` predates the tool-use rewrite; the manager no longer does intent detection.
 
 ### WhatsApp coexistence
-The doctor can use WhatsApp on their phone simultaneously with the bot. When the doctor sends a message (echo), the bot pauses for 60 minutes for that conversation. Redis key: `bot_pause:{office_id}:{conversation_id}`.
+The doctor can use WhatsApp on their phone simultaneously with the bot. The pause is office-wide via the doctor `pause_bot`/`resume_bot` tools (Redis key `whatsapp:bot_paused:{office_id}`; default 60 min). While paused, incoming patient messages are still persisted to the conversation history (the bot just stays silent). ⚠️ Automatic echo detection (`is_doctor_echo`) is a stub — it always returns False; pausing on doctor echoes is not implemented yet (requires subscribing to Meta's `message_echoes` webhook field).
 
 ### Availability engine (modules/scheduling/availability.py)
 Calculates free slots by: getting weekly schedules → generating all possible slots → subtracting existing appointments → subtracting time blocks → checking Google Calendar freebusy. Results cached in Redis (5 min TTL). Slot locking via Redis SETNX (60s) prevents double-booking.
@@ -98,9 +98,11 @@ Patient signals urgency → patient tool `request_urgent_appointment` creates an
 
 ### Redis key patterns
 - `session:{whatsapp_id}:{office_id}` — conversation context (TTL 24h)
-- `bot_pause:{office_id}:{conversation_id}` — coexistence pause
+- `whatsapp:bot_paused:{office_id}` — bot pause (office-wide; single source of truth, set by the doctor `pause_bot` tool, checked in the webhook router)
 - `avail_cache:{office_id}:{date}` — availability cache (TTL 5min)
-- `slot_lock:{office_id}:{datetime}` — anti-collision lock (TTL 60s)
+- `slot_lock:{office_id}:{datetime}` — anti-collision lock (TTL 60s); taken by every booking path (patient tool, doctor tool, dashboard) before inserting
+- `wamsg_dedup:{message_id}` — webhook idempotency (TTL 24h); Meta retries are skipped
+- `conv_lock:{office_id}:{sender}` — per-conversation turn serialization (TTL 120s); a second message from the same sender waits for the previous turn
 - `doctor_last_inbound:{office_id}` — doctor's last inbound timestamp (TTL 24h), for the doctor service-window check
 
 ## Common commands
@@ -142,7 +144,7 @@ npm run dev
 2. **Webhook returns 200 immediately** — processing happens in FastAPI `BackgroundTasks`
 3. **Verification endpoint** returns `PlainTextResponse` with just the challenge value (Meta requirement)
 4. **Session context stored in Redis** (not DB) for speed — persisted to DB on conversation close
-5. **Celery Beat** schedule (`celery_app.py`): reminder reconciliation (daily 7am), confirmation requests (daily, `CONFIRMATION_REQUEST_HOUR`), Google Calendar watch renewal (every 24h via `app.modules.google_calendar.tasks.renew_google_watches`, which renews channels expiring within `RENEWAL_BUFFER_DAYS`). Per-appointment reminders are enqueued with `eta` by `reminders/scheduler.py` (real `shared_task`).
+5. **Celery Beat** schedule (`celery_app.py`): reminder reconciliation (daily 7am, safety net only), confirmation requests (daily, `CONFIRMATION_REQUEST_HOUR`), Google Calendar watch renewal (every 24h via `app.modules.google_calendar.tasks.renew_google_watches`, which renews channels expiring within `RENEWAL_BUFFER_DAYS`). Per-appointment reminders are enqueued with `eta` by `reminders/scheduler.py` — every booking path (patient/doctor tools, dashboard service, urgency approval) calls `schedule_reminders_for_appointment` at creation/reschedule time.
 6. **DB base.py uses lazy initialization** — `get_engine()` and `get_async_session_maker()` create connections on first use, not at import time (required for Alembic to work)
 
 ## Environment variables (minimum required)

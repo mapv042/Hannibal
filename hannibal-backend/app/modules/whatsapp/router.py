@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import time
+import uuid as uuid_module
 from typing import Optional, Dict, Any
 
 from fastapi import APIRouter, Query, Request, BackgroundTasks, Depends, HTTPException, status
@@ -12,6 +14,7 @@ import redis.asyncio as redis
 
 from app.config import settings
 from app.core.dependencies import get_db, get_redis
+from app.middleware.rate_limiter import limiter
 from app.db.base import get_async_session_maker
 from app.utils.logger import get_logger
 from app.modules.whatsapp.validator import validate_webhook_signature
@@ -37,6 +40,49 @@ logger = get_logger(__name__)
 
 router = APIRouter()
 
+# Webhook idempotency: Meta retries deliveries, so each message id is processed
+# only once. TTL comfortably covers Meta's retry window.
+MESSAGE_DEDUP_KEY = "wamsg_dedup:{message_id}"
+MESSAGE_DEDUP_TTL = 86400
+
+# Per-conversation serialization: two rapid messages from the same sender must
+# not run concurrently (they read-modify-write the same Redis session).
+CONV_LOCK_KEY = "conv_lock:{office_id}:{sender}"
+CONV_LOCK_TTL = 120  # safety bound; normal turns finish well under this
+CONV_LOCK_WAIT_SECONDS = 90
+CONV_LOCK_POLL_SECONDS = 0.5
+
+
+async def _acquire_conversation_lock(
+    redis_client: redis.Redis, key: str, token: str
+) -> bool:
+    """Wait for the per-conversation lock so turns process in arrival order.
+
+    Returns False after CONV_LOCK_WAIT_SECONDS (the previous turn is stuck or
+    the TTL is about to reap it) — callers proceed anyway rather than drop the
+    patient's message, which is the lesser evil.
+    """
+    deadline = time.monotonic() + CONV_LOCK_WAIT_SECONDS
+    while time.monotonic() < deadline:
+        acquired = await redis_client.set(key, token, nx=True, ex=CONV_LOCK_TTL)
+        if acquired:
+            return True
+        await asyncio.sleep(CONV_LOCK_POLL_SECONDS)
+    logger.warning("conversation_lock_timeout", key=key)
+    return False
+
+
+async def _release_conversation_lock(
+    redis_client: redis.Redis, key: str, token: str
+) -> None:
+    """Release the lock only if we still own it (best-effort compare-and-delete)."""
+    try:
+        current = await redis_client.get(key)
+        if current is not None and current in (token, token.encode()):
+            await redis_client.delete(key)
+    except Exception as e:
+        logger.warning("conversation_lock_release_failed", key=key, error=str(e))
+
 auth_router = APIRouter(
     prefix="/auth/whatsapp",
     tags=["whatsapp-auth"],
@@ -49,6 +95,7 @@ auth_router = APIRouter(
 
 
 @router.get("/webhook", response_class=PlainTextResponse)
+@limiter.exempt
 async def verify_webhook(
     hub_mode: Optional[str] = Query(None, alias="hub.mode"),
     hub_challenge: Optional[str] = Query(None, alias="hub.challenge"),
@@ -106,6 +153,7 @@ async def verify_webhook(
 
 
 @router.post("/webhook")
+@limiter.exempt
 async def receive_webhook(
     request: Request,
     background_tasks: BackgroundTasks,
@@ -251,63 +299,35 @@ async def _process_message(
             office_id=str(office.id),
         )
 
-        # Check if sender is the doctor (route before pause check so doctor always gets through)
-        is_doctor = False
-        if office.owner_phone:
-            try:
-                is_doctor = normalize_phone(from_id) == normalize_phone(office.owner_phone)
-            except ValueError:
-                pass
-        if is_doctor:
-            logger.info(
-                "doctor_message_detected",
-                message_id=message_id,
-                office_id=str(office.id),
+        # Deduplicate: Meta retries webhook deliveries, and processing twice
+        # means replying twice. First delivery wins.
+        if message_id:
+            first_delivery = await redis_client.set(
+                MESSAGE_DEDUP_KEY.format(message_id=message_id),
+                "1",
+                nx=True,
+                ex=MESSAGE_DEDUP_TTL,
             )
-            meta_client = MetaCloudClient()
-            doctor_manager = DoctorConversationManager(meta_client, redis_client)
-            conversation_payload = {
-                "entry": [{"changes": [{"value": {"messages": [message]}}]}]
-            }
-            await doctor_manager.process(office, conversation_payload, db)
-            return
+            if not first_delivery:
+                logger.info(
+                    "webhook_duplicate_message_skipped",
+                    message_id=message_id,
+                    office_id=str(office.id),
+                )
+                return
 
-        # Check if bot is paused
-        is_paused = await check_pause(office.id, redis_client)
-        if is_paused:
-            logger.info(
-                "message_dropped_bot_paused",
-                message_id=message_id,
-                office_id=str(office.id),
-            )
-            return
-
-        # Check for doctor echo (coexistence mode)
-        if is_doctor_echo({"entry": [{"changes": [{"value": {"messages": [message]}}]}]}):
-            logger.info(
-                "message_skipped_doctor_echo",
-                message_id=message_id,
-                office_id=str(office.id),
-            )
-            return
-
-        # Route to the tool-use conversation manager
-        session_store = SessionStore(redis_client)
-        meta_client = MetaCloudClient()
-        manager = ConversationManager(session_store, meta_client)
-
-        # Reconstruct payload in the format ConversationManager expects
-        conversation_payload = {
-            "entry": [{
-                "changes": [{
-                    "value": {
-                        "messages": [message]
-                    }
-                }]
-            }]
-        }
-
-        await manager.process(office, conversation_payload, db)
+        # Serialize turns per sender: a second message from the same person
+        # waits for the previous one instead of racing it on the session.
+        lock_key = CONV_LOCK_KEY.format(office_id=office.id, sender=from_id)
+        lock_token = uuid_module.uuid4().hex
+        lock_acquired = await _acquire_conversation_lock(
+            redis_client, lock_key, lock_token
+        )
+        try:
+            await _route_message(message, office, db, redis_client)
+        finally:
+            if lock_acquired:
+                await _release_conversation_lock(redis_client, lock_key, lock_token)
 
     except Exception as e:
         logger.error(
@@ -316,6 +336,124 @@ async def _process_message(
             error=str(e),
             exc_info=True,
         )
+
+
+async def _route_message(
+    message: Dict[str, Any],
+    office,
+    db: AsyncSession,
+    redis_client: redis.Redis,
+) -> None:
+    """Route a deduplicated, lock-protected message to the right manager."""
+    message_id = message.get("id")
+    from_id = message.get("from")
+
+    # Check if sender is the doctor (route before pause check so doctor always gets through)
+    is_doctor = False
+    if office.owner_phone:
+        try:
+            is_doctor = normalize_phone(from_id) == normalize_phone(office.owner_phone)
+        except ValueError:
+            pass
+    if is_doctor:
+        logger.info(
+            "doctor_message_detected",
+            message_id=message_id,
+            office_id=str(office.id),
+        )
+        meta_client = MetaCloudClient()
+        doctor_manager = DoctorConversationManager(meta_client, redis_client)
+        conversation_payload = {
+            "entry": [{"changes": [{"value": {"messages": [message]}}]}]
+        }
+        await doctor_manager.process(office, conversation_payload, db)
+        return
+
+    # Check if bot is paused (single source of truth: Redis, set by pause_bot)
+    is_paused = await check_pause(office.id, redis_client)
+    if is_paused:
+        logger.info(
+            "message_stored_bot_paused",
+            message_id=message_id,
+            office_id=str(office.id),
+        )
+        # The bot stays silent, but the message must still show up in the
+        # dashboard conversation history.
+        await _persist_incoming_while_paused(message, office, db)
+        return
+
+    # Check for doctor echo (coexistence mode)
+    if is_doctor_echo({"entry": [{"changes": [{"value": {"messages": [message]}}]}]}):
+        logger.info(
+            "message_skipped_doctor_echo",
+            message_id=message_id,
+            office_id=str(office.id),
+        )
+        return
+
+    # Route to the tool-use conversation manager
+    session_store = SessionStore(redis_client)
+    meta_client = MetaCloudClient()
+    manager = ConversationManager(session_store, meta_client)
+
+    # Reconstruct payload in the format ConversationManager expects
+    conversation_payload = {
+        "entry": [{
+            "changes": [{
+                "value": {
+                    "messages": [message]
+                }
+            }]
+        }]
+    }
+
+    await manager.process(office, conversation_payload, db)
+
+
+async def _persist_incoming_while_paused(
+    message: Dict[str, Any],
+    office,
+    db: AsyncSession,
+) -> None:
+    """Record an incoming patient message received while the bot is paused."""
+    from sqlalchemy import select
+    from app.db.models import Conversation, Message
+
+    try:
+        from_id = message.get("from")
+        msg_type = message.get("type", "text")
+        if msg_type == "text":
+            content = message.get("text", {}).get("body", "")
+        else:
+            content = f"[Mensaje de tipo {msg_type}]"
+
+        stmt = select(Conversation).where(
+            (Conversation.office_id == office.id)
+            & (Conversation.whatsapp_id == from_id)
+            & (Conversation.status != "archived")
+        ).limit(1)
+        conversation = (await db.execute(stmt)).scalars().first()
+        if not conversation:
+            conversation = Conversation(
+                id=uuid_module.uuid4(),
+                office_id=office.id,
+                whatsapp_id=from_id,
+                status="active",
+            )
+            db.add(conversation)
+            await db.flush()
+
+        db.add(Message(
+            id=uuid_module.uuid4(),
+            conversation_id=conversation.id,
+            content=content,
+            type="text",
+            direction="incoming",
+            whatsapp_message_id=message.get("id"),
+        ))
+        await db.commit()
+    except Exception as e:
+        logger.warning("paused_message_persist_failed", error=str(e))
 
 
 async def _process_status(

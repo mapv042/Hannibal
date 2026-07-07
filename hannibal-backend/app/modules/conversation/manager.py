@@ -68,13 +68,8 @@ class ConversationManager:
                 message_id=message_id,
             )
 
-            # 2. Check if bot is paused
-            if office.bot_paused_until:
-                now = now_mx()
-                if now < office.bot_paused_until:
-                    logger.info("bot_paused", office_id=str(office.id))
-                    await self._save_incoming_message(db, office.id, whatsapp_id, message_text, message_id)
-                    return
+            # 2. Bot pause is enforced upstream (webhook router, Redis key) —
+            #    single source of truth; see whatsapp/coexistence.check_pause.
 
             # 3. Get or create session
             session = await self.session_store.get_session(whatsapp_id, str(office.id))
@@ -136,6 +131,7 @@ class ConversationManager:
                 office=office,
                 patient_id=session.patient_id,
                 whatsapp_id=whatsapp_id,
+                redis_client=self.session_store.redis_client,
             )
 
             response_text = await self._tool_use_loop(
@@ -165,19 +161,31 @@ class ConversationManager:
             if len(session.claude_history) > 40:
                 session.claude_history = self._trim_history(session.claude_history, 40)
 
-            # 9. Send response
+            # 9. Send response. Tool side effects (bookings, cancellations) are
+            # already in this transaction, so the assistant turn stays in the
+            # history either way — but a failed send is recorded as "failed",
+            # never as sent.
+            sent_message_id: Optional[str] = None
+            send_failed = False
             try:
-                await self.meta_client.send_text_message(
+                sent_message_id = await self.meta_client.send_text_message(
                     phone_number_id=office.whatsapp_phone_id,
                     token=office.whatsapp_token,
                     to=whatsapp_id,
                     text=response_text,
                 )
             except Exception as e:
+                send_failed = True
                 logger.error("failed_to_send_response", error=str(e), whatsapp_id=whatsapp_id)
 
-            # 10. Save outgoing message
-            await self._save_outgoing_message(db, conversation_obj.id, response_text)
+            # 10. Save outgoing message with its real delivery outcome
+            await self._save_outgoing_message(
+                db,
+                conversation_obj.id,
+                response_text,
+                whatsapp_message_id=sent_message_id,
+                delivery_status="failed" if send_failed else "sent",
+            )
 
             # 11. Update conversation state
             session.last_message_at = now_mx().isoformat()
@@ -374,6 +382,8 @@ class ConversationManager:
 
     async def _save_outgoing_message(
         self, db: AsyncSession, conversation_id: uuid.UUID, content: str,
+        whatsapp_message_id: Optional[str] = None,
+        delivery_status: Optional[str] = None,
     ) -> None:
         message = Message(
             id=uuid.uuid4(),
@@ -381,6 +391,8 @@ class ConversationManager:
             content=content,
             type="text",
             direction="outgoing",
+            whatsapp_message_id=whatsapp_message_id,
+            delivery_status=delivery_status,
         )
         db.add(message)
         await db.flush()

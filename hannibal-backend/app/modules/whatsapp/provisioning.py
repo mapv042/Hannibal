@@ -155,7 +155,7 @@ async def register_meta_number(
         # Update office with WhatsApp credentials
         office.whatsapp_phone_id = phone_number_id
         office.whatsapp_waba_id = waba_id
-        office.whatsapp_token = access_token  # Should be encrypted in real implementation
+        office.whatsapp_token = access_token  # Encrypted at rest by EncryptedText
         office.whatsapp_mode = mode
         office.whatsapp_app_active = True
 

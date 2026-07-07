@@ -14,7 +14,13 @@ from app.db.models import Appointment, Conversation, Message, Office, Patient, T
 from app.modules.google_calendar.service import (
     create_calendar_event, update_event_color, update_calendar_event,
 )
-from app.modules.scheduling.availability import compute_day_availability
+from app.modules.reminders.scheduler import schedule_reminders_for_appointment
+from app.modules.scheduling.availability import (
+    check_slot_bookable,
+    compute_day_availability,
+    invalidate_availability_cache,
+    lock_slot_temporarily,
+)
 from app.modules.google_calendar.sync import cancel_appointment_in_calendar, sync_time_block
 from app.modules.whatsapp.coexistence import pause_bot, resume_bot, check_pause
 from app.modules.whatsapp.meta_client import MetaCloudClient
@@ -227,7 +233,9 @@ DOCTOR_TOOL_DEFINITIONS = [
         "description": (
             "Crea una nueva cita para un paciente. Identifica al paciente por nombre. "
             "Si el paciente no existe en el sistema, se crea automáticamente (en ese caso "
-            "se requiere su teléfono). El doctor no necesita confirmación extra — ejecuta directamente."
+            "se requiere su teléfono). El doctor no necesita confirmación extra — ejecuta directamente. "
+            "Valida que el horario esté libre; si está ocupado o fuera de horario devuelve el "
+            "conflicto para que el doctor decida (puede sobreagendar con allow_conflict=true)."
         ),
         "input_schema": {
             "type": "object",
@@ -253,6 +261,20 @@ DOCTOR_TOOL_DEFINITIONS = [
                     "description": (
                         "Teléfono del paciente (10 dígitos). OBLIGATORIO cuando el paciente es "
                         "nuevo (no está registrado); para un paciente ya registrado puede omitirse."
+                    ),
+                },
+                "allow_conflict": {
+                    "type": "boolean",
+                    "description": (
+                        "Usa true SOLO cuando el doctor ya vio el conflicto de horario y confirmó "
+                        "explícitamente que quiere sobreagendar de todos modos."
+                    ),
+                },
+                "create_new_patient": {
+                    "type": "boolean",
+                    "description": (
+                        "Usa true SOLO cuando el doctor confirmó que es un paciente nuevo distinto "
+                        "de los registrados con nombre parecido (requiere patient_phone)."
                     ),
                 },
             },
@@ -281,7 +303,10 @@ DOCTOR_TOOL_DEFINITIONS = [
         "description": (
             "Reagenda una cita existente a un nuevo horario. Cancela la cita anterior "
             "y crea una nueva atómicamente, y le avisa al paciente automáticamente del "
-            "nuevo horario por WhatsApp. El doctor no necesita confirmación extra."
+            "nuevo horario por WhatsApp. El doctor no necesita confirmación extra. "
+            "Valida que el nuevo horario esté libre; si está ocupado o fuera de horario "
+            "devuelve el conflicto para que el doctor decida (puede sobreagendar con "
+            "allow_conflict=true)."
         ),
         "input_schema": {
             "type": "object",
@@ -297,6 +322,13 @@ DOCTOR_TOOL_DEFINITIONS = [
                 "new_time": {
                     "type": "string",
                     "description": "Nueva hora en formato HH:MM (24 horas).",
+                },
+                "allow_conflict": {
+                    "type": "boolean",
+                    "description": (
+                        "Usa true SOLO cuando el doctor ya vio el conflicto de horario y confirmó "
+                        "explícitamente que quiere sobreagendar de todos modos."
+                    ),
                 },
             },
             "required": ["appointment_id", "new_date", "new_time"],
@@ -374,6 +406,48 @@ def _handler(name: str):
         _HANDLERS[name] = fn
         return fn
     return decorator
+
+
+async def _guard_slot(
+    ctx: DoctorToolContext, start_dt: datetime, end_dt: datetime, allow_conflict: bool,
+) -> dict | None:
+    """Booking guard for doctor tools: validate the slot and take the anti-race lock.
+
+    The doctor may deliberately overbook (allow_conflict=true, after confirming),
+    which skips the availability validation but still takes the lock. The lock is
+    NOT released here — its 60s TTL covers the window until the transaction
+    commits, so a concurrent booker can't pass the overlap check in between.
+    """
+    if not allow_conflict:
+        conflict = await check_slot_bookable(ctx.office.id, start_dt, end_dt, ctx.db)
+        if conflict:
+            return {
+                "error": f"No se agendó: {conflict}",
+                "next_step": (
+                    "Informa el conflicto al doctor y pregúntale si quiere otro "
+                    "horario (usa get_available_slots) o sobreagendar de todos "
+                    "modos — si confirma sobreagendar, vuelve a llamar la "
+                    "herramienta con allow_conflict=true. No lo asumas."
+                ),
+            }
+    locked = await lock_slot_temporarily(ctx.office.id, start_dt, ctx.redis_client)
+    if not locked:
+        return {
+            "error": (
+                "Ese horario se está agendando por otra persona en este momento. "
+                "Intenta de nuevo en unos segundos."
+            )
+        }
+    return None
+
+
+async def _invalidate_avail(ctx: DoctorToolContext, *dates) -> None:
+    """Best-effort availability-cache invalidation for the affected dates."""
+    for d in dates:
+        try:
+            await invalidate_availability_cache(ctx.office.id, d, ctx.redis_client)
+        except Exception as e:
+            logger.warning("doctor_tool_avail_cache_invalidate_failed", error=str(e))
 
 
 async def execute_doctor_tool(
@@ -517,6 +591,8 @@ async def _handle_cancel_appointment(args: dict, ctx: DoctorToolContext) -> dict
     appointment.status = "cancelled"
     appointment.cancelled_by = "doctor"
     appointment.cancellation_reason = reason
+
+    await _invalidate_avail(ctx, dt.date())
 
     logger.info("doctor_cancelled_appointment", appointment_id=appt_id_str)
 
@@ -680,6 +756,13 @@ async def _handle_block_time(args: dict, ctx: DoctorToolContext) -> dict:
             await ctx.db.delete(block)
             await ctx.db.flush()
             return {"error": "No se pudo crear el bloqueo en Google Calendar. Intenta de nuevo."}
+
+    # Cached availability for the blocked dates is now stale (capped defensively).
+    blocked_dates = [
+        start_date + timedelta(days=i)
+        for i in range(min((end_date - start_date).days + 1, 60))
+    ]
+    await _invalidate_avail(ctx, *blocked_dates)
 
     # Format response
     if start_date == end_date and start_time_str:
@@ -1039,13 +1122,17 @@ async def _handle_create_appointment(args: dict, ctx: DoctorToolContext) -> dict
     except ValueError:
         return {"error": f"Fecha u hora invalida: {date_str} {time_str}"}
 
-    # Find or create patient by name
-    stmt = select(Patient).where(
-        (Patient.office_id == ctx.office.id)
-        & (Patient.name.ilike(f"%{patient_name}%"))
-    )
-    result = await ctx.db.execute(stmt)
-    patients = result.scalars().all()
+    # Find or create patient by name. create_new_patient skips the lookup when
+    # the doctor confirmed it's a different, new patient with a similar name.
+    create_new_patient = bool(args.get("create_new_patient", False))
+    patients = []
+    if not create_new_patient:
+        stmt = select(Patient).where(
+            (Patient.office_id == ctx.office.id)
+            & (Patient.name.ilike(f"%{patient_name}%"))
+        )
+        result = await ctx.db.execute(stmt)
+        patients = result.scalars().all()
 
     if len(patients) > 1:
         names = [p.name for p in patients]
@@ -1056,6 +1143,21 @@ async def _handle_create_appointment(args: dict, ctx: DoctorToolContext) -> dict
 
     if patients:
         patient = patients[0]
+        registered_name = (patient.name or "").strip()
+        # A single but non-exact match must be confirmed by the doctor — a
+        # partial ilike can land on the wrong patient ("Ana" → "Mariana").
+        if registered_name.lower() != patient_name.lower():
+            return {
+                "needs_confirmation": True,
+                "matched_patient": registered_name,
+                "next_step": (
+                    f"'{patient_name}' no está registrado con ese nombre exacto; el más parecido es "
+                    f"'{registered_name}'. Pregúntale al doctor si se refiere a ese paciente — no lo "
+                    "asumas. Si confirma, vuelve a llamar create_appointment con el nombre exacto "
+                    "registrado; si es un paciente nuevo distinto, llámala con create_new_patient=true "
+                    "y su teléfono."
+                ),
+            }
         # Backfill the contact phone if we don't have one yet and the doctor gave it.
         if patient_phone and not patient.phone:
             try:
@@ -1103,6 +1205,14 @@ async def _handle_create_appointment(args: dict, ctx: DoctorToolContext) -> dict
     duration = timedelta(minutes=duration_min)
     end_dt = start_dt + duration
 
+    # Validate the slot and take the anti-race lock (doctor may override
+    # conflicts with allow_conflict=true after confirming).
+    guard_error = await _guard_slot(
+        ctx, start_dt, end_dt, bool(args.get("allow_conflict", False))
+    )
+    if guard_error:
+        return guard_error
+
     # Google Calendar event
     google_event_id = None
     if ctx.office.google_calendar_token:
@@ -1138,6 +1248,11 @@ async def _handle_create_appointment(args: dict, ctx: DoctorToolContext) -> dict
     )
     ctx.db.add(appointment)
     await ctx.db.flush()
+
+    await _invalidate_avail(ctx, start_dt.date())
+    await schedule_reminders_for_appointment(
+        ctx.db, ctx.office.id, appointment_id, start_dt
+    )
 
     day_name = DAYS_ES[start_dt.weekday()]
     logger.info("doctor_created_appointment", appointment_id=str(appointment_id))
@@ -1178,6 +1293,16 @@ async def _handle_reschedule_appointment(args: dict, ctx: DoctorToolContext) -> 
     except ValueError:
         return {"error": f"Fecha u hora invalida: {new_date} {new_time}"}
 
+    # Validate the new slot and take the anti-race lock BEFORE touching the old
+    # appointment, so a conflict leaves it intact. allow_conflict lets the
+    # doctor overbook deliberately after confirming.
+    duration = timedelta(minutes=appointment.duration_minutes or 30)
+    guard_error = await _guard_slot(
+        ctx, new_start, new_start + duration, bool(args.get("allow_conflict", False))
+    )
+    if guard_error:
+        return guard_error
+
     # Format old appointment
     old_dt = appointment.start_datetime
     old_dt = old_dt.astimezone(MX_TIMEZONE) if old_dt.tzinfo else old_dt.replace(tzinfo=MX_TIMEZONE)
@@ -1206,7 +1331,6 @@ async def _handle_reschedule_appointment(args: dict, ctx: DoctorToolContext) -> 
         patient_name = patient_obj.name or ""
         patient_phone_display = display_or_raw(patient_obj.phone) if patient_obj.phone else ""
 
-    duration = timedelta(minutes=appointment.duration_minutes or 30)
     new_end = new_start + duration
     reason = appointment.consultation_reason or "Consulta"
 
@@ -1236,12 +1360,18 @@ async def _handle_reschedule_appointment(args: dict, ctx: DoctorToolContext) -> 
         start_datetime=new_start,
         end_datetime=new_end,
         duration_minutes=appointment.duration_minutes or 30,
+        type=appointment.type,
         consultation_reason=reason,
         status="scheduled",
         google_event_id=google_event_id,
     )
     ctx.db.add(new_appointment)
     await ctx.db.flush()
+
+    await _invalidate_avail(ctx, old_dt.date(), new_start.date())
+    await schedule_reminders_for_appointment(
+        ctx.db, ctx.office.id, new_appointment_id, new_start
+    )
 
     new_day_name = DAYS_ES[new_start.weekday()]
     new_formatted = f"{new_day_name} {new_start.strftime('%d/%m/%Y')} a las {new_start.strftime('%H:%M')}"

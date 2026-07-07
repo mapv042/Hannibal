@@ -90,6 +90,25 @@ def schedule_reminders(
         )
 
 
+async def schedule_reminders_for_appointment(
+    db,
+    office_id: UUID,
+    appointment_id: UUID,
+    start_datetime: datetime,
+) -> None:
+    """Schedule all of an office's active reminders for a fresh appointment.
+
+    Call this whenever an appointment is created or moved to a new slot; the
+    daily reconciliation remains only as a safety net. Tasks are idempotent
+    (per-type sent flags + FOR UPDATE), so double-scheduling is harmless.
+    """
+    # Local import: rules pulls DB models, scheduler stays importable from tasks.
+    from app.modules.reminders.rules import get_active_reminder_rules
+
+    rules = await get_active_reminder_rules(db, office_id)
+    schedule_reminders(appointment_id, start_datetime, rules)
+
+
 def cancel_reminders(appointment_id: UUID) -> None:
     """
     Cancel all scheduled reminders for an appointment.

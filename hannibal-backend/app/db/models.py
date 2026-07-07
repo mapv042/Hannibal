@@ -32,6 +32,7 @@ from sqlalchemy.dialects.postgresql import UUID, ARRAY, JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
+from app.db.types import EncryptedText
 
 
 class Office(Base):
@@ -73,8 +74,8 @@ class Office(Base):
         String(255), nullable=True
     )
     whatsapp_token: Mapped[Optional[str]] = mapped_column(
-        String(500), nullable=True
-    )  # AES-256 encrypted
+        EncryptedText, nullable=True
+    )  # Fernet-encrypted at rest (see app/db/types.py)
     whatsapp_mode: Mapped[Optional[str]] = mapped_column(
         String(50), nullable=True
     )  # coexistence|dedicated|new

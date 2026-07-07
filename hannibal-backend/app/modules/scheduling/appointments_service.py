@@ -11,8 +11,10 @@ from sqlalchemy import select, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Appointment, Patient
+from app.modules.reminders.scheduler import schedule_reminders_for_appointment
 from app.modules.scheduling.schemas import CreateAppointmentRequest, UpdateAppointmentRequest
 from app.modules.scheduling.availability import (
+    check_slot_bookable,
     invalidate_availability_cache,
     lock_slot_temporarily,
     release_slot_lock,
@@ -76,8 +78,16 @@ async def create_appointment(
         raise SlotNotAvailableError("Slot is being booked by another user")
 
     try:
-        # Step 4: Create appointment
+        # Step 2 (for real): re-validate the slot against appointments, blocks,
+        # working hours and Google busy periods under the lock.
         end_datetime = data.start_time + timedelta(minutes=data.duration_min)
+        conflict = await check_slot_bookable(
+            office_id, data.start_time, end_datetime, db
+        )
+        if conflict:
+            raise SlotNotAvailableError(conflict)
+
+        # Step 4: Create appointment
         appointment = Appointment(
             office_id=office_id,
             patient_id=data.patient_id,
@@ -99,6 +109,11 @@ async def create_appointment(
 
         await db.commit()
         await db.refresh(appointment)
+
+        # Step 6: Schedule the office's reminders for this appointment
+        await schedule_reminders_for_appointment(
+            db, office_id, appointment.id, appointment.start_datetime
+        )
 
         logger.info(
             "appointment_created",
@@ -201,6 +216,14 @@ async def reschedule_appointment(
         raise SlotNotAvailableError("New slot is being booked by another user")
 
     try:
+        # Re-validate the new slot under the lock before moving the appointment
+        new_end_time = new_start_time + timedelta(minutes=appointment.duration_minutes)
+        conflict = await check_slot_bookable(
+            office_id, new_start_time, new_end_time, db
+        )
+        if conflict:
+            raise SlotNotAvailableError(conflict)
+
         # Invalidate old cache
         await invalidate_availability_cache(
             office_id, appointment.start_datetime.date(), redis_client
@@ -224,6 +247,11 @@ async def reschedule_appointment(
 
         await db.commit()
         await db.refresh(appointment)
+
+        # Reminders were reset above — schedule them for the new datetime
+        await schedule_reminders_for_appointment(
+            db, office_id, appointment.id, appointment.start_datetime
+        )
 
         logger.info(
             "appointment_rescheduled",

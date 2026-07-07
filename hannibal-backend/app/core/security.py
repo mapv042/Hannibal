@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
 from typing import TYPE_CHECKING
@@ -14,6 +15,12 @@ if TYPE_CHECKING:
     from jose import JWTClaimsError
 
 
+def _fernet() -> Fernet:
+    """Build the Fernet cipher from ENCRYPTION_KEY (64-char hex → 32 bytes)."""
+    key_bytes = bytes.fromhex(settings.encryption_key)
+    return Fernet(base64.urlsafe_b64encode(key_bytes))
+
+
 def encrypt_data(data: str) -> str:
     """
     Encrypt data using Fernet with the ENCRYPTION_KEY.
@@ -24,13 +31,7 @@ def encrypt_data(data: str) -> str:
     Returns:
         Encrypted string (URL-safe base64)
     """
-    key = settings.encryption_key.encode()
-    # Convert hex string to bytes for Fernet
-    key_bytes = bytes.fromhex(settings.encryption_key)
-    # Fernet requires 32-byte keys, encoded as base64
-    fernet_key = Fernet(Fernet.generate_key()[:32])
-    cipher = Fernet(fernet_key)
-    return cipher.encrypt(data.encode()).decode()
+    return _fernet().encrypt(data.encode()).decode()
 
 
 def decrypt_data(encrypted_data: str) -> str:
@@ -42,10 +43,12 @@ def decrypt_data(encrypted_data: str) -> str:
 
     Returns:
         Decrypted string
+
+    Raises:
+        cryptography.fernet.InvalidToken: If the value was not encrypted
+            with the current ENCRYPTION_KEY.
     """
-    key_bytes = bytes.fromhex(settings.encryption_key)
-    cipher = Fernet(key_bytes)
-    return cipher.decrypt(encrypted_data.encode()).decode()
+    return _fernet().decrypt(encrypted_data.encode()).decode()
 
 
 def validate_jwt(token: str) -> dict:

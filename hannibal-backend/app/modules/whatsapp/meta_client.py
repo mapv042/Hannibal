@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Optional, List, Any, Dict
 import json
 
@@ -13,6 +14,12 @@ from app.core.exceptions import WhatsAppError
 logger = get_logger(__name__)
 
 BASE_URL = "https://graph.facebook.com/v21.0"
+
+# Transient failures worth retrying; other 4xx are permanent (bad token,
+# invalid recipient, malformed template) and retrying only adds latency.
+RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
+SEND_MAX_ATTEMPTS = 3
+SEND_BACKOFF_SECONDS = 1.0
 
 
 class MetaCloudClient:
@@ -31,6 +38,65 @@ class MetaCloudClient:
             timeout: HTTP request timeout in seconds
         """
         self.timeout = timeout
+
+    async def _post_with_retries(
+        self,
+        url: str,
+        payload: Dict[str, Any],
+        headers: Dict[str, str],
+        *,
+        log_event: str,
+        log_context: Dict[str, Any],
+    ) -> httpx.Response:
+        """POST with retries on transient failures (network errors, 429/5xx).
+
+        Exponential backoff between attempts. Non-retryable 4xx responses and
+        exhausted retries surface as httpx errors for the caller to wrap in
+        WhatsAppError, preserving the existing error contract.
+        """
+        delay = SEND_BACKOFF_SECONDS
+        for attempt in range(1, SEND_MAX_ATTEMPTS + 1):
+            try:
+                async with httpx.AsyncClient(timeout=self.timeout) as client:
+                    response = await client.post(url, json=payload, headers=headers)
+            except httpx.TransportError as e:
+                if attempt < SEND_MAX_ATTEMPTS:
+                    logger.warning(
+                        f"{log_event}_retrying",
+                        attempt=attempt,
+                        error=str(e),
+                        **log_context,
+                    )
+                    await asyncio.sleep(delay)
+                    delay *= 2
+                    continue
+                raise
+
+            if (
+                response.status_code in RETRYABLE_STATUS_CODES
+                and attempt < SEND_MAX_ATTEMPTS
+            ):
+                logger.warning(
+                    f"{log_event}_retrying",
+                    attempt=attempt,
+                    status_code=response.status_code,
+                    **log_context,
+                )
+                await asyncio.sleep(delay)
+                delay *= 2
+                continue
+
+            if response.status_code >= 400:
+                logger.error(
+                    f"{log_event}_meta_error",
+                    status_code=response.status_code,
+                    response_body=response.text,
+                    **log_context,
+                )
+            response.raise_for_status()
+            return response
+
+        raise WhatsAppError("Unreachable retry state")  # pragma: no cover
 
     async def send_text_message(
         self,
@@ -76,21 +142,13 @@ class MetaCloudClient:
         }
 
         try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
-                response = await client.post(
-                    url,
-                    json=payload,
-                    headers=headers,
-                )
-                if response.status_code >= 400:
-                    logger.error(
-                        "send_text_message_meta_error",
-                        status_code=response.status_code,
-                        response_body=response.text,
-                        to=to,
-                        phone_number_id=phone_number_id,
-                    )
-                response.raise_for_status()
+            response = await self._post_with_retries(
+                url,
+                payload,
+                headers,
+                log_event="send_text_message",
+                log_context={"to": to, "phone_number_id": phone_number_id},
+            )
         except httpx.HTTPError as e:
             logger.error(
                 "send_text_message_failed",
@@ -175,22 +233,17 @@ class MetaCloudClient:
         }
 
         try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
-                response = await client.post(
-                    url,
-                    json=payload,
-                    headers=headers,
-                )
-                if response.status_code >= 400:
-                    logger.error(
-                        "send_template_message_meta_error",
-                        status_code=response.status_code,
-                        response_body=response.text,
-                        to=to,
-                        template_name=template_name,
-                        phone_number_id=phone_number_id,
-                    )
-                response.raise_for_status()
+            response = await self._post_with_retries(
+                url,
+                payload,
+                headers,
+                log_event="send_template_message",
+                log_context={
+                    "to": to,
+                    "template_name": template_name,
+                    "phone_number_id": phone_number_id,
+                },
+            )
         except httpx.HTTPError as e:
             logger.error(
                 "send_template_message_failed",

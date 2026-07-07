@@ -16,7 +16,13 @@ from app.modules.google_calendar.service import (
     create_calendar_event, update_event_color,
 )
 from app.modules.google_calendar.sync import cancel_appointment_in_calendar
-from app.modules.scheduling.availability import compute_day_availability
+from app.modules.reminders.scheduler import schedule_reminders_for_appointment
+from app.modules.scheduling.availability import (
+    check_slot_bookable,
+    compute_day_availability,
+    invalidate_availability_cache,
+    lock_slot_temporarily,
+)
 from app.modules.scheduling.reschedule_notify import link_pending_doctor_cancellation
 from app.modules.scheduling.tasks import enqueue_reschedule_notification
 from app.modules.notifications.tasks import (
@@ -230,11 +236,55 @@ class ToolContext:
         office: Office,
         patient_id: Optional[uuid.UUID],
         whatsapp_id: str,
+        redis_client=None,
     ):
         self.db = db
         self.office = office
         self.patient_id = patient_id
         self.whatsapp_id = whatsapp_id
+        # Optional: enables slot locking + availability-cache invalidation.
+        self.redis_client = redis_client
+
+
+async def _guard_slot(ctx, start_dt, end_dt) -> Optional[dict]:
+    """Shared booking guard: validate the slot and take the anti-race lock.
+
+    Returns an error dict to relay to the model, or None when booking may
+    proceed. The lock is deliberately NOT released here — it expires by TTL
+    (60s), which covers the window until the surrounding transaction commits;
+    releasing earlier would let a concurrent booker pass the overlap check
+    before this appointment is visible.
+    """
+    conflict = await check_slot_bookable(ctx.office.id, start_dt, end_dt, ctx.db)
+    if conflict:
+        return {
+            "error": f"No se pudo agendar: {conflict}",
+            "next_step": (
+                "Consulta get_available_slots para esa fecha y ofrécele al "
+                "paciente los horarios que sí están disponibles."
+            ),
+        }
+    if ctx.redis_client is not None:
+        locked = await lock_slot_temporarily(ctx.office.id, start_dt, ctx.redis_client)
+        if not locked:
+            return {
+                "error": (
+                    "Ese horario se está agendando por otra persona en este "
+                    "momento. Vuelve a consultar disponibilidad en unos segundos."
+                )
+            }
+    return None
+
+
+async def _invalidate_avail(ctx, *dates) -> None:
+    """Best-effort availability-cache invalidation for the affected dates."""
+    if ctx.redis_client is None:
+        return
+    for d in dates:
+        try:
+            await invalidate_availability_cache(ctx.office.id, d, ctx.redis_client)
+        except Exception as e:
+            logger.warning("tool_avail_cache_invalidate_failed", error=str(e))
 
 
 # ---------------------------------------------------------------------------
@@ -475,6 +525,11 @@ async def _handle_create_appointment(args: dict, ctx: ToolContext) -> dict:
     duration = timedelta(minutes=duration_min)
     end_dt = start_dt + duration
 
+    # Re-validate availability and take the anti-race lock before booking.
+    guard_error = await _guard_slot(ctx, start_dt, end_dt)
+    if guard_error:
+        return guard_error
+
     # Google Calendar event
     google_event_id = None
     if ctx.office.google_calendar_token:
@@ -511,6 +566,11 @@ async def _handle_create_appointment(args: dict, ctx: ToolContext) -> dict:
     )
     ctx.db.add(appointment)
     await ctx.db.flush()
+
+    await _invalidate_avail(ctx, start_dt.date())
+    await schedule_reminders_for_appointment(
+        ctx.db, ctx.office.id, appointment_id, start_dt
+    )
 
     # If this booking answers a slot the doctor cancelled, report back to the
     # doctor via the reschedule notice (which already covers the event); otherwise
@@ -568,6 +628,8 @@ async def _handle_cancel_appointment(args: dict, ctx: ToolContext) -> dict:
     appointment.cancelled_by = "patient"
     appointment.cancellation_reason = reason
 
+    await _invalidate_avail(ctx, dt.date())
+
     # Notify the doctor of the patient cancellation (configurable per office).
     enqueue_cancellation_notification(appointment.id)
 
@@ -602,10 +664,20 @@ async def _handle_reschedule_appointment(args: dict, ctx: ToolContext) -> dict:
     if not appointment or appointment.office_id != ctx.office.id:
         return {"error": "No se encontró la cita."}
 
+    if appointment.status == "cancelled":
+        return {"error": "La cita ya fue cancelada y no puede reagendarse. Ofrece agendar una nueva."}
+
     try:
         new_start = datetime.strptime(f"{new_date} {new_time}", "%Y-%m-%d %H:%M").replace(tzinfo=MX_TIMEZONE)
     except ValueError:
         return {"error": f"Fecha u hora inválida: {new_date} {new_time}"}
+
+    # Re-validate the new slot and take the anti-race lock BEFORE touching the
+    # old appointment, so a conflict leaves it intact.
+    duration = timedelta(minutes=appointment.duration_minutes or 30)
+    guard_error = await _guard_slot(ctx, new_start, new_start + duration)
+    if guard_error:
+        return guard_error
 
     # Format old appointment
     old_dt = appointment.start_datetime
@@ -634,7 +706,6 @@ async def _handle_reschedule_appointment(args: dict, ctx: ToolContext) -> dict:
             patient_name = patient.name or ""
             patient_phone_display = display_or_raw(patient.phone) if patient.phone else ""
 
-    duration = timedelta(minutes=appointment.duration_minutes or 30)
     new_end = new_start + duration
     reason = appointment.consultation_reason or "Consulta"
 
@@ -663,12 +734,18 @@ async def _handle_reschedule_appointment(args: dict, ctx: ToolContext) -> dict:
         start_datetime=new_start,
         end_datetime=new_end,
         duration_minutes=appointment.duration_minutes or 30,
+        type=appointment.type,
         consultation_reason=reason,
         status="scheduled",
         google_event_id=google_event_id,
     )
     ctx.db.add(new_appointment)
     await ctx.db.flush()
+
+    await _invalidate_avail(ctx, old_dt.date(), new_start.date())
+    await schedule_reminders_for_appointment(
+        ctx.db, ctx.office.id, new_appointment_id, new_start
+    )
 
     # If this booking answers a slot the doctor cancelled, report back to the doctor.
     if await link_pending_doctor_cancellation(ctx.db, new_appointment):
