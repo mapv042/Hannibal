@@ -9,7 +9,32 @@ from anthropic import AsyncAnthropic
 
 from app.config import settings
 from app.utils.logger import get_logger
-from app.modules.ai.base_service import BaseAIService, ChatResponse, ToolCall
+from app.modules.ai.base_service import (
+    BaseAIService,
+    ChatResponse,
+    SystemPrompt,
+    ToolCall,
+)
+
+
+def _system_blocks(system_prompt: SystemPrompt):
+    """Build the Anthropic `system` param, marking the static part cacheable.
+
+    A cache_control breakpoint on the static block caches the whole prefix
+    (tools + static system) across the turns of a conversation; the dynamic
+    tail (date/time, pending context) stays outside the cached prefix.
+    """
+    if isinstance(system_prompt, tuple):
+        static, dynamic = system_prompt
+        blocks = [{
+            "type": "text",
+            "text": static,
+            "cache_control": {"type": "ephemeral"},
+        }]
+        if dynamic:
+            blocks.append({"type": "text", "text": dynamic})
+        return blocks
+    return system_prompt
 
 logger = get_logger(__name__)
 
@@ -64,11 +89,12 @@ class AnthropicService(BaseAIService):
 
     async def _raw_chat_with_tools(
         self,
-        system_prompt: str,
+        system_prompt: SystemPrompt,
         messages: list[dict],
         tools: list[dict],
         max_tokens: int,
         temperature: float,
+        tool_choice: str | None = None,
     ) -> ChatResponse:
         logger.debug(
             "llm_chat_with_tools_request",
@@ -78,14 +104,18 @@ class AnthropicService(BaseAIService):
             max_tokens=max_tokens,
         )
 
-        response = await self.client.messages.create(
-            model=self.model,
-            system=system_prompt,
-            messages=messages,
-            tools=tools,
-            max_tokens=max_tokens,
-            temperature=temperature,
-        )
+        request_kwargs = {
+            "model": self.model,
+            "system": _system_blocks(system_prompt),
+            "messages": messages,
+            "tools": tools,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+        }
+        if tool_choice is not None:
+            request_kwargs["tool_choice"] = {"type": tool_choice}
+
+        response = await self.client.messages.create(**request_kwargs)
 
         logger.info(
             "llm_chat_with_tools_success",

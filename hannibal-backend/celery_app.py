@@ -6,6 +6,10 @@ from celery import Celery
 from celery.schedules import crontab
 
 from app.config import settings
+from app.utils.logger import configure_logging
+
+# Structured JSON logs (same format as the API) for workers and beat
+configure_logging("INFO")
 
 # Create Celery app
 celery_app = Celery(
@@ -32,7 +36,7 @@ celery_app.conf.update(
     beat_schedule={
         "renew-google-watches": {
             "task": "app.modules.google_calendar.tasks.renew_google_watches",
-            "schedule": crontab(minute=0, hour="*/24"),  # Every 24 hours
+            "schedule": crontab(minute=0, hour=0),  # Daily at midnight
             "options": {"queue": "celery"},
         },
         "reconcile-reminders": {

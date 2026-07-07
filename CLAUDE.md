@@ -15,18 +15,18 @@ hannibal/
 │   │   ├── core/                      # Cross-cutting: security, deps, exceptions, constants
 │   │   ├── db/
 │   │   │   ├── base.py                # SQLAlchemy async engine (lazy init) + Base
-│   │   │   ├── models.py             # 9 SQLAlchemy models
+│   │   │   ├── models.py             # 10 SQLAlchemy models
 │   │   │   └── migrations/           # Alembic (async)
 │   │   ├── modules/
 │   │   │   ├── whatsapp/             # Meta Cloud API webhook, coexistence, provisioning, Twilio number purchase
-│   │   │   ├── ai/                   # Claude/OpenAI integration (tool-use), prompts, patient + doctor tools
-│   │   │   ├── conversation/         # Session store (Redis), conversation manager (patient + doctor)
-│   │   │   ├── scheduling/           # Availability engine, appointments CRUD, blocks
+│   │   │   ├── ai/                   # Claude/OpenAI integration (tool-use), prompts, patient + doctor tools, tool_helpers, audio transcription
+│   │   │   ├── conversation/         # Session store (Redis), base_manager + conversation managers (patient + doctor)
+│   │   │   ├── scheduling/           # Availability engine, unified booking engine (booking.py), appointments CRUD, blocks
 │   │   │   ├── urgencies/            # Urgent-appointment requests (doctor-in-the-loop overbooking): service, templates, Celery notify + timeout
-│   │   │   ├── reminders/            # Celery tasks (day_before, 4h, 1h, post-appointment), confirmation requests, reconciliation
+│   │   │   ├── reminders/            # Celery tasks (day_before, 4h, 1h, post-appointment), confirmation requests (interactive buttons in-window), reconciliation
 │   │   │   ├── offices/              # Office/practice CRUD
 │   │   │   ├── patients/             # Patient CRUD
-│   │   │   ├── notifications/        # Doctor notifications (⚠️ stub — not implemented, see Known gaps)
+│   │   │   ├── notifications/        # Configurable doctor notifications (new appointment/patient, cancellations, unconfirmed summary)
 │   │   │   └── google_calendar/      # OAuth2, sync, watch channels
 │   │   ├── middleware/               # JWT auth, rate limiting
 │   │   └── utils/                    # Dates (Mexico_City TZ), phone normalization, logging
@@ -64,7 +64,7 @@ hannibal/
 ### Multi-tenancy
 Every table has `office_id`. All queries must filter by office. Supabase RLS enforces isolation at DB level. Never query without `office_id`.
 
-### Database models (app/db/models.py) — 10 models
+### Database models (app/db/models.py) — 10 models (Office, AvailabilitySchedule, TimeBlock, Patient, Appointment, UrgencyRequest, ReminderRule, Conversation, Message, GoogleCalendarEvent)
 - `Office` — the practice/consultorio (tenant)
 - `AvailabilitySchedule` — weekly schedule (day_of_week, start_time, end_time, duration, buffer)
 - `TimeBlock` — unavailable periods (vacations, etc.)
@@ -92,6 +92,12 @@ The doctor can use WhatsApp on their phone simultaneously with the bot. The paus
 
 ### Availability engine (modules/scheduling/availability.py)
 Calculates free slots by: getting weekly schedules → generating all possible slots → subtracting existing appointments → subtracting time blocks → checking Google Calendar freebusy. Results cached in Redis (5 min TTL). Slot locking via Redis SETNX (60s) prevents double-booking.
+
+### Booking engine (modules/scheduling/booking.py)
+`book_appointment()` is the **single** path that creates appointments — used by the patient tool, the doctor tool and the dashboard service. It does: slot validation (`check_slot_bookable`, skippable via `allow_conflict` for deliberate doctor overbooking) → Redis slot lock → Google Calendar event → insert → cache invalidation → reminder scheduling. It flushes but never commits (callers own the transaction). Do not create `Appointment` rows anywhere else (exception: the urgency-approval overbook path in `urgencies/service.py`).
+
+### Conversation managers (modules/conversation/)
+`BaseToolConversationManager` (base_manager.py) holds the shared machinery: message extraction (voice notes are transcribed with Whisper via `ai/transcription.py` when `OPEN_AI_KEY` is set; interactive button taps arrive as their title text), the tool-use loop (on iteration-budget exhaustion it makes a final `tool_choice="none"` call so the model closes the turn with what it has), and text-only history. **Persisted history (Redis) contains only plain user/assistant text turns** — provider-specific tool chains live in a per-turn working copy and are discarded, so switching `AI_PROVIDER` never breaks live sessions. Managers receive the raw webhook `message` dict directly (no payload re-wrapping).
 
 ### Urgencias (urgent appointments) — doctor-in-the-loop
 Patient signals urgency → patient tool `request_urgent_appointment` creates an `UrgencyRequest` (pending) and enqueues two Celery tasks (`app/modules/urgencies/tasks.py`): `notify_doctor_urgency_task` (countdown ~5s, so the request commits first) pings the doctor on WhatsApp, and `expire_urgency_request_task` (eta = now + `URGENCY_APPROVAL_TIMEOUT_MINUTES`) is the timeout fallback. The doctor approves/rejects by replying — `DoctorConversationManager` injects pending requests into the doctor prompt (`URGENCIAS PENDIENTES`) and the doctor tool `resolve_urgent_request` books the (overbooked) `type="urgent"` appointment and notifies the patient. The bot never overbooks without the doctor's approval. If the doctor doesn't reply in time, the timeout marks the request `expired` and offers the patient the next normal slot. Doctor 24h-window detection uses a Redis key (`doctor_last_inbound:{office_id}`), not the `Message` table, because doctor messages aren't persisted there. Requires a Meta-approved template `urgency_alert` (param: patient_name) for the out-of-window doctor alert.
@@ -178,8 +184,9 @@ CONFIRMATION_REQUEST_HOUR=8     # hour (MX TZ) to send daily confirmation reques
 
 ## Testing
 
+> ⚠️ There is **no test suite yet** — `tests/` does not exist. pytest/pytest-asyncio are already in requirements; when adding tests, start with the availability engine (`compute_day_availability`, `check_slot_bookable`), the booking engine (`booking.book_appointment`) and `BaseToolConversationManager.sanitize_history`.
+
 ```bash
 cd hannibal-backend
 pytest tests/ -v
-pytest tests/unit/test_availability.py -v  # availability engine has 100% coverage target
 ```

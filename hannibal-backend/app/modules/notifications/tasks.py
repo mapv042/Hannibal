@@ -13,8 +13,6 @@ doctor's first availability block that day.
 from __future__ import annotations
 
 import asyncio
-import sys
-import traceback
 from datetime import datetime, timedelta
 from uuid import UUID
 
@@ -48,13 +46,11 @@ UNCONFIRMED_FLAG_KEY = "unconfirmed_summary_sent:{office_id}:{date}"
 
 
 def _log(msg: str) -> None:
-    print(f"[CELERY] {msg}", file=sys.stderr, flush=True)
+    logger.info("celery_task", detail=msg)
 
 
 def _log_exception(task_name: str, e: Exception) -> None:
-    _log(f"{task_name} FAILED: {e}")
-    traceback.print_exc(file=sys.stderr)
-    sys.stderr.flush()
+    logger.error("celery_task_failed", task=task_name, error=str(e), exc_info=True)
 
 
 # --------------------------------------------------------------------------- #

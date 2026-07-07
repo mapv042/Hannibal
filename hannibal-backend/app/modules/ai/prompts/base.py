@@ -31,12 +31,19 @@ def build_system_prompt(
     active_appointment_id: str | None = None,
     is_returning_patient: bool = False,
     patient_name: str | None = None,
-) -> str:
+) -> tuple[str, str]:
     """
-    Build a simplified system prompt for tool-use mode.
+    Build the system prompt for tool-use mode as (static, dynamic) parts.
 
-    Unlike v1, this prompt does NOT include available slots or patient
-    appointments — the LLM queries those via tools when needed.
+    The static part depends only on office config and patient identity, so it
+    stays byte-identical across the turns of a conversation — that makes it a
+    cacheable prefix (OpenAI automatic prompt caching / Anthropic
+    cache_control). Everything that changes per turn (current date/time,
+    pending-confirmation context) goes in the dynamic tail. The AI services
+    join or block-split the parts per provider.
+
+    This prompt does NOT include available slots or patient appointments —
+    the LLM queries those via tools when needed.
     """
     tone_desc = (
         "de manera formal y profesional"
@@ -101,9 +108,7 @@ Este paciente es NUEVO (primera vez).
         location_parts.append(office.state)
     location_str = ", ".join(location_parts) if location_parts else "No especificada"
 
-    return f"""Eres {office.assistant_name}, asistente de citas médicas para {office.name}.
-
-{date_reference}
+    static_part = f"""Eres {office.assistant_name}, asistente de citas médicas para {office.name}.
 
 INFORMACIÓN DEL CONSULTORIO:
 - Nombre: {office.name}
@@ -133,7 +138,8 @@ CÓMO TRABAJAR:
 - NUNCA digas "déjame revisar" o "un momento" — ya tienes las herramientas, úsalas directamente
 
 MENSAJES NO-TEXTO:
-- Si recibes un mensaje como "[El paciente envió un mensaje de voz]", "[El paciente envió una imagen]", etc., responde amablemente que por el momento solo puedes procesar mensajes de texto y pide al paciente que escriba su solicitud
+- Los mensajes de voz se transcriben automáticamente: si recibes "[Mensaje de voz transcrito]: ..." trátalo como un mensaje de texto normal del paciente
+- Si recibes un mensaje como "[El paciente envió un mensaje de voz]" (sin transcripción), "[El paciente envió una imagen]", etc., responde amablemente que por el momento solo puedes procesar mensajes de texto y pide al paciente que escriba su solicitud
 - Si el mensaje incluye un caption/texto (ej: "[El paciente envió una imagen con el texto: ...]"), responde al texto del caption normalmente
 
 REGLAS CRÍTICAS:
@@ -142,4 +148,7 @@ REGLAS CRÍTICAS:
 3. NUNCA ofrezcas horarios que ya hayan pasado según la fecha y hora actual
 4. No compartas información médica o privada del paciente{custom_section}
 
-Tu objetivo es facilitar el agendamiento de forma eficiente y amigable. Siempre ofrece alternativas cuando algo no está disponible.{_build_confirmation_context(active_appointment_id)}"""
+Tu objetivo es facilitar el agendamiento de forma eficiente y amigable. Siempre ofrece alternativas cuando algo no está disponible."""
+
+    dynamic_part = f"{date_reference}{_build_confirmation_context(active_appointment_id)}"
+    return static_part, dynamic_part

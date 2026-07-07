@@ -270,6 +270,97 @@ class MetaCloudClient:
 
         return message_id
 
+    async def send_interactive_buttons(
+        self,
+        phone_number_id: str,
+        token: str,
+        to: str,
+        body_text: str,
+        buttons: List[Dict[str, str]],
+    ) -> str:
+        """
+        Send an interactive message with quick-reply buttons.
+
+        Only works inside the 24h customer service window (like free text).
+        The patient's tap arrives as an incoming message of type "interactive"
+        whose button title is fed to the conversation as text.
+
+        Args:
+            phone_number_id: WhatsApp Business Account phone number ID
+            token: Access token for authentication
+            to: Recipient's WhatsApp ID
+            body_text: Message body shown above the buttons
+            buttons: 1-3 dicts with "id" and "title" (Meta caps titles at 20 chars)
+
+        Returns:
+            Message ID from Meta
+
+        Raises:
+            WhatsAppError: If API call fails
+        """
+        url = f"{BASE_URL}/{phone_number_id}/messages"
+
+        normalized_to = to
+        if to.startswith("521") and len(to) == 13:
+            normalized_to = "52" + to[3:]
+
+        payload = {
+            "messaging_product": "whatsapp",
+            "recipient_type": "individual",
+            "to": normalized_to,
+            "type": "interactive",
+            "interactive": {
+                "type": "button",
+                "body": {"text": body_text},
+                "action": {
+                    "buttons": [
+                        {
+                            "type": "reply",
+                            "reply": {"id": b["id"], "title": b["title"][:20]},
+                        }
+                        for b in buttons[:3]
+                    ]
+                },
+            },
+        }
+
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        }
+
+        try:
+            response = await self._post_with_retries(
+                url,
+                payload,
+                headers,
+                log_event="send_interactive_buttons",
+                log_context={"to": to, "phone_number_id": phone_number_id},
+            )
+        except httpx.HTTPError as e:
+            logger.error(
+                "send_interactive_buttons_failed",
+                to=to,
+                phone_number_id=phone_number_id,
+                error=str(e),
+            )
+            raise WhatsAppError(f"Failed to send interactive message: {str(e)}") from e
+
+        data = response.json()
+        message_id = data.get("messages", [{}])[0].get("id")
+
+        if not message_id:
+            logger.error("send_interactive_buttons_no_id", response=data)
+            raise WhatsAppError("No message ID returned by Meta")
+
+        logger.info(
+            "send_interactive_buttons_success",
+            message_id=message_id,
+            to=to,
+        )
+
+        return message_id
+
     async def mark_as_read(
         self,
         phone_number_id: str,

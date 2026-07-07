@@ -10,7 +10,7 @@ import redis.asyncio as aioredis
 from sqlalchemy import select, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Appointment, Patient
+from app.db.models import Appointment, Office, Patient
 from app.modules.reminders.scheduler import schedule_reminders_for_appointment
 from app.modules.scheduling.schemas import CreateAppointmentRequest, UpdateAppointmentRequest
 from app.modules.scheduling.availability import (
@@ -19,8 +19,10 @@ from app.modules.scheduling.availability import (
     lock_slot_temporarily,
     release_slot_lock,
 )
+from app.modules.scheduling.booking import book_appointment
 from app.core.exceptions import NotFoundError, SlotNotAvailableError
 from app.utils.logger import get_logger
+from app.utils.phone import display_or_raw
 
 logger = get_logger(__name__)
 
@@ -32,32 +34,17 @@ async def create_appointment(
     redis_client: aioredis.Redis,
 ) -> Appointment:
     """
-    Create a new appointment.
+    Create a new appointment from the dashboard.
 
-    Steps:
-    1. Validate patient exists
-    2. Validate slot availability (double-check)
-    3. Acquire temporary lock on slot
-    4. Create appointment record
-    5. Invalidate availability cache
-    6. Schedule reminders (placeholder)
-    7. Trigger Google Calendar sync (placeholder)
-    8. Release slot lock
-
-    Args:
-        data: Appointment creation request
-        office_id: Office ID
-        db: Database session
-        redis_client: Redis client
-
-    Returns:
-        Created Appointment object
+    Delegates to the shared booking engine (validation, slot lock, Google
+    Calendar event, cache invalidation, reminders) and maps failures to the
+    HTTP exception contract.
 
     Raises:
-        NotFoundError: If patient not found
+        NotFoundError: If patient or office not found
         SlotNotAvailableError: If slot is not available
     """
-    # Step 1: Validate patient exists
+    # Validate patient exists
     patient_result = await db.execute(
         select(Patient).where(
             and_(
@@ -70,63 +57,40 @@ async def create_appointment(
     if not patient:
         raise NotFoundError("Patient not found")
 
-    # Step 2 & 3: Acquire lock on slot
-    lock_acquired = await lock_slot_temporarily(
-        office_id, data.start_time, redis_client
+    office = await db.get(Office, office_id)
+    if not office:
+        raise NotFoundError("Office not found")
+
+    phone_line = f"Teléfono: {display_or_raw(patient.phone)}\n" if patient.phone else ""
+    outcome = await book_appointment(
+        db,
+        office,
+        patient_id=data.patient_id,
+        start_dt=data.start_time,
+        duration_min=data.duration_min,
+        reason=data.consultation_reason,
+        appt_type=data.appointment_type,
+        gcal_title=f"Cita: {patient.name or 'Paciente'}",
+        gcal_description=(
+            f"Motivo: {data.consultation_reason}\n{phone_line}Agendada desde el dashboard"
+        ),
+        redis_client=redis_client,
     )
-    if not lock_acquired:
-        raise SlotNotAvailableError("Slot is being booked by another user")
+    if outcome.error:
+        raise SlotNotAvailableError(outcome.error)
 
-    try:
-        # Step 2 (for real): re-validate the slot against appointments, blocks,
-        # working hours and Google busy periods under the lock.
-        end_datetime = data.start_time + timedelta(minutes=data.duration_min)
-        conflict = await check_slot_bookable(
-            office_id, data.start_time, end_datetime, db
-        )
-        if conflict:
-            raise SlotNotAvailableError(conflict)
+    appointment = outcome.appointment
+    await db.commit()
+    await db.refresh(appointment)
 
-        # Step 4: Create appointment
-        appointment = Appointment(
-            office_id=office_id,
-            patient_id=data.patient_id,
-            start_datetime=data.start_time,
-            end_datetime=end_datetime,
-            duration_minutes=data.duration_min,
-            type=data.appointment_type,
-            consultation_reason=data.consultation_reason,
-            status="scheduled",
-        )
+    logger.info(
+        "appointment_created",
+        appointment_id=str(appointment.id),
+        patient_id=str(data.patient_id),
+        office_id=str(office_id),
+    )
 
-        db.add(appointment)
-        await db.flush()  # Get the ID without committing
-
-        # Step 5: Invalidate cache
-        await invalidate_availability_cache(
-            office_id, data.start_time.date(), redis_client
-        )
-
-        await db.commit()
-        await db.refresh(appointment)
-
-        # Step 6: Schedule the office's reminders for this appointment
-        await schedule_reminders_for_appointment(
-            db, office_id, appointment.id, appointment.start_datetime
-        )
-
-        logger.info(
-            "appointment_created",
-            appointment_id=str(appointment.id),
-            patient_id=str(data.patient_id),
-            office_id=str(office_id),
-        )
-
-        return appointment
-
-    finally:
-        # Step 8: Release lock
-        await release_slot_lock(office_id, data.start_time, redis_client)
+    return appointment
 
 
 async def cancel_appointment(

@@ -9,7 +9,13 @@ from openai import AsyncOpenAI
 
 from app.config import settings
 from app.utils.logger import get_logger
-from app.modules.ai.base_service import BaseAIService, ChatResponse, ToolCall
+from app.modules.ai.base_service import (
+    BaseAIService,
+    ChatResponse,
+    SystemPrompt,
+    ToolCall,
+    join_system_prompt,
+)
 
 logger = get_logger(__name__)
 
@@ -65,13 +71,17 @@ class OpenAIService(BaseAIService):
 
     async def _raw_chat_with_tools(
         self,
-        system_prompt: str,
+        system_prompt: SystemPrompt,
         messages: list[dict],
         tools: list[dict],
         max_tokens: int,
         temperature: float,
+        tool_choice: str | None = None,
     ) -> ChatResponse:
-        openai_messages = [{"role": "system", "content": system_prompt}]
+        # (static, dynamic) prompts are joined static-first: OpenAI's automatic
+        # prompt caching keys on a stable request prefix, so the per-turn date
+        # block must come last.
+        openai_messages = [{"role": "system", "content": join_system_prompt(system_prompt)}]
         openai_messages.extend(messages)
 
         # Convert tools to OpenAI function-calling format
@@ -95,12 +105,17 @@ class OpenAIService(BaseAIService):
             max_tokens=max_tokens,
         )
 
-        response = await self.client.chat.completions.create(
-            model=self.model,
-            messages=openai_messages,
-            tools=openai_tools,
-            max_completion_tokens=max_tokens,
-        )
+        request_kwargs = {
+            "model": self.model,
+            "messages": openai_messages,
+            "tools": openai_tools,
+            "max_completion_tokens": max_tokens,
+            "temperature": temperature,
+        }
+        if tool_choice is not None:
+            request_kwargs["tool_choice"] = tool_choice
+
+        response = await self.client.chat.completions.create(**request_kwargs)
 
         choice = response.choices[0]
         message = choice.message

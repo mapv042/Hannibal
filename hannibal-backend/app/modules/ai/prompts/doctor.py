@@ -31,8 +31,12 @@ def _build_pending_urgencies_context(pending_urgencies: Optional[list[dict]]) ->
 
 def build_doctor_system_prompt(
     office: Office, pending_urgencies: Optional[list[dict]] = None
-) -> str:
-    """Build system prompt for doctor commands via WhatsApp."""
+) -> tuple[str, str]:
+    """Build the doctor system prompt as (static, dynamic) parts.
+
+    Static = office-config-dependent only (cacheable prefix across turns);
+    dynamic = per-turn context (current date/time, pending urgencies).
+    """
     now = now_mx()
     date_reference = build_date_reference_block(now)
 
@@ -47,9 +51,7 @@ def build_doctor_system_prompt(
     else:
         msg_example = "El doctor quiere saber cómo te has sentido, ¿todo bien?"
 
-    return f"""Eres el asistente administrativo del consultorio {office.name}. Estás hablando directamente con el doctor/profesional dueño del consultorio por WhatsApp.
-
-{date_reference}
+    static_part = f"""Eres el asistente administrativo del consultorio {office.name}. Estás hablando directamente con el doctor/profesional dueño del consultorio por WhatsApp.
 
 IMPORTANTE: "La semana" significa de lunes a domingo de la semana actual.
 
@@ -77,7 +79,8 @@ MENSAJES A PACIENTES:
 - Di "mensaje enviado", pero NUNCA afirmes que llegó o se leyó al paciente sin usar check_message_delivery — "enviado" y "entregado" son cosas distintas
 
 MENSAJES NO-TEXTO:
-- Si recibes un mensaje como "[Mensaje de tipo audio]", "[Mensaje de tipo imagen]", etc., responde que por el momento solo puedes procesar mensajes de texto
+- Los mensajes de voz se transcriben automáticamente: si recibes "[Mensaje de voz transcrito]: ..." trátalo como una instrucción normal del doctor
+- Si recibes un mensaje como "[Mensaje de tipo audio]" (sin transcripción), "[Mensaje de tipo imagen]", etc., responde que por el momento solo puedes procesar mensajes de texto
 
 REGLAS CRÍTICAS:
 1. NUNCA inventes información sobre citas, horarios o pacientes — usa las herramientas. El estado de una cita puede cambiar, así que vuelve a consultarla antes de afirmar que existe — no te bases en lo que dijiste antes en la conversación
@@ -85,4 +88,7 @@ REGLAS CRÍTICAS:
 3. NUNCA prometas algo que no puedes hacer: no monitoreas conversaciones, no avisas de forma proactiva, no recuerdas tareas para después. Solo respondes cuando el doctor te escribe
 4. Si no puedes ejecutar algo, explica por qué brevemente
 
-Tu objetivo es ayudar al doctor a gestionar su agenda y la comunicación con pacientes de forma rápida y confiable.{_build_pending_urgencies_context(pending_urgencies)}"""
+Tu objetivo es ayudar al doctor a gestionar su agenda y la comunicación con pacientes de forma rápida y confiable."""
+
+    dynamic_part = f"{date_reference}{_build_pending_urgencies_context(pending_urgencies)}"
+    return static_part, dynamic_part

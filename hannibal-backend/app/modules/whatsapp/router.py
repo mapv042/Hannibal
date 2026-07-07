@@ -363,10 +363,7 @@ async def _route_message(
         )
         meta_client = MetaCloudClient()
         doctor_manager = DoctorConversationManager(meta_client, redis_client)
-        conversation_payload = {
-            "entry": [{"changes": [{"value": {"messages": [message]}}]}]
-        }
-        await doctor_manager.process(office, conversation_payload, db)
+        await doctor_manager.process(office, message, db)
         return
 
     # Check if bot is paused (single source of truth: Redis, set by pause_bot)
@@ -395,19 +392,7 @@ async def _route_message(
     session_store = SessionStore(redis_client)
     meta_client = MetaCloudClient()
     manager = ConversationManager(session_store, meta_client)
-
-    # Reconstruct payload in the format ConversationManager expects
-    conversation_payload = {
-        "entry": [{
-            "changes": [{
-                "value": {
-                    "messages": [message]
-                }
-            }]
-        }]
-    }
-
-    await manager.process(office, conversation_payload, db)
+    await manager.process(office, message, db)
 
 
 async def _persist_incoming_while_paused(

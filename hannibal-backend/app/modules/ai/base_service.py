@@ -5,12 +5,26 @@ from __future__ import annotations
 import asyncio
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any, Optional, Union
 
 from app.utils.logger import get_logger
 from app.core.exceptions import AIServiceError
 
 logger = get_logger(__name__)
+
+# A system prompt is either a plain string or a (static, dynamic) pair. The
+# static part is byte-identical across a conversation's turns, so providers
+# can cache it as a prefix (OpenAI automatic caching needs a stable prefix;
+# AnthropicService marks it with cache_control). The dynamic part carries
+# per-turn context (current date/time, pending confirmations/urgencies).
+SystemPrompt = Union[str, tuple]
+
+
+def join_system_prompt(system_prompt: SystemPrompt) -> str:
+    """Flatten a (static, dynamic) system prompt into a single string."""
+    if isinstance(system_prompt, tuple):
+        return "\n\n".join(part for part in system_prompt if part)
+    return system_prompt
 
 
 @dataclass
@@ -55,13 +69,18 @@ class BaseAIService(ABC):
     @abstractmethod
     async def _raw_chat_with_tools(
         self,
-        system_prompt: str,
+        system_prompt: SystemPrompt,
         messages: list[dict],
         tools: list[dict],
         max_tokens: int,
         temperature: float,
+        tool_choice: Optional[str] = None,
     ) -> ChatResponse:
-        """SDK-specific chat call with tool definitions. No retry logic."""
+        """SDK-specific chat call with tool definitions. No retry logic.
+
+        tool_choice="none" forces a text-only reply (used to close a turn
+        gracefully when the tool-iteration budget is exhausted).
+        """
         ...
 
     @abstractmethod
@@ -123,14 +142,17 @@ class BaseAIService(ABC):
 
     async def chat_with_tools(
         self,
-        system_prompt: str,
+        system_prompt: SystemPrompt,
         messages: list[dict],
         tools: list[dict],
         max_tokens: int = 4096,
         temperature: float = 0.5,
+        tool_choice: Optional[str] = None,
     ) -> ChatResponse:
         """Send a conversation with tool definitions and get a response that may include tool calls."""
         return await self._with_retries(
-            lambda: self._raw_chat_with_tools(system_prompt, messages, tools, max_tokens, temperature),
+            lambda: self._raw_chat_with_tools(
+                system_prompt, messages, tools, max_tokens, temperature, tool_choice
+            ),
             "llm_chat_with_tools",
         )

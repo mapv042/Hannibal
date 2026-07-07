@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from typing import TYPE_CHECKING, Any, Optional
+from typing import Any, Optional
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -12,30 +12,39 @@ from app.utils.dates import now_mx
 from app.utils.logger import get_logger
 from app.core.exceptions import ConversationError
 from app.db.models import Appointment, Office, Patient, Conversation, Message
-from app.modules.ai import get_ai_service
 from app.modules.ai.prompts.base import build_system_prompt
 from app.modules.ai.tools import TOOL_DEFINITIONS, ToolContext, execute_tool
+from app.modules.conversation.base_manager import BaseToolConversationManager
 from app.modules.conversation.session_store import SessionStore
 from app.modules.conversation.schemas import SessionContext
 from app.modules.whatsapp.meta_client import MetaCloudClient
 
-if TYPE_CHECKING:
-    from redis.asyncio import Redis
-
 logger = get_logger(__name__)
 
-MAX_TOOL_ITERATIONS = 5
+MAX_HISTORY_TURNS = 40
 
 
-class ConversationManager:
+class ConversationManager(BaseToolConversationManager):
     """
-    Tool-use based conversation manager.
+    Tool-use based conversation manager for patients.
 
-    Instead of detecting intents and running a state machine, this manager
-    sends the user message to the LLM with tool definitions. The LLM decides
-    which tools to call (if any), and the results are fed back until the LLM
-    produces a final text response.
+    The LLM decides which tools to call; results are fed back until it
+    produces a final text response. Persisted session history contains only
+    plain text turns (see BaseToolConversationManager.sanitize_history) — the
+    tool chain lives in a per-turn working copy.
     """
+
+    # Human-readable labels for WhatsApp message types
+    _MESSAGE_TYPE_LABELS: dict[str, str] = {
+        "audio": "mensaje de voz",
+        "image": "imagen",
+        "video": "video",
+        "document": "documento",
+        "sticker": "sticker",
+        "location": "ubicación",
+        "contacts": "contacto",
+        "reaction": "reacción",
+    }
 
     def __init__(
         self,
@@ -43,20 +52,30 @@ class ConversationManager:
         meta_client: MetaCloudClient,
         ai_service=None,
     ):
+        super().__init__(meta_client, ai_service)
         self.session_store = session_store
-        self.meta_client = meta_client
-        self.ai_service = ai_service or get_ai_service()
+
+    def _non_text_placeholder(self, msg_type: str, caption: str) -> str:
+        label = self._MESSAGE_TYPE_LABELS.get(msg_type, msg_type)
+        if caption:
+            return f"[El paciente envió un {label} con el texto: \"{caption}\"]"
+        return f"[El paciente envió un {label}]"
 
     async def process(
         self,
         office: Office,
-        payload: dict[str, Any],
+        message: dict[str, Any],
         db: AsyncSession,
     ) -> None:
-        """Process incoming WhatsApp message using tool-use loop."""
+        """Process one incoming WhatsApp message using the tool-use loop.
+
+        `message` is the raw message dict from the Meta webhook payload.
+        Bot pause is enforced upstream (webhook router, Redis key) — single
+        source of truth; see whatsapp/coexistence.check_pause.
+        """
         try:
-            # 1. Extract message
-            message_data = self._extract_message_from_payload(payload)
+            # 1. Extract message (transcribes voice notes)
+            message_data = await self.extract_message(message, office)
             whatsapp_id = message_data["from"]
             message_text = message_data["text"]
             message_id = message_data["id"]
@@ -68,10 +87,7 @@ class ConversationManager:
                 message_id=message_id,
             )
 
-            # 2. Bot pause is enforced upstream (webhook router, Redis key) —
-            #    single source of truth; see whatsapp/coexistence.check_pause.
-
-            # 3. Get or create session
+            # 2. Get or create session
             session = await self.session_store.get_session(whatsapp_id, str(office.id))
             conversation_obj: Optional[Conversation] = None
 
@@ -90,16 +106,16 @@ class ConversationManager:
                     collected_data={},
                 )
 
-            # 4. Get or create patient
+            # 3. Get or create patient
             patient = await self._get_or_create_patient(db, office.id, whatsapp_id)
             if patient:
                 session.patient_id = patient.id
                 conversation_obj.patient_id = patient.id
 
-            # 5. Save incoming message
+            # 4. Save incoming message
             await self._save_incoming_message(db, office.id, whatsapp_id, message_text, message_id)
 
-            # 5.5 Check if patient is new or returning
+            # 4.5 Check if patient is new or returning
             is_returning = False
             if session.patient_id:
                 past_appt = await db.execute(
@@ -111,7 +127,7 @@ class ConversationManager:
                 )
                 is_returning = past_appt.scalars().first() is not None
 
-            # 6. Build system prompt and add user message to history
+            # 5. Build system prompt and append the user turn to history
             active_appt_id = (
                 str(session.active_appointment_id)
                 if session.active_appointment_id
@@ -123,9 +139,11 @@ class ConversationManager:
                 is_returning_patient=is_returning,
                 patient_name=patient.name if patient else None,
             )
+            session.claude_history = self.sanitize_history(session.claude_history)
             session.claude_history.append({"role": "user", "content": message_text})
 
-            # 7. Tool-use loop
+            # 6. Tool-use loop on a per-turn working copy — the provider-specific
+            # tool chain it accumulates is discarded after the turn.
             tool_ctx = ToolContext(
                 db=db,
                 office=office,
@@ -133,9 +151,14 @@ class ConversationManager:
                 whatsapp_id=whatsapp_id,
                 redis_client=self.session_store.redis_client,
             )
-
-            response_text = await self._tool_use_loop(
-                system_prompt, session.claude_history, tool_ctx
+            working_messages = list(session.claude_history)
+            response_text = await self.run_tool_loop(
+                system_prompt,
+                working_messages,
+                TOOL_DEFINITIONS,
+                execute_tool,
+                tool_ctx,
+                log_prefix="patient",
             )
 
             # Update patient_id if a tool created the patient
@@ -154,14 +177,12 @@ class ConversationManager:
                 response_text = "Disculpa, no pude procesar tu mensaje. ¿Podrías repetirlo?"
                 logger.warning("empty_response_fallback_v2", office_id=str(office.id))
 
-            # 8. Append assistant response to history (only the text, not tool calls)
+            # 7. Append the assistant turn (text only) and trim
             session.claude_history.append({"role": "assistant", "content": response_text})
+            if len(session.claude_history) > MAX_HISTORY_TURNS:
+                session.claude_history = session.claude_history[-MAX_HISTORY_TURNS:]
 
-            # Trim history
-            if len(session.claude_history) > 40:
-                session.claude_history = self._trim_history(session.claude_history, 40)
-
-            # 9. Send response. Tool side effects (bookings, cancellations) are
+            # 8. Send response. Tool side effects (bookings, cancellations) are
             # already in this transaction, so the assistant turn stays in the
             # history either way — but a failed send is recorded as "failed",
             # never as sent.
@@ -178,7 +199,7 @@ class ConversationManager:
                 send_failed = True
                 logger.error("failed_to_send_response", error=str(e), whatsapp_id=whatsapp_id)
 
-            # 10. Save outgoing message with its real delivery outcome
+            # 9. Save outgoing message with its real delivery outcome
             await self._save_outgoing_message(
                 db,
                 conversation_obj.id,
@@ -187,13 +208,13 @@ class ConversationManager:
                 delivery_status="failed" if send_failed else "sent",
             )
 
-            # 11. Update conversation state
+            # 10. Update conversation state
             session.last_message_at = now_mx().isoformat()
             conversation_obj.last_message_at = now_mx()
 
             await db.commit()
 
-            # 12. Save session
+            # 11. Save session
             await self.session_store.save_session(whatsapp_id, str(office.id), session)
 
             logger.info(
@@ -208,122 +229,9 @@ class ConversationManager:
             logger.error("conversation_processing_failed_v2", error=str(e), office_id=str(office.id))
             raise ConversationError(f"Failed to process conversation: {str(e)}") from e
 
-    async def _tool_use_loop(
-        self,
-        system_prompt: str,
-        messages: list[dict],
-        ctx: ToolContext,
-    ) -> str:
-        """
-        Run the tool-use loop until the LLM produces a final text response.
-
-        Returns the final text to send to the patient.
-        """
-        for iteration in range(MAX_TOOL_ITERATIONS):
-            response = await self.ai_service.chat_with_tools(
-                system_prompt=system_prompt,
-                messages=messages,
-                tools=TOOL_DEFINITIONS,
-            )
-
-            if not response.tool_calls:
-                # Final text response
-                return response.text or ""
-
-            # Execute each tool call
-            logger.info(
-                "tool_calls",
-                iteration=iteration + 1,
-                tools=[tc.name for tc in response.tool_calls],
-            )
-
-            tool_results = []
-            for tc in response.tool_calls:
-                result = await execute_tool(tc.name, tc.arguments, ctx)
-                tool_results.append({
-                    "tool_call_id": tc.id,
-                    "result": result,
-                })
-
-            # Append assistant message + tool results to history
-            result_messages = self.ai_service.build_tool_result_messages(
-                response.raw_message, tool_results
-            )
-            messages.extend(result_messages)
-
-        # Safety: max iterations reached
-        logger.warning("tool_use_loop_max_iterations", max=MAX_TOOL_ITERATIONS)
-        return "Disculpa, tuve un problema procesando tu solicitud. ¿Podrías intentarlo de nuevo?"
-
-    @staticmethod
-    def _trim_history(messages: list[dict], max_len: int) -> list[dict]:
-        """Trim history to max_len without orphaning tool messages.
-
-        After slicing, the first message might be a 'tool' response whose
-        preceding 'assistant' (with tool_calls) was cut off.  OpenAI rejects
-        this.  We skip forward until we find a non-tool message.
-        """
-        trimmed = messages[-max_len:]
-        while trimmed and trimmed[0].get("role") == "tool":
-            trimmed.pop(0)
-        # Also guard against starting with an assistant tool_calls message
-        # whose tool results were partially cut
-        if trimmed and trimmed[0].get("role") == "assistant" and trimmed[0].get("tool_calls"):
-            trimmed.pop(0)
-            while trimmed and trimmed[0].get("role") == "tool":
-                trimmed.pop(0)
-        return trimmed
-
     # ------------------------------------------------------------------
-    # Helper methods (reused from original manager, simplified)
+    # Persistence helpers
     # ------------------------------------------------------------------
-
-    # Human-readable labels for WhatsApp message types
-    _MESSAGE_TYPE_LABELS: dict[str, str] = {
-        "audio": "mensaje de voz",
-        "image": "imagen",
-        "video": "video",
-        "document": "documento",
-        "sticker": "sticker",
-        "location": "ubicación",
-        "contacts": "contacto",
-        "reaction": "reacción",
-    }
-
-    @staticmethod
-    def _extract_message_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
-        try:
-            entry = payload["entry"][0]
-            changes = entry["changes"][0]
-            value = changes["value"]
-            messages = value.get("messages", [])
-            if not messages:
-                raise ValueError("No messages in payload")
-            message = messages[0]
-            msg_type = message.get("type", "text")
-
-            if msg_type == "text":
-                text = message["text"]["body"]
-            else:
-                # Convert non-text messages to a description the LLM can respond to
-                label = ConversationManager._MESSAGE_TYPE_LABELS.get(msg_type, msg_type)
-                caption = ""
-                # Some types (image, video, document) can have a caption
-                if msg_type in ("image", "video", "document"):
-                    caption = (message.get(msg_type) or {}).get("caption", "")
-                if caption:
-                    text = f"[El paciente envió un {label} con el texto: \"{caption}\"]"
-                else:
-                    text = f"[El paciente envió un {label}]"
-
-            return {
-                "from": message["from"],
-                "text": text,
-                "id": message["id"],
-                "timestamp": message["timestamp"],
-            }
-        except (KeyError, IndexError) as e:
-            raise ConversationError(f"Invalid message payload: {str(e)}") from e
 
     async def _get_or_create_conversation(
         self, db: AsyncSession, office_id: uuid.UUID, whatsapp_id: str,

@@ -12,15 +12,16 @@ import redis.asyncio as redis
 from app.core.constants import DAYS_ES, MX_TIMEZONE
 from app.db.models import Appointment, Conversation, Message, Office, Patient, TimeBlock
 from app.modules.google_calendar.service import (
-    create_calendar_event, update_event_color, update_calendar_event,
+    update_event_color, update_calendar_event,
 )
-from app.modules.reminders.scheduler import schedule_reminders_for_appointment
-from app.modules.scheduling.availability import (
-    check_slot_bookable,
-    compute_day_availability,
-    invalidate_availability_cache,
-    lock_slot_temporarily,
+from app.modules.ai.tool_helpers import (
+    availability_for_dates,
+    format_appointment_dt,
+    localize_mx,
+    parse_requested_dates,
 )
+from app.modules.scheduling.availability import invalidate_availability_cache
+from app.modules.scheduling.booking import book_appointment
 from app.modules.google_calendar.sync import cancel_appointment_in_calendar, sync_time_block
 from app.modules.whatsapp.coexistence import pause_bot, resume_bot, check_pause
 from app.modules.whatsapp.meta_client import MetaCloudClient
@@ -30,7 +31,6 @@ from app.modules.reminders.wa_templates import (
     TEMPLATE_OFFICE_MESSAGE,
     build_office_message_params,
 )
-from app.utils.dates import relative_day_label, spanish_date_label
 from app.utils.logger import get_logger
 from app.utils.phone import display_or_raw, normalize_phone, to_whatsapp_id
 
@@ -214,18 +214,20 @@ DOCTOR_TOOL_DEFINITIONS = [
     {
         "name": "get_available_slots",
         "description": (
-            "Consulta los horarios disponibles para agendar una cita en una fecha. "
-            "Usa esta herramienta para verificar disponibilidad antes de crear o reagendar citas."
+            "Consulta los horarios disponibles para agendar una cita en una o varias fechas "
+            "(máximo 7 por llamada). Usa esta herramienta para verificar disponibilidad antes "
+            "de crear o reagendar citas, o cuando el doctor pregunte qué espacios tiene libres."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "date": {
-                    "type": "string",
-                    "description": "Fecha en formato YYYY-MM-DD.",
+                "dates": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Fechas a consultar en formato YYYY-MM-DD (1 a 7).",
                 },
             },
-            "required": ["date"],
+            "required": ["dates"],
         },
     },
     {
@@ -408,37 +410,23 @@ def _handler(name: str):
     return decorator
 
 
-async def _guard_slot(
-    ctx: DoctorToolContext, start_dt: datetime, end_dt: datetime, allow_conflict: bool,
-) -> dict | None:
-    """Booking guard for doctor tools: validate the slot and take the anti-race lock.
+def _doctor_booking_error(outcome) -> dict:
+    """Wrap a BookingOutcome failure for the doctor flow.
 
-    The doctor may deliberately overbook (allow_conflict=true, after confirming),
-    which skips the availability validation but still takes the lock. The lock is
-    NOT released here — its 60s TTL covers the window until the transaction
-    commits, so a concurrent booker can't pass the overlap check in between.
+    Availability conflicts get the allow_conflict escape hatch (the doctor may
+    deliberately overbook after confirming); transient lock errors don't.
     """
-    if not allow_conflict:
-        conflict = await check_slot_bookable(ctx.office.id, start_dt, end_dt, ctx.db)
-        if conflict:
-            return {
-                "error": f"No se agendó: {conflict}",
-                "next_step": (
-                    "Informa el conflicto al doctor y pregúntale si quiere otro "
-                    "horario (usa get_available_slots) o sobreagendar de todos "
-                    "modos — si confirma sobreagendar, vuelve a llamar la "
-                    "herramienta con allow_conflict=true. No lo asumas."
-                ),
-            }
-    locked = await lock_slot_temporarily(ctx.office.id, start_dt, ctx.redis_client)
-    if not locked:
+    if outcome.conflict:
         return {
-            "error": (
-                "Ese horario se está agendando por otra persona en este momento. "
-                "Intenta de nuevo en unos segundos."
-            )
+            "error": f"No se agendó: {outcome.error}",
+            "next_step": (
+                "Informa el conflicto al doctor y pregúntale si quiere otro "
+                "horario (usa get_available_slots) o sobreagendar de todos "
+                "modos — si confirma sobreagendar, vuelve a llamar la "
+                "herramienta con allow_conflict=true. No lo asumas."
+            ),
         }
-    return None
+    return {"error": outcome.error}
 
 
 async def _invalidate_avail(ctx: DoctorToolContext, *dates) -> None:
@@ -528,8 +516,7 @@ async def _handle_get_appointments(args: dict, ctx: DoctorToolContext) -> dict:
 
     appt_list = []
     for appt in appointments:
-        dt = appt.start_datetime
-        dt = dt.astimezone(MX_TIMEZONE) if dt.tzinfo else dt.replace(tzinfo=MX_TIMEZONE)
+        dt = localize_mx(appt.start_datetime)
 
         patient_name = "Sin nombre"
         if appt.patient_id:
@@ -576,9 +563,8 @@ async def _handle_cancel_appointment(args: dict, ctx: DoctorToolContext) -> dict
     if appointment.status == "cancelled":
         return {"error": "La cita ya fue cancelada."}
 
-    dt = appointment.start_datetime
-    dt = dt.astimezone(MX_TIMEZONE) if dt.tzinfo else dt.replace(tzinfo=MX_TIMEZONE)
-    formatted = f"{DAYS_ES[dt.weekday()]} {dt.strftime('%d/%m/%Y')} a las {dt.strftime('%H:%M')}"
+    dt = localize_mx(appointment.start_datetime)
+    formatted = format_appointment_dt(appointment.start_datetime)
 
     # Google Calendar first — if it fails, don't touch the DB
     if ctx.office.google_calendar_token:
@@ -698,8 +684,7 @@ async def _handle_block_time(args: dict, ctx: DoctorToolContext) -> dict:
         if conflicts:
             conflict_list = []
             for appt in conflicts:
-                dt = appt.start_datetime
-                dt = dt.astimezone(MX_TIMEZONE) if dt.tzinfo else dt.replace(tzinfo=MX_TIMEZONE)
+                dt = localize_mx(appt.start_datetime)
 
                 patient_name = "Sin nombre"
                 if appt.patient_id:
@@ -1060,50 +1045,10 @@ async def _handle_add_note(args: dict, ctx: DoctorToolContext) -> dict:
 
 @_handler("get_available_slots")
 async def _handle_get_available_slots(args: dict, ctx: DoctorToolContext) -> dict:
-    date_str = args.get("date", "")
-    try:
-        target_date = date_cls.fromisoformat(date_str)
-    except ValueError:
-        return {"error": f"Fecha invalida: {date_str}. Usa formato YYYY-MM-DD."}
-
-    today = datetime.now(tz=MX_TIMEZONE).date()
-    # Ground the date relative to today so the model never treats "mañana" and
-    # its absolute date ("miércoles 17") as two different days.
-    relative_day = relative_day_label(target_date, today)
-    date_label = spanish_date_label(target_date, today)
-    day_name = DAYS_ES[target_date.weekday()]
-
-    try:
-        availability = await compute_day_availability(
-            ctx.office.id, target_date, ctx.db, only_future=True,
-        )
-    except Exception as e:
-        logger.warning("doctor_tool_availability_failed", error=str(e))
-        return {"error": "No se pudo consultar la disponibilidad del calendario. Intenta de nuevo en unos minutos."}
-
-    if not availability.has_schedule:
-        return {
-            "date": date_str,
-            "day_name": day_name,
-            "relative_day": relative_day,
-            "slots": [],
-            "message": f"No hay horario de atencion configurado para {date_label}.",
-        }
-
-    slots = [
-        {
-            "time": s.start_time.strftime("%H:%M"),
-            "period": "mañana" if s.start_time.hour < 12 else "tarde",
-        }
-        for s in availability.slots
-    ]
-    return {
-        "date": date_str,
-        "day_name": day_name,
-        "relative_day": relative_day,
-        "slots": slots,
-        "message": f"{'No hay' if not slots else str(len(slots))} horarios disponibles para {date_label}.",
-    }
+    dates = parse_requested_dates(args)
+    if isinstance(dates, dict):
+        return dates
+    return await availability_for_dates(ctx.office.id, dates, ctx.db)
 
 
 @_handler("create_appointment")
@@ -1202,69 +1147,38 @@ async def _handle_create_appointment(args: dict, ctx: DoctorToolContext) -> dict
     )
     appt_type = "follow_up" if is_returning else "first_visit"
 
-    duration = timedelta(minutes=duration_min)
-    end_dt = start_dt + duration
-
-    # Validate the slot and take the anti-race lock (doctor may override
-    # conflicts with allow_conflict=true after confirming).
-    guard_error = await _guard_slot(
-        ctx, start_dt, end_dt, bool(args.get("allow_conflict", False))
-    )
-    if guard_error:
-        return guard_error
-
-    # Google Calendar event
-    google_event_id = None
-    if ctx.office.google_calendar_token:
-        try:
-            google_event_id = await create_calendar_event(
-                office_id=ctx.office.id,
-                title=f"Cita: {patient.name}",
-                start_time=start_dt,
-                end_time=end_dt,
-                description=(
-                    f"Motivo: {reason}\n"
-                    + (f"Teléfono: {display_or_raw(patient.phone)}\n" if patient.phone else "")
-                    + "Agendada por el doctor"
-                ),
-                db=ctx.db,
-                color_id="9",
-            )
-        except Exception as e:
-            logger.error("doctor_create_gcal_failed", error=str(e))
-
-    appointment_id = uuid.uuid4()
-    appointment = Appointment(
-        id=appointment_id,
-        office_id=ctx.office.id,
+    outcome = await book_appointment(
+        ctx.db,
+        ctx.office,
         patient_id=patient.id,
-        start_datetime=start_dt,
-        end_datetime=end_dt,
-        duration_minutes=duration_min,
-        type=appt_type,
-        consultation_reason=reason,
-        status="scheduled",
-        google_event_id=google_event_id,
+        start_dt=start_dt,
+        duration_min=duration_min,
+        reason=reason,
+        appt_type=appt_type,
+        gcal_title=f"Cita: {patient.name}",
+        gcal_description=(
+            f"Motivo: {reason}\n"
+            + (f"Teléfono: {display_or_raw(patient.phone)}\n" if patient.phone else "")
+            + "Agendada por el doctor"
+        ),
+        redis_client=ctx.redis_client,
+        allow_conflict=bool(args.get("allow_conflict", False)),
     )
-    ctx.db.add(appointment)
-    await ctx.db.flush()
-
-    await _invalidate_avail(ctx, start_dt.date())
-    await schedule_reminders_for_appointment(
-        ctx.db, ctx.office.id, appointment_id, start_dt
-    )
+    if outcome.error:
+        return _doctor_booking_error(outcome)
+    appointment = outcome.appointment
 
     day_name = DAYS_ES[start_dt.weekday()]
-    logger.info("doctor_created_appointment", appointment_id=str(appointment_id))
+    logger.info("doctor_created_appointment", appointment_id=str(appointment.id))
 
     return {
         "success": True,
-        "appointment_id": str(appointment_id),
+        "appointment_id": str(appointment.id),
         "patient_name": patient.name,
         "date": date_str,
         "time": time_str,
         "day_name": day_name,
-        "formatted": f"{day_name} {start_dt.strftime('%d/%m/%Y')} a las {start_dt.strftime('%H:%M')}",
+        "formatted": format_appointment_dt(start_dt),
         "reason": reason,
         "duration_minutes": duration_min,
     }
@@ -1293,31 +1207,9 @@ async def _handle_reschedule_appointment(args: dict, ctx: DoctorToolContext) -> 
     except ValueError:
         return {"error": f"Fecha u hora invalida: {new_date} {new_time}"}
 
-    # Validate the new slot and take the anti-race lock BEFORE touching the old
-    # appointment, so a conflict leaves it intact. allow_conflict lets the
-    # doctor overbook deliberately after confirming.
-    duration = timedelta(minutes=appointment.duration_minutes or 30)
-    guard_error = await _guard_slot(
-        ctx, new_start, new_start + duration, bool(args.get("allow_conflict", False))
-    )
-    if guard_error:
-        return guard_error
-
-    # Format old appointment
-    old_dt = appointment.start_datetime
-    old_dt = old_dt.astimezone(MX_TIMEZONE) if old_dt.tzinfo else old_dt.replace(tzinfo=MX_TIMEZONE)
-    old_formatted = f"{DAYS_ES[old_dt.weekday()]} {old_dt.strftime('%d/%m/%Y')} a las {old_dt.strftime('%H:%M')}"
-
-    # Cancel old appointment in Google Calendar
-    if ctx.office.google_calendar_token:
-        try:
-            await cancel_appointment_in_calendar(appt_id, ctx.office.id, ctx.db)
-        except Exception as e:
-            logger.error("doctor_reschedule_cancel_gcal_failed", error=str(e))
-
-    appointment.status = "cancelled"
-    appointment.cancelled_by = "doctor"
-    appointment.cancellation_reason = "Reagendada por el doctor"
+    old_formatted = format_appointment_dt(appointment.start_datetime)
+    old_date = localize_mx(appointment.start_datetime).date()
+    reason = appointment.consultation_reason or "Consulta"
 
     # Get patient info
     patient_name = ""
@@ -1330,52 +1222,43 @@ async def _handle_reschedule_appointment(args: dict, ctx: DoctorToolContext) -> 
     if patient_obj:
         patient_name = patient_obj.name or ""
         patient_phone_display = display_or_raw(patient_obj.phone) if patient_obj.phone else ""
-
-    new_end = new_start + duration
-    reason = appointment.consultation_reason or "Consulta"
-
     phone_line = f"Teléfono: {patient_phone_display}\n" if patient_phone_display else ""
 
-    # Create new Google Calendar event
-    google_event_id = None
+    # Book the new slot first — a conflict leaves the old appointment intact.
+    # allow_conflict lets the doctor overbook deliberately after confirming.
+    outcome = await book_appointment(
+        ctx.db,
+        ctx.office,
+        patient_id=appointment.patient_id,
+        start_dt=new_start,
+        duration_min=appointment.duration_minutes or 30,
+        reason=reason,
+        appt_type=appointment.type,
+        gcal_title=f"Cita: {patient_name}",
+        gcal_description=f"Motivo: {reason}\n{phone_line}Reagendada por el doctor",
+        redis_client=ctx.redis_client,
+        allow_conflict=bool(args.get("allow_conflict", False)),
+    )
+    if outcome.error:
+        return _doctor_booking_error(outcome)
+    new_appointment = outcome.appointment
+
+    # Cancel old appointment in Google Calendar
     if ctx.office.google_calendar_token:
         try:
-            google_event_id = await create_calendar_event(
-                office_id=ctx.office.id,
-                title=f"Cita: {patient_name}",
-                start_time=new_start,
-                end_time=new_end,
-                description=f"Motivo: {reason}\n{phone_line}Reagendada por el doctor",
-                db=ctx.db,
-                color_id="9",
-            )
+            await cancel_appointment_in_calendar(appt_id, ctx.office.id, ctx.db)
         except Exception as e:
-            logger.error("doctor_reschedule_gcal_create_failed", error=str(e))
+            logger.error("doctor_reschedule_cancel_gcal_failed", error=str(e))
 
-    new_appointment_id = uuid.uuid4()
-    new_appointment = Appointment(
-        id=new_appointment_id,
-        office_id=ctx.office.id,
-        patient_id=appointment.patient_id,
-        start_datetime=new_start,
-        end_datetime=new_end,
-        duration_minutes=appointment.duration_minutes or 30,
-        type=appointment.type,
-        consultation_reason=reason,
-        status="scheduled",
-        google_event_id=google_event_id,
-    )
-    ctx.db.add(new_appointment)
-    await ctx.db.flush()
+    appointment.status = "cancelled"
+    appointment.cancelled_by = "doctor"
+    appointment.cancellation_reason = "Reagendada por el doctor"
 
-    await _invalidate_avail(ctx, old_dt.date(), new_start.date())
-    await schedule_reminders_for_appointment(
-        ctx.db, ctx.office.id, new_appointment_id, new_start
-    )
+    await _invalidate_avail(ctx, old_date)
 
     new_day_name = DAYS_ES[new_start.weekday()]
-    new_formatted = f"{new_day_name} {new_start.strftime('%d/%m/%Y')} a las {new_start.strftime('%H:%M')}"
-    logger.info("doctor_rescheduled_appointment", old_id=appt_id_str, new_id=str(new_appointment_id))
+    new_formatted = format_appointment_dt(new_start)
+    logger.info("doctor_rescheduled_appointment", old_id=appt_id_str, new_id=str(new_appointment.id))
 
     # The model writes and sends the patient notification itself via
     # send_message_to_patient (see the doctor prompt) — we only return the facts.
@@ -1383,7 +1266,7 @@ async def _handle_reschedule_appointment(args: dict, ctx: DoctorToolContext) -> 
         "success": True,
         "old_appointment_id": appt_id_str,
         "old_formatted": old_formatted,
-        "new_appointment_id": str(new_appointment_id),
+        "new_appointment_id": str(new_appointment.id),
         "new_date": new_date,
         "new_time": new_time,
         "new_day_name": new_day_name,

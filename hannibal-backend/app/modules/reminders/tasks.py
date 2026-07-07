@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import sys
-import traceback
 from uuid import UUID, uuid4
 from datetime import datetime, timedelta, date
 import asyncio
@@ -55,16 +53,12 @@ FREETEXT_REMINDER_MAP = {
 }
 
 
-def _log(msg: str):
-    """Print to stderr so Railway always captures it."""
-    print(f"[CELERY] {msg}", file=sys.stderr, flush=True)
+def _log(msg: str) -> None:
+    logger.info("celery_task", detail=msg)
 
 
-def _log_exception(task_name: str, e: Exception):
-    """Log full traceback to stderr."""
-    _log(f"{task_name} FAILED: {e}")
-    traceback.print_exc(file=sys.stderr)
-    sys.stderr.flush()
+def _log_exception(task_name: str, e: Exception) -> None:
+    logger.error("celery_task_failed", task=task_name, error=str(e), exc_info=True)
 
 
 async def _get_or_create_conversation(
@@ -474,16 +468,39 @@ async def _send_confirmation_requests_async():
                         appointment_time=appointment_time,
                     )
 
-                    # Free text within the 24h window, approved template otherwise
-                    await _send_free_or_template(
-                        meta_client,
-                        db,
-                        office,
-                        patient,
-                        free_text=free_text,
-                        template_name=TEMPLATE_CONFIRMATION_DAY_BEFORE,
-                        params=params,
-                    )
+                    # Inside the 24h window: interactive buttons (one tap to
+                    # confirm/cancel; the tapped title reaches the LLM as text).
+                    # Outside the window: the approved template, as before.
+                    if await service_window_open(db, office.id, patient.whatsapp_id):
+                        message_id = await meta_client.send_interactive_buttons(
+                            phone_number_id=office.whatsapp_phone_id,
+                            token=office.whatsapp_token,
+                            to=patient.whatsapp_id,
+                            body_text=free_text,
+                            buttons=[
+                                {"id": f"confirm_{appointment.id}", "title": "Sí, confirmo"},
+                                {"id": f"cancel_{appointment.id}", "title": "No podré asistir"},
+                            ],
+                        )
+                        await _record_outgoing_message(
+                            db,
+                            office,
+                            patient,
+                            content=free_text,
+                            via="interactive",
+                            template_name=TEMPLATE_CONFIRMATION_DAY_BEFORE,
+                            whatsapp_message_id=message_id,
+                        )
+                    else:
+                        await _send_free_or_template(
+                            meta_client,
+                            db,
+                            office,
+                            patient,
+                            free_text=free_text,
+                            template_name=TEMPLATE_CONFIRMATION_DAY_BEFORE,
+                            params=params,
+                        )
 
                     # Text fed to the AI history so it has context on the reply
                     message = free_text

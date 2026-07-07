@@ -62,18 +62,23 @@ Red flags that you are patching:
 
 ## Prompt structure
 
-Both prompts use this structure, in this order:
+Both prompt builders return a **(static, dynamic) tuple**, not a single string. The split exists for **prompt caching**: the static part must be byte-identical across every turn of a conversation (it may vary per office/patient, never per turn), so providers can cache it as a prefix — `OpenAIService` joins the parts static-first (automatic prefix caching), `AnthropicService` sends them as system blocks with `cache_control` on the static one. **Anything that changes per turn goes in the dynamic part** — putting per-turn data in the static part silently kills the cache.
+
+Static part, in this order:
 
 1. Identity line ("Eres … de {office.name}")
-2. `FECHA Y HORA ACTUAL: …` and `ZONA HORARIA: …` — two separate lines
-3. `IMPORTANTE:` relative-date paragraph
-4. *(patient only)* `INFORMACIÓN DEL CONSULTORIO` / pricing / patient type
-5. `CÓMO COMUNICARTE:` — bullets, communication style only
-6. `CÓMO TRABAJAR:` — bullets, high-level principles; enumerate the available tools at a high level
-7. Domain sections as needed (e.g. `MENSAJES A PACIENTES`, `CONFIRMACIÓN DE CITAS`)
-8. `MENSAJES NO-TEXTO:`
-9. `REGLAS CRÍTICAS:` — **numbered**
-10. Closing one-line objective ("Tu objetivo es …")
+2. *(patient only)* `INFORMACIÓN DEL CONSULTORIO` / pricing / patient type
+3. `CÓMO COMUNICARTE:` — bullets, communication style only
+4. `CÓMO TRABAJAR:` — bullets, high-level principles; enumerate the available tools at a high level
+5. Domain sections as needed (e.g. `MENSAJES A PACIENTES`, `CONFIRMACIÓN DE CITAS`)
+6. `MENSAJES NO-TEXTO:`
+7. `REGLAS CRÍTICAS:` — **numbered**
+8. Closing one-line objective ("Tu objetivo es …")
+
+Dynamic part (appended after the static part in the final prompt):
+
+9. `FECHA Y HORA ACTUAL: …` / `ZONA HORARIA: …` + the reference-calendar block
+10. Gated per-turn context (e.g. `CONFIRMACIÓN PENDIENTE`, `URGENCIAS PENDIENTES`)
 
 Inject office config (tone, names, custom prompt) via f-string params, never hardcode.
 
@@ -84,6 +89,7 @@ Inject office config (tone, names, custom prompt) via f-string params, never har
 - Handlers are `async def _handle_<action>(args, ctx)` and return a **JSON-serializable dict**.
 - **Errors** are returned (not raised) as `{"error": "<mensaje en español>"}` so the model can relay them naturally. The dispatcher catches unexpected exceptions and logs them.
 - Every meaningful outcome and failure branch should **log** (see below).
+- **Shared logic lives in shared modules, not copy-pasted between the two flows:** booking goes through `scheduling/booking.book_appointment` (validation, slot lock, GCal event, cache invalidation, reminders — one place); presentation helpers (Spanish datetime formatting, the availability payload) live in `ai/tool_helpers.py`. If you find yourself writing the same handler body in both files, extract it.
 
 ## Language
 
