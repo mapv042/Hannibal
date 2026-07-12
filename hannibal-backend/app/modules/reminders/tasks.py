@@ -39,6 +39,11 @@ logger = get_logger(__name__)
 
 MX_TZ = ZoneInfo("America/Mexico_City")
 
+# Patient-facing confirmation requests may only go out between these MX-local
+# hours (inclusive start, exclusive end); outside it the task defers itself.
+CONFIRMATION_WINDOW_START_HOUR = 8
+CONFIRMATION_WINDOW_END_HOUR = 20
+
 FLAG_MAP = {
     "day_before": "reminder_day_before_sent",
     "4h": "reminder_4h_sent",
@@ -399,9 +404,26 @@ async def _send_confirmation_requests_async():
     from app.modules.conversation.schemas import SessionContext
     from app.db.models import Conversation
 
+    # Safety net: if the task fires outside the allowed window (e.g. a beat
+    # schedule misconfigured to UTC), defer to the next 8:00 AM MX instead of
+    # messaging patients in the middle of the night.
+    now_mx = datetime.now(MX_TZ)
+    if not (CONFIRMATION_WINDOW_START_HOUR <= now_mx.hour < CONFIRMATION_WINDOW_END_HOUR):
+        next_run = now_mx.replace(
+            hour=CONFIRMATION_WINDOW_START_HOUR, minute=0, second=0, microsecond=0
+        )
+        if next_run <= now_mx:
+            next_run += timedelta(days=1)
+        send_confirmation_requests.apply_async(eta=next_run)
+        logger.warning(
+            "confirmation_requests_outside_window",
+            fired_at=now_mx.isoformat(),
+            deferred_to=next_run.isoformat(),
+        )
+        return
+
     async with get_async_session_maker()() as db:
         # Use Mexico City timezone to determine "tomorrow"
-        now_mx = datetime.now(MX_TZ)
         tomorrow = (now_mx + timedelta(days=1)).date()
 
         start_of_tomorrow = datetime.combine(tomorrow, datetime.min.time(), tzinfo=MX_TZ)

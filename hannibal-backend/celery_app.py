@@ -20,9 +20,10 @@ celery_app = Celery(
 
 # Configure Celery
 celery_app.conf.update(
-    # Timezone
+    # Timezone. enable_utc must stay False: with it enabled, beat interprets
+    # crontab hours in UTC and the daily tasks fire 6h early (madrugada MX).
     timezone="America/Mexico_City",
-    enable_utc=True,
+    enable_utc=False,
     # Task configuration
     task_serializer="json",
     accept_content=["json"],

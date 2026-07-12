@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import datetime, date as date_cls, time as time_type, timedelta
 from typing import Any
@@ -35,6 +36,11 @@ from app.utils.logger import get_logger
 from app.utils.phone import display_or_raw, normalize_phone, to_whatsapp_id
 
 logger = get_logger(__name__)
+
+# Pending patient-message drafts, awaiting the doctor's approval before send.
+# JSON dict {patient_id: {"patient_name", "message"}} — one draft per patient.
+DOCTOR_MSG_DRAFTS_KEY = "doctor_msg_drafts:{office_id}"
+DOCTOR_MSG_DRAFTS_TTL = 900  # 15 minutes
 
 
 # ---------------------------------------------------------------------------
@@ -150,8 +156,10 @@ DOCTOR_TOOL_DEFINITIONS = [
     {
         "name": "send_message_to_patient",
         "description": (
-            "Envía un mensaje de WhatsApp a un paciente específico. "
-            "El paciente se identifica por nombre."
+            "Guarda un BORRADOR de mensaje de WhatsApp para un paciente (identificado "
+            "por nombre). NO envía nada: el doctor debe ver el texto exacto y aprobarlo, "
+            "y el envío se hace con confirm_send_messages. Si el doctor pide cambios, "
+            "vuelve a llamarla con el texto corregido (reemplaza el borrador anterior)."
         ),
         "input_schema": {
             "type": "object",
@@ -170,6 +178,25 @@ DOCTOR_TOOL_DEFINITIONS = [
                 },
             },
             "required": ["patient_name", "message"],
+        },
+    },
+    {
+        "name": "confirm_send_messages",
+        "description": (
+            "Envía o descarta los borradores de mensajes a pacientes pendientes. Úsala "
+            "SOLO después de mostrarle al doctor el texto exacto de cada borrador: con "
+            "approved=true se envían tal cual el doctor los vio (todos los pendientes); "
+            "con approved=false se descartan."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "approved": {
+                    "type": "boolean",
+                    "description": "true si el doctor aprobó el envío; false si lo descartó.",
+                },
+            },
+            "required": ["approved"],
         },
     },
     {
@@ -304,11 +331,11 @@ DOCTOR_TOOL_DEFINITIONS = [
         "name": "reschedule_appointment",
         "description": (
             "Reagenda una cita existente a un nuevo horario. Cancela la cita anterior "
-            "y crea una nueva atómicamente, y le avisa al paciente automáticamente del "
-            "nuevo horario por WhatsApp. El doctor no necesita confirmación extra. "
-            "Valida que el nuevo horario esté libre; si está ocupado o fuera de horario "
-            "devuelve el conflicto para que el doctor decida (puede sobreagendar con "
-            "allow_conflict=true)."
+            "y crea una nueva atómicamente. El doctor no necesita confirmación extra "
+            "para reagendar; el aviso al paciente se redacta aparte con "
+            "send_message_to_patient. Valida que el nuevo horario esté libre; si está "
+            "ocupado o fuera de horario devuelve el conflicto para que el doctor decida "
+            "(puede sobreagendar con allow_conflict=true)."
         ),
         "input_schema": {
             "type": "object",
@@ -601,9 +628,11 @@ async def _handle_cancel_appointment(args: dict, ctx: DoctorToolContext) -> dict
         "reason": reason,
         "patient_name": patient.name if patient else None,
         "next_step": (
-            f"El horario {formatted} quedó libre y el bot podría reofrecerlo a otro "
-            "paciente. Pregúntale al doctor si quiere que lo bloquees con block_time para "
-            "que no se reagende, o si prefiere dejarlo abierto — no lo asumas."
+            "El paciente aún NO sabe de la cancelación: redacta su aviso con "
+            "send_message_to_patient (queda como borrador para que el doctor lo apruebe). "
+            f"Además, el horario {formatted} quedó libre y el bot podría reofrecerlo a otro "
+            "paciente — pregúntale al doctor si quiere que lo bloquees con block_time o "
+            "prefiere dejarlo abierto, no lo asumas."
         ),
     }
 
@@ -803,6 +832,31 @@ async def _get_or_create_patient_conversation(
     return conversation
 
 
+async def _load_message_drafts(ctx: DoctorToolContext) -> dict:
+    """Load the office's pending patient-message drafts from Redis."""
+    key = DOCTOR_MSG_DRAFTS_KEY.format(office_id=ctx.office.id)
+    try:
+        data = await ctx.redis_client.get(key)
+        if data:
+            return json.loads(data)
+    except Exception as e:
+        logger.warning("doctor_message_drafts_load_error", office_id=str(ctx.office.id), error=str(e))
+    return {}
+
+
+async def _save_message_drafts(ctx: DoctorToolContext, drafts: dict) -> None:
+    key = DOCTOR_MSG_DRAFTS_KEY.format(office_id=ctx.office.id)
+    await ctx.redis_client.setex(key, DOCTOR_MSG_DRAFTS_TTL, json.dumps(drafts))
+
+
+async def _clear_message_drafts(ctx: DoctorToolContext) -> None:
+    key = DOCTOR_MSG_DRAFTS_KEY.format(office_id=ctx.office.id)
+    try:
+        await ctx.redis_client.delete(key)
+    except Exception as e:
+        logger.warning("doctor_message_drafts_clear_error", office_id=str(ctx.office.id), error=str(e))
+
+
 @_handler("send_message_to_patient")
 async def _handle_send_message(args: dict, ctx: DoctorToolContext) -> dict:
     patient_name = args.get("patient_name", "").strip()
@@ -836,42 +890,62 @@ async def _handle_send_message(args: dict, ctx: DoctorToolContext) -> dict:
         logger.warning("doctor_send_message_no_whatsapp", office_id=str(ctx.office.id), patient_id=str(patient.id), patient_name=patient.name)
         return {"error": f"El paciente {patient.name} no tiene WhatsApp registrado."}
 
-    # Within the 24h window we may send the doctor's text as-is (free); outside
-    # it, Meta rejects free text, so wrap it in the approved office_message
-    # template (which is billed). Either way the patient gets the message.
-    try:
-        if await service_window_open(ctx.db, ctx.office.id, patient.whatsapp_id):
-            wa_message_id = await ctx.meta_client.send_text_message(
-                phone_number_id=ctx.office.whatsapp_phone_id,
-                token=ctx.office.whatsapp_token,
-                to=patient.whatsapp_id,
-                text=message,
-            )
-            via = "text"
-        else:
-            wa_message_id = await ctx.meta_client.send_template_message(
-                phone_number_id=ctx.office.whatsapp_phone_id,
-                token=ctx.office.whatsapp_token,
-                to=patient.whatsapp_id,
-                template_name=TEMPLATE_OFFICE_MESSAGE,
-                params=build_office_message_params(
-                    patient_name=patient.name or "paciente",
-                    location=ctx.office.name,
-                    text=message,
-                ),
-                language_code=TEMPLATE_LANGUAGE,
-            )
-            via = "template"
-    except Exception as e:
-        logger.error(
-            "doctor_send_message_send_failed",
-            office_id=str(ctx.office.id),
-            patient_id=str(patient.id),
+    # Save as a draft — nothing reaches the patient until the doctor approves
+    # the exact text and the model calls confirm_send_messages. The draft is
+    # what gets sent verbatim, so the preview the doctor sees is authoritative.
+    drafts = await _load_message_drafts(ctx)
+    drafts[str(patient.id)] = {"patient_name": patient.name, "message": message}
+    await _save_message_drafts(ctx, drafts)
+
+    logger.info(
+        "doctor_message_draft_saved",
+        office_id=str(ctx.office.id),
+        patient_id=str(patient.id),
+        pending_drafts=len(drafts),
+    )
+
+    return {
+        "success": True,
+        "draft_saved": True,
+        "patient_name": patient.name,
+        "draft_message": message,
+        "next_step": (
+            "El mensaje NO se ha enviado: es un borrador. Muéstrale al doctor el texto "
+            "EXACTO del borrador y pregúntale si lo envía. Solo cuando lo apruebe, llama "
+            "confirm_send_messages con approved=true — no lo asumas."
+        ),
+    }
+
+
+async def _send_patient_message(ctx: DoctorToolContext, patient: Patient, message: str) -> str:
+    """Send one approved message to a patient and persist it. Returns the WA message id.
+
+    Within the 24h window we may send the text as-is (free); outside it, Meta
+    rejects free text, so wrap it in the approved office_message template
+    (which is billed). Either way the patient gets the message.
+    """
+    if await service_window_open(ctx.db, ctx.office.id, patient.whatsapp_id):
+        wa_message_id = await ctx.meta_client.send_text_message(
+            phone_number_id=ctx.office.whatsapp_phone_id,
+            token=ctx.office.whatsapp_token,
             to=patient.whatsapp_id,
-            error=str(e),
-            exc_info=True,
+            text=message,
         )
-        return {"error": "No se pudo enviar el mensaje al paciente. Intenta de nuevo."}
+        via = "text"
+    else:
+        wa_message_id = await ctx.meta_client.send_template_message(
+            phone_number_id=ctx.office.whatsapp_phone_id,
+            token=ctx.office.whatsapp_token,
+            to=patient.whatsapp_id,
+            template_name=TEMPLATE_OFFICE_MESSAGE,
+            params=build_office_message_params(
+                patient_name=patient.name or "paciente",
+                location=ctx.office.name,
+                text=message,
+            ),
+            language_code=TEMPLATE_LANGUAGE,
+        )
+        via = "template"
 
     # Persist the outgoing message with delivery tracking
     conversation = await _get_or_create_patient_conversation(
@@ -891,13 +965,68 @@ async def _handle_send_message(args: dict, ctx: DoctorToolContext) -> dict:
     await ctx.db.flush()
 
     logger.info("doctor_sent_message", patient_id=str(patient.id), patient_name=patient.name, wa_message_id=wa_message_id)
+    return wa_message_id
 
-    return {
+
+@_handler("confirm_send_messages")
+async def _handle_confirm_send_messages(args: dict, ctx: DoctorToolContext) -> dict:
+    approved = args.get("approved")
+    if approved is None:
+        return {"error": "Se requiere approved=true o approved=false."}
+
+    drafts = await _load_message_drafts(ctx)
+    if not drafts:
+        return {"error": "No hay borradores pendientes. Crea uno con send_message_to_patient."}
+
+    if not approved:
+        await _clear_message_drafts(ctx)
+        logger.info("doctor_message_drafts_discarded", office_id=str(ctx.office.id), count=len(drafts))
+        return {
+            "success": True,
+            "discarded": [d["patient_name"] for d in drafts.values()],
+            "next_step": "Confírmale al doctor que no se envió nada a los pacientes.",
+        }
+
+    sent_to: list[str] = []
+    failed: list[str] = []
+    for patient_id_str, draft in drafts.items():
+        try:
+            patient = await ctx.db.get(Patient, uuid.UUID(patient_id_str))
+        except ValueError:
+            patient = None
+        if not patient or patient.office_id != ctx.office.id or not patient.whatsapp_id:
+            failed.append(draft["patient_name"])
+            continue
+        try:
+            await _send_patient_message(ctx, patient, draft["message"])
+            sent_to.append(patient.name)
+        except Exception as e:
+            logger.error(
+                "doctor_send_message_send_failed",
+                office_id=str(ctx.office.id),
+                patient_id=str(patient.id),
+                to=patient.whatsapp_id,
+                error=str(e),
+                exc_info=True,
+            )
+            failed.append(patient.name)
+
+    await _clear_message_drafts(ctx)
+
+    if not sent_to:
+        return {"error": "No se pudo enviar ningún mensaje. Intenta de nuevo."}
+
+    result = {
         "success": True,
-        "patient_name": patient.name,
-        "message_sent": message,
-        "next_step": "El mensaje fue enviado pero la entrega NO está confirmada. Usa check_message_delivery para verificar si llegó.",
+        "sent_to": sent_to,
+        "next_step": (
+            "Los mensajes fueron enviados pero la entrega NO está confirmada. "
+            "Usa check_message_delivery si el doctor pregunta si llegaron."
+        ),
     }
+    if failed:
+        result["failed"] = failed
+    return result
 
 
 @_handler("check_message_delivery")
@@ -1262,8 +1391,8 @@ async def _handle_reschedule_appointment(args: dict, ctx: DoctorToolContext) -> 
     new_formatted = format_appointment_dt(new_start)
     logger.info("doctor_rescheduled_appointment", old_id=appt_id_str, new_id=str(new_appointment.id))
 
-    # The model writes and sends the patient notification itself via
-    # send_message_to_patient (see the doctor prompt) — we only return the facts.
+    # The model writes the patient notification itself via
+    # send_message_to_patient (draft + doctor approval) — we return the facts.
     return {
         "success": True,
         "old_appointment_id": appt_id_str,
@@ -1275,6 +1404,12 @@ async def _handle_reschedule_appointment(args: dict, ctx: DoctorToolContext) -> 
         "new_formatted": new_formatted,
         "reason": reason,
         "patient_name": patient_name,
+        "next_step": (
+            "El paciente aún NO sabe del cambio. Redacta su aviso con "
+            "send_message_to_patient (queda como borrador) y, cuando termines todos "
+            "los cambios que pidió el doctor, respóndele con el resumen de citas "
+            "movidas y el texto de los borradores para que apruebe el envío."
+        ),
     }
 
 

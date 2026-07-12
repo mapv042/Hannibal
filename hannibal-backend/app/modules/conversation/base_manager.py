@@ -17,7 +17,9 @@ from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-MAX_TOOL_ITERATIONS = 5
+# Must fit batch instructions (e.g. the doctor rescheduling several
+# appointments in one message: lookup + N reschedules + N draft notices).
+MAX_TOOL_ITERATIONS = 10
 
 
 class BaseToolConversationManager:
