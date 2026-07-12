@@ -32,7 +32,7 @@ from sqlalchemy.dialects.postgresql import UUID, ARRAY, JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
-from app.db.types import EncryptedText
+from app.db.types import EncryptedJSON, EncryptedText
 
 
 class Office(Base):
@@ -117,8 +117,8 @@ class Office(Base):
 
     # Google Calendar Integration
     google_calendar_token: Mapped[Optional[dict]] = mapped_column(
-        JSONB, nullable=True
-    )  # encrypted
+        EncryptedJSON, nullable=True
+    )  # OAuth access+refresh tokens, Fernet-encrypted at rest (app/db/types.py)
     google_calendar_id: Mapped[Optional[str]] = mapped_column(
         String(255), nullable=True
     )

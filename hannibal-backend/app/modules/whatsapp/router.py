@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
 import time
 import uuid as uuid_module
 from typing import Optional, Dict, Any
@@ -13,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 import redis.asyncio as redis
 
 from app.config import settings
-from app.core.dependencies import get_db, get_redis
+from app.core.dependencies import get_current_user, get_db, get_redis
 from app.middleware.rate_limiter import limiter
 from app.db.base import get_async_session_maker
 from app.utils.logger import get_logger
@@ -138,7 +139,8 @@ async def verify_webhook(
             detail="Invalid hub.mode",
         )
 
-    if hub_verify_token != settings.meta_verify_token:
+    # Constant-time compare to avoid leaking the token via response timing.
+    if not hmac.compare_digest(hub_verify_token, settings.meta_verify_token):
         logger.warning(
             "webhook_verify_token_mismatch",
             provided=hub_verify_token[:8] + "..." if hub_verify_token else None,
@@ -563,9 +565,42 @@ async def _mirror_doctor_message_to_session(
 # ============================================================================
 
 
+async def _require_owned_office(
+    office_id: str,
+    current_user: dict,
+    db: AsyncSession,
+):
+    """Load an office and assert the authenticated user owns it.
+
+    Returns the Office. Raises 400 on a malformed id and 404 when the office
+    doesn't exist OR isn't owned by the caller — the same response for both so
+    an attacker can't enumerate which office ids are real.
+    """
+    import uuid as uuid_lib
+    from app.db.models import Office
+
+    try:
+        office_uuid = uuid_lib.UUID(office_id)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid office_id format",
+        )
+
+    office = await db.get(Office, office_uuid)
+    user_id = current_user.get("sub")
+    if not office or str(office.user_id) != str(user_id):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Office not found",
+        )
+    return office
+
+
 @auth_router.post("/embedded-signup")
 async def complete_whatsapp_onboarding(
     request: Request,
+    current_user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> Dict[str, str]:
     """
@@ -600,6 +635,9 @@ async def complete_whatsapp_onboarding(
                 detail="Missing required fields",
             )
 
+        # Only the office's owner may attach WhatsApp credentials to it.
+        await _require_owned_office(office_id, current_user, db)
+
         # TODO: Import and use provisioning functions
         # from app.modules.whatsapp.provisioning import register_meta_number
         # success = await register_meta_number(
@@ -623,6 +661,8 @@ async def complete_whatsapp_onboarding(
             "message": "WhatsApp configured successfully",
         }
 
+    except HTTPException:
+        raise  # auth/validation errors must reach the client unchanged
     except Exception as e:
         logger.error("whatsapp_onboarding_error", error=str(e), exc_info=True)
         raise HTTPException(
@@ -634,12 +674,11 @@ async def complete_whatsapp_onboarding(
 @auth_router.get("/status/{office_id}")
 async def get_whatsapp_activation_status(
     office_id: str,
+    current_user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> Dict[str, Any]:
     """
-    Get WhatsApp activation status for an office.
-
-    Returns comprehensive information about the office's WhatsApp setup.
+    Get WhatsApp activation status for an office (owner only).
 
     Args:
         office_id: UUID of the office
@@ -648,20 +687,11 @@ async def get_whatsapp_activation_status(
         Dictionary with activation status and credentials
     """
     try:
-        import uuid as uuid_lib
-        office_uuid = uuid_lib.UUID(office_id)
+        office = await _require_owned_office(office_id, current_user, db)
+        return await get_whatsapp_status(office.id, db)
 
-        # TODO: Import provisioning function
-        # from app.modules.whatsapp.provisioning import get_whatsapp_status
-        status_info = await get_whatsapp_status(office_uuid, db)
-
-        return status_info
-
-    except ValueError:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid office_id format",
-        )
+    except HTTPException:
+        raise  # auth/validation errors must reach the client unchanged
     except Exception as e:
         logger.error(
             "whatsapp_status_error",

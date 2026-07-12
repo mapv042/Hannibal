@@ -92,6 +92,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Startup
     logger.info("Starting Hannibal backend")
     configure_logging("INFO")
+    # Fail fast (in production) on insecure secrets before serving any request.
+    settings.validate_secrets()
     init_sentry()
     await init_redis()
 

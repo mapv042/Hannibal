@@ -62,13 +62,21 @@ def validate_jwt(token: str) -> dict:
         Decoded token payload
 
     Raises:
-        UnauthorizedError: If token is invalid or expired
+        UnauthorizedError: If token is invalid, expired, or the server is
+            misconfigured with an empty signing secret.
     """
+    # Refuse to validate with an empty secret: python-jose would happily accept
+    # a token an attacker signed with the same empty secret, letting them forge
+    # any `sub`. This guard holds regardless of environment.
+    if not settings.jwt_secret:
+        raise UnauthorizedError("Server auth is misconfigured (missing JWT secret)")
+
     try:
         payload = jwt.decode(
             token,
             settings.jwt_secret,
             algorithms=["HS256"],
+            audience=settings.jwt_audience,
         )
         return payload
     except JWTError as e:

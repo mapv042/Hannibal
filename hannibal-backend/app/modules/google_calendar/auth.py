@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
+import secrets
 from typing import Optional
 from uuid import UUID
-import base64
-import json
 
+import redis.asyncio as aioredis
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
@@ -18,18 +18,31 @@ from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
+# OAuth state: an unguessable, single-use nonce mapped to the office id in Redis.
+# This is the CSRF defense — the callback trusts the office only if it presents
+# a nonce we minted, so an attacker can't forge a callback that binds their
+# authorization code (or their calendar) to someone else's office.
+OAUTH_STATE_KEY = "gcal_oauth_state:{nonce}"
+OAUTH_STATE_TTL = 600  # 10 minutes to complete the consent flow
 
-def get_google_oauth_url(office_id: UUID) -> str:
+
+async def get_google_oauth_url(office_id: UUID, redis_client: aioredis.Redis) -> str:
     """
-    Generate Google OAuth2 authorization URL.
+    Generate a Google OAuth2 authorization URL with a CSRF-safe state nonce.
 
     Args:
         office_id: Office ID
+        redis_client: Redis client used to store the state → office mapping
 
     Returns:
         Authorization URL
     """
     import urllib.parse
+
+    nonce = secrets.token_urlsafe(32)
+    await redis_client.setex(
+        OAUTH_STATE_KEY.format(nonce=nonce), OAUTH_STATE_TTL, str(office_id)
+    )
 
     params = {
         "client_id": settings.google_client_id,
@@ -43,10 +56,26 @@ def get_google_oauth_url(office_id: UUID) -> str:
         ),
         "access_type": "offline",
         "prompt": "consent",
-        "state": base64.b64encode(str(office_id).encode()).decode(),
+        "state": nonce,
     }
 
     return f"https://accounts.google.com/o/oauth2/v2/auth?{urllib.parse.urlencode(params)}"
+
+
+async def resolve_oauth_state(state: str, redis_client: aioredis.Redis) -> UUID:
+    """Resolve (and consume) an OAuth state nonce to its office id.
+
+    Single-use: the nonce is deleted on lookup so a leaked callback URL can't
+    be replayed. Raises GoogleCalendarError if the nonce is unknown/expired.
+    """
+    key = OAUTH_STATE_KEY.format(nonce=state)
+    office_id_str = await redis_client.get(key)
+    if not office_id_str:
+        raise GoogleCalendarError("Invalid or expired OAuth state")
+    await redis_client.delete(key)
+    if isinstance(office_id_str, bytes):
+        office_id_str = office_id_str.decode()
+    return UUID(office_id_str)
 
 
 async def exchange_code_for_token(
@@ -100,12 +129,11 @@ async def exchange_code_for_token(
                     now_mx() + timedelta(seconds=token_data["expires_in"])
                 ).isoformat()
 
-            # Store token in office
+            # Store token in office (encrypted at rest by the EncryptedJSON type)
             office = await db.get(Office, office_id)
             if not office:
                 raise GoogleCalendarError("Office not found")
 
-            # Encrypt token data before storing (placeholder)
             office.google_calendar_token = token_data
 
             await db.commit()

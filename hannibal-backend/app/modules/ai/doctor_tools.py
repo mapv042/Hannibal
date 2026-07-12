@@ -451,8 +451,10 @@ async def execute_doctor_tool(
     try:
         return await handler(arguments, ctx)
     except Exception as e:
+        # Log the detail; return a generic message (internal errors must not
+        # leak into the doctor-facing reply the LLM composes).
         logger.error("doctor_tool_execution_error", tool=tool_name, error=str(e), exc_info=True)
-        return {"error": f"Error al ejecutar {tool_name}: {str(e)}"}
+        return {"error": "Ocurrió un error al ejecutar la acción. Intenta de nuevo."}
 
 
 # ---------------------------------------------------------------------------
@@ -869,7 +871,7 @@ async def _handle_send_message(args: dict, ctx: DoctorToolContext) -> dict:
             error=str(e),
             exc_info=True,
         )
-        return {"error": f"No se pudo enviar el mensaje: {str(e)}"}
+        return {"error": "No se pudo enviar el mensaje al paciente. Intenta de nuevo."}
 
     # Persist the outgoing message with delivery tracking
     conversation = await _get_or_create_patient_conversation(

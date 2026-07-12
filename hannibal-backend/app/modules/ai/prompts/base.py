@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from app.utils.dates import build_date_reference_block, now_mx
+from app.utils.text import sanitize_for_prompt
 
 if TYPE_CHECKING:
     from app.db.models import Office
@@ -79,11 +80,13 @@ Para pacientes que ya han conversado contigo antes, salúdalos normalmente sin u
     if pricing_parts:
         pricing_section = "\n" + "\n".join(pricing_parts)
 
-    # Patient type context
+    # Patient type context. The name is patient-controlled free text, so
+    # sanitize it before it enters the prompt (defense against injection).
+    safe_patient_name = sanitize_for_prompt(patient_name)
     if is_returning_patient:
         name_line = (
-            f"- Nombre registrado: {patient_name}"
-            if patient_name
+            f"- Nombre registrado: {safe_patient_name}"
+            if safe_patient_name
             else "- Nombre: no registrado (pídeselo)"
         )
         patient_type_section = f"""

@@ -300,8 +300,10 @@ async def execute_tool(
     try:
         return await handler(arguments, ctx)
     except Exception as e:
+        # Log the detail for developers; return a generic message so internal
+        # errors (DB/driver text, etc.) never reach the patient via the LLM.
         logger.error("tool_execution_error", tool=tool_name, error=str(e), exc_info=True)
-        return {"error": f"Error al ejecutar {tool_name}: {str(e)}"}
+        return {"error": "Ocurrió un error al procesar tu solicitud. Intenta de nuevo en un momento."}
 
 
 # ---------------------------------------------------------------------------

@@ -42,9 +42,15 @@ class Settings(BaseSettings):
     google_client_secret: str = ""
     google_redirect_uri: str = ""
 
+    # Deployment environment: "development" | "production". In production the
+    # app refuses to start with placeholder/empty secrets (see validate_secrets).
+    environment: str = "development"
+
     # Security
     encryption_key: str = "0" * 64  # 64-char hex for AES-256
     jwt_secret: str = ""
+    # Supabase signs access tokens with aud="authenticated"; verified on decode.
+    jwt_audience: str = "authenticated"
 
     # Error tracking (optional)
     sentry_dsn: str | None = None
@@ -74,6 +80,34 @@ class Settings(BaseSettings):
         elif not url.startswith("postgresql+asyncpg://"):
             url = f"postgresql+asyncpg://{url}"
         return url
+
+    @property
+    def is_production(self) -> bool:
+        return self.environment.lower() in ("production", "prod")
+
+    def validate_secrets(self) -> None:
+        """Fail fast if a security-critical secret is empty/placeholder.
+
+        An empty JWT_SECRET makes tokens forgeable, and the default all-zero
+        ENCRYPTION_KEY makes "encrypted" data trivially decryptable — so in
+        production we refuse to start rather than run wide open. Called at app
+        startup (see main.lifespan).
+        """
+        problems = []
+        if not self.jwt_secret:
+            problems.append("JWT_SECRET is empty")
+        if self.encryption_key == "0" * 64:
+            problems.append("ENCRYPTION_KEY is the insecure default")
+        if not self.meta_app_secret:
+            problems.append("META_APP_SECRET is empty (webhook signatures cannot be verified)")
+
+        if problems:
+            message = "Insecure configuration: " + "; ".join(problems)
+            if self.is_production:
+                raise RuntimeError(message)
+            # In development, warn loudly but allow the app to run.
+            import warnings
+            warnings.warn(message, stacklevel=2)
 
     model_config = {
         "env_file": ".env",

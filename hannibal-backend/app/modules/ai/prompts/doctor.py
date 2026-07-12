@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Optional
 
 from app.utils.dates import build_date_reference_block, now_mx
+from app.utils.text import sanitize_for_prompt
 
 if TYPE_CHECKING:
     from app.db.models import Office
@@ -22,8 +23,12 @@ def _build_pending_urgencies_context(pending_urgencies: Optional[list[dict]]) ->
         "fecha y hora, o approved=false). Al resolverla se le avisa al paciente automáticamente:",
     ]
     for u in pending_urgencies:
+        # patient_name and reason are patient-supplied free text — sanitize
+        # before embedding them in the doctor's prompt (injection defense).
+        patient_name = sanitize_for_prompt(u["patient_name"])
+        reason = sanitize_for_prompt(u["reason"])
         lines.append(
-            f"- ID {u['id']}: {u['patient_name']} — motivo: {u['reason']} — "
+            f"- ID {u['id']}: {patient_name} — motivo: {reason} — "
             f"horario solicitado: {u['preferred']}"
         )
     return "\n".join(lines)

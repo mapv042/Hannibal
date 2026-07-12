@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 from uuid import UUID
-import base64
 
+import redis.asyncio as aioredis
 from fastapi import APIRouter, BackgroundTasks, Depends, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -13,6 +13,7 @@ from app.db.models import Office
 from app.modules.google_calendar.auth import (
     get_google_oauth_url,
     exchange_code_for_token,
+    resolve_oauth_state,
 )
 from app.modules.google_calendar.sync import import_calendar_changes
 from app.modules.google_calendar.watch import (
@@ -48,42 +49,52 @@ async def get_office_from_user(
 @router.get("/auth/url")
 async def get_oauth_url(
     office: Office = Depends(get_office_from_user),
+    redis_client: aioredis.Redis = Depends(get_redis),
 ):
     """
     Get Google OAuth2 authorization URL (requires JWT auth).
     """
-    auth_url = get_google_oauth_url(office.id)
+    auth_url = await get_google_oauth_url(office.id, redis_client)
     return {"auth_url": auth_url}
 
 
 @router.get("/setup/{office_id}")
 async def setup_oauth_url(
     office_id: str,
+    current_user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    redis_client: aioredis.Redis = Depends(get_redis),
 ):
     """
-    Get Google OAuth2 authorization URL without JWT (for initial setup).
-    Navigate to the returned URL in your browser to authorize.
+    Redirect to the Google OAuth2 authorization URL (owner only).
+
+    Requires JWT auth and that the caller owns the office — otherwise anyone
+    could start (and, via the callback, complete) a calendar connection for an
+    arbitrary office.
     """
     oid = UUID(office_id)
     office = await db.get(Office, oid)
-    if not office:
+    if not office or str(office.user_id) != str(current_user.get("sub")):
         raise NotFoundError("Office not found")
 
     from fastapi.responses import RedirectResponse
-    auth_url = get_google_oauth_url(office.id)
+    auth_url = await get_google_oauth_url(office.id, redis_client)
     return RedirectResponse(url=auth_url)
 
 
 @router.get("/auth/callback")
 async def process_oauth_callback(
     code: str = Query(..., description="OAuth2 authorization code"),
-    state: str = Query(..., description="State parameter with office ID"),
+    state: str = Query(..., description="CSRF state nonce issued at auth start"),
     db: AsyncSession = Depends(get_db),
+    redis_client: aioredis.Redis = Depends(get_redis),
 ):
     """
     Process Google OAuth2 callback (GET — Google redirects here).
-    After exchanging the code, redirects back to the frontend.
+
+    The office is resolved from the single-use state nonce we minted (not from
+    a client-supplied id), so a forged callback can't bind a code to an
+    arbitrary office. After exchanging the code, redirects back to the frontend.
     """
     from fastapi.responses import RedirectResponse
     from app.config import settings
@@ -91,7 +102,7 @@ async def process_oauth_callback(
     frontend_url = settings.frontend_url or "http://localhost:3000"
 
     try:
-        office_id = UUID(base64.b64decode(state).decode())
+        office_id = await resolve_oauth_state(state, redis_client)
 
         logger.info(
             "process_oauth_callback",

@@ -62,7 +62,13 @@ hannibal/
 ## Key concepts
 
 ### Multi-tenancy
-Every table has `office_id`. All queries must filter by office. Supabase RLS enforces isolation at DB level. Never query without `office_id`.
+Every table has `office_id`. All queries must filter by office. **Isolation is enforced only at the application layer** — the backend connects with the Postgres superuser role (`DATABASE_URL`), which **bypasses Supabase RLS**, so RLS is *not* a safety net for the API. Every query must filter by `office_id`, and every handler that loads a row by id must verify `row.office_id == ctx.office.id` before using it (the tool handlers already do this). Treat a missing `office_id` filter as a tenant-isolation bug, not just a correctness one.
+
+### Secrets & auth
+- `Settings.validate_secrets()` runs at startup (`main.lifespan`) and **refuses to boot in production** (`ENVIRONMENT=production`) if `JWT_SECRET` is empty, `ENCRYPTION_KEY` is the all-zero default, or `META_APP_SECRET` is empty; in development it warns. `validate_jwt` also refuses an empty `JWT_SECRET` unconditionally (an empty secret makes tokens forgeable) and verifies the Supabase `aud` claim (`JWT_AUDIENCE`, default `authenticated`).
+- Secrets encrypted at rest with Fernet (`ENCRYPTION_KEY`, via `app/db/types.py`): `Office.whatsapp_token` (`EncryptedText`) and `Office.google_calendar_token` (`EncryptedJSON`, OAuth access+refresh). Both read legacy plaintext rows transparently and re-encrypt on next write.
+- Google Calendar OAuth uses a single-use random `state` nonce stored in Redis (`gcal_oauth_state:{nonce}`, 10-min TTL) — the callback resolves the office from the nonce, never from a client-supplied id (CSRF defense).
+- Owner-scoped endpoints resolve the office from the JWT `sub` (or verify `office.user_id == sub` when an id is in the path) and return 404 — not 403 — for a non-owned office, so ids can't be enumerated.
 
 ### Database models (app/db/models.py) — 10 models (Office, AvailabilitySchedule, TimeBlock, Patient, Appointment, UrgencyRequest, ReminderRule, Conversation, Message, GoogleCalendarEvent)
 - `Office` — the practice/consultorio (tenant)
