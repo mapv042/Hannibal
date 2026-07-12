@@ -73,6 +73,9 @@ class ConversationManager(BaseToolConversationManager):
         Bot pause is enforced upstream (webhook router, Redis key) — single
         source of truth; see whatsapp/coexistence.check_pause.
         """
+        # Plain-value copy for the except handler: after a failed flush the
+        # session is in pending-rollback and touching ORM attributes re-raises.
+        office_id = str(office.id)
         try:
             # 1. Extract message (transcribes voice notes)
             message_data = await self.extract_message(message, office)
@@ -226,7 +229,7 @@ class ConversationManager(BaseToolConversationManager):
         except ConversationError:
             raise
         except Exception as e:
-            logger.error("conversation_processing_failed_v2", error=str(e), office_id=str(office.id))
+            logger.error("conversation_processing_failed_v2", error=str(e), office_id=office_id)
             raise ConversationError(f"Failed to process conversation: {str(e)}") from e
 
     # ------------------------------------------------------------------

@@ -98,6 +98,15 @@ class Settings(BaseSettings):
             problems.append("JWT_SECRET is empty")
         if self.encryption_key == "0" * 64:
             problems.append("ENCRYPTION_KEY is the insecure default")
+        else:
+            # A malformed key passes the default check but makes every
+            # encrypted-column WRITE raise at flush time (reads fall back to
+            # plaintext), poisoning sessions mid-request — fail at boot instead.
+            try:
+                if len(bytes.fromhex(self.encryption_key)) != 32:
+                    problems.append("ENCRYPTION_KEY must be 64 hex chars (32 bytes) — generate with: openssl rand -hex 32")
+            except ValueError:
+                problems.append("ENCRYPTION_KEY is not valid hex — generate with: openssl rand -hex 32")
         if not self.meta_app_secret:
             problems.append("META_APP_SECRET is empty (webhook signatures cannot be verified)")
 
