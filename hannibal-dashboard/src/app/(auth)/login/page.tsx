@@ -1,6 +1,7 @@
 'use client'
 
 import React, { useState } from 'react'
+import Link from 'next/link'
 import { createBrowserSupabaseClient } from '@/lib/supabase'
 import { Card, CardBody } from '@/components/ui/Card'
 import { Logo } from '@/components/ui/Logo'
@@ -78,7 +79,14 @@ export default function LoginPage() {
           </button>
 
           <p className="text-xs text-center text-gray-400">
-            Al continuar, aceptas nuestros términos de servicio
+            Al continuar, aceptas nuestros{' '}
+            <Link href="/terms" className="underline hover:text-gray-600">
+              términos de servicio
+            </Link>{' '}
+            y{' '}
+            <Link href="/privacy" className="underline hover:text-gray-600">
+              aviso de privacidad
+            </Link>
           </p>
         </CardBody>
       </Card>

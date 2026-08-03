@@ -180,4 +180,26 @@ body {
   .card {
     @apply rounded-2xl border border-gray-200 bg-white shadow-sm;
   }
+
+  .prose-legal {
+    @apply text-gray-700 leading-relaxed;
+  }
+  .prose-legal h2 {
+    @apply text-xl font-bold tracking-tight text-gray-900 mt-10 mb-3;
+  }
+  .prose-legal h2:first-child {
+    @apply mt-0;
+  }
+  .prose-legal p {
+    @apply mb-4 text-[15px];
+  }
+  .prose-legal ul {
+    @apply mb-4 pl-5 list-disc space-y-1.5 text-[15px];
+  }
+  .prose-legal strong {
+    @apply font-semibold text-gray-900;
+  }
+  .prose-legal a {
+    @apply text-primary-600 underline hover:text-primary-700;
+  }
 }
