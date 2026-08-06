@@ -412,7 +412,7 @@ function LandingFooter() {
         ))}
       </div>
       <div className="max-w-[1240px] mx-auto mt-10 pt-6 border-t border-[#1f2730] text-[13px] text-gray-500 flex flex-col sm:flex-row justify-between items-center gap-2">
-        <span>© 2026 Hannibal · Hecho en CDMX</span>
+        <span>© 2026 Hannibal · Operado por Miguel Angel Partida Velasco · Hecho en CDMX</span>
         <span className="flex gap-2">
           <Link href="/privacy" className="hover:text-white transition-colors">Aviso de privacidad</Link>
           ·
