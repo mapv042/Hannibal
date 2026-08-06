@@ -30,6 +30,7 @@ export default function RootLayout({
       <head>
         <meta charSet="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <meta name="facebook-domain-verification" content="4bcg78qx5hyxjvhml2lf3gl9qm4s2e" />
       </head>
       <body>{children}</body>
     </html>
