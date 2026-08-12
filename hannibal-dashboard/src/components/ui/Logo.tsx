@@ -8,7 +8,7 @@ interface LogoProps {
 }
 
 /**
- * Hannibal brand mark — rounded navy gradient tile with a stylized
+ * ArgosAI brand mark — rounded navy gradient tile with a stylized
  * "h" / chat-tail glyph. Matches the Claude Design reference.
  * Pass `light` to render the wordmark in white (e.g. on dark backgrounds).
  */
@@ -49,7 +49,7 @@ export const Logo: React.FC<LogoProps> = ({
           className={`font-bold ${light ? 'text-white' : 'text-gray-900'}`}
           style={{ fontSize: size * 0.65, letterSpacing: '-0.02em' }}
         >
-          Hannibal
+          ArgosAI
         </span>
       )}
     </div>

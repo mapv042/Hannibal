@@ -9,12 +9,12 @@ const inter = Inter({
 })
 
 export const metadata: Metadata = {
-  title: 'Hannibal - AI Assistant',
+  title: 'ArgosAI - AI Assistant',
   description: 'Control panel to manage your WhatsApp assistant',
-  keywords: ['hannibal', 'whatsapp', 'assistant', 'appointments', 'doctors'],
-  authors: [{ name: 'Hannibal' }],
+  keywords: ['argosai', 'whatsapp', 'assistant', 'appointments', 'doctors'],
+  authors: [{ name: 'ArgosAI' }],
   openGraph: {
-    title: 'Hannibal - AI Assistant',
+    title: 'ArgosAI - AI Assistant',
     description: 'Control panel to manage your WhatsApp assistant',
     type: 'website',
   },

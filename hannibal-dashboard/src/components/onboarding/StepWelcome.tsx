@@ -29,7 +29,7 @@ export const StepWelcome: React.FC<StepWelcomeProps> = ({ onNext }) => {
         </div>
 
         <h1 className="text-[32px] font-bold tracking-tight leading-tight text-gray-900 mb-3">
-          Bienvenido a Hannibal
+          Bienvenido a ArgosAI
         </h1>
         <p className="text-base text-gray-600 mb-9 max-w-md mx-auto leading-relaxed">
           Configura tu asistente de WhatsApp en menos de 10 minutos.

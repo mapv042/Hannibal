@@ -35,7 +35,7 @@ export const StepConnectWhatsApp: React.FC<StepConnectWhatsAppProps> = ({
           Conecta tu WhatsApp
         </h2>
         <p className="text-[15px] text-gray-600 mb-8 max-w-md mx-auto leading-relaxed">
-          Hannibal usara el numero de tu consultorio. No necesitas otro celular ni cambiar de SIM.
+          ArgosAI usara el numero de tu consultorio. No necesitas otro celular ni cambiar de SIM.
         </p>
 
         <div className="border border-gray-200 rounded-2xl p-6 mb-8 text-left max-w-md mx-auto shadow-xs">

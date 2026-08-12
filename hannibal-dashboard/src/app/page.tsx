@@ -119,7 +119,7 @@ function LandingHero() {
             </span>
           </h1>
           <p className="mt-5 mb-9 text-lg lg:text-[19px] leading-relaxed text-gray-600 max-w-[520px]">
-            Hannibal agenda citas, manda recordatorios, atiende cancelaciones y filtra urgencias por ti
+            ArgosAI agenda citas, manda recordatorios, atiende cancelaciones y filtra urgencias por ti
             — directamente desde el WhatsApp de tu consultorio. Sin contratar a nadie.
           </p>
           <div className="flex flex-wrap gap-3 items-center">
@@ -180,7 +180,7 @@ function LandingHero() {
       {/* Trusted by */}
       <div className="relative mt-20 pt-8 border-t border-gray-200 max-w-[1240px] mx-auto flex items-center justify-between flex-wrap gap-4">
         <span className="text-[13px] text-gray-500 uppercase tracking-wide font-semibold">
-          Confían en Hannibal
+          Confían en ArgosAI
         </span>
         <div className="flex flex-wrap gap-x-10 gap-y-2 items-center opacity-70">
           {['Clínica Polanco', 'Dr. R. Méndez', 'Dental Roma', 'Salud Mente', 'Pediátrica Norte', 'Dra. Castillo'].map(
@@ -233,7 +233,7 @@ function LandingBenefits() {
   return (
     <section id="beneficios" className="px-6 lg:px-14 py-24 bg-gray-50">
       <div className="max-w-[1240px] mx-auto">
-        <SectionEyebrow>Por qué Hannibal</SectionEyebrow>
+        <SectionEyebrow>Por qué ArgosAI</SectionEyebrow>
         <h2 className="text-4xl lg:text-[44px] font-bold tracking-tight my-4 max-w-3xl leading-tight text-gray-900">
           Tu consultorio atendido las 24 horas, los 7 días de la semana.
         </h2>
@@ -394,7 +394,7 @@ function LandingFooter() {
             <Logo size={28} light />
           </div>
           <p className="text-sm leading-relaxed max-w-xs text-[#a1a8b3]">
-            Hannibal es el asistente de WhatsApp para profesionales de salud independientes en México.
+            ArgosAI es el asistente de WhatsApp para profesionales de salud independientes en México.
             Hecho con cuidado en CDMX.
           </p>
         </div>
@@ -412,7 +412,7 @@ function LandingFooter() {
         ))}
       </div>
       <div className="max-w-[1240px] mx-auto mt-10 pt-6 border-t border-[#1f2730] text-[13px] text-gray-500 flex flex-col sm:flex-row justify-between items-center gap-2">
-        <span>© 2026 Hannibal · Operado por Miguel Angel Partida Velasco · Hecho en CDMX</span>
+        <span>© 2026 ArgosAI · Operado por Miguel Angel Partida Velasco · Hecho en CDMX</span>
         <span className="flex gap-2">
           <Link href="/privacy" className="hover:text-white transition-colors">Aviso de privacidad</Link>
           ·

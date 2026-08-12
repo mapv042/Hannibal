@@ -38,7 +38,7 @@ export function LegalLayout({
       </main>
 
       <footer className="px-6 py-8 border-t border-gray-200 text-center text-[13px] text-gray-500">
-        © 2026 Hannibal · Hecho en CDMX
+        © 2026 ArgosAI · Hecho en CDMX
       </footer>
     </div>
   )

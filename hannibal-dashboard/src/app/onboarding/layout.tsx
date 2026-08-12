@@ -27,7 +27,7 @@ export default function OnboardingLayout({
         {children}
       </div>
 
-      <p className="text-xs text-gray-400 mt-8">Hannibal &copy; 2026</p>
+      <p className="text-xs text-gray-400 mt-8">ArgosAI &copy; 2026</p>
     </div>
   )
 }
