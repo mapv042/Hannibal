@@ -25,23 +25,43 @@ logger = get_logger(__name__)
 OAUTH_STATE_KEY = "gcal_oauth_state:{nonce}"
 OAUTH_STATE_TTL = 600  # 10 minutes to complete the consent flow
 
+# Where the callback sends the browser once the exchange finishes. Keyed by an
+# opaque token (never a caller-supplied path) so the callback can't be turned
+# into an open redirect.
+RETURN_TO_PATHS = {
+    "onboarding": "/onboarding",
+    "settings": "/dashboard/settings",
+}
+DEFAULT_RETURN_TO = "onboarding"
 
-async def get_google_oauth_url(office_id: UUID, redis_client: aioredis.Redis) -> str:
+
+async def get_google_oauth_url(
+    office_id: UUID,
+    redis_client: aioredis.Redis,
+    return_to: str = DEFAULT_RETURN_TO,
+) -> str:
     """
     Generate a Google OAuth2 authorization URL with a CSRF-safe state nonce.
 
     Args:
         office_id: Office ID
         redis_client: Redis client used to store the state → office mapping
+        return_to: RETURN_TO_PATHS key naming the page to land on afterwards
 
     Returns:
         Authorization URL
     """
+    import json
     import urllib.parse
+
+    if return_to not in RETURN_TO_PATHS:
+        return_to = DEFAULT_RETURN_TO
 
     nonce = secrets.token_urlsafe(32)
     await redis_client.setex(
-        OAUTH_STATE_KEY.format(nonce=nonce), OAUTH_STATE_TTL, str(office_id)
+        OAUTH_STATE_KEY.format(nonce=nonce),
+        OAUTH_STATE_TTL,
+        json.dumps({"office_id": str(office_id), "return_to": return_to}),
     )
 
     params = {
@@ -62,20 +82,34 @@ async def get_google_oauth_url(office_id: UUID, redis_client: aioredis.Redis) ->
     return f"https://accounts.google.com/o/oauth2/v2/auth?{urllib.parse.urlencode(params)}"
 
 
-async def resolve_oauth_state(state: str, redis_client: aioredis.Redis) -> UUID:
-    """Resolve (and consume) an OAuth state nonce to its office id.
+async def resolve_oauth_state(
+    state: str, redis_client: aioredis.Redis
+) -> tuple[UUID, str]:
+    """Resolve (and consume) an OAuth state nonce to its office id + return page.
 
     Single-use: the nonce is deleted on lookup so a leaked callback URL can't
     be replayed. Raises GoogleCalendarError if the nonce is unknown/expired.
     """
+    import json
+
     key = OAUTH_STATE_KEY.format(nonce=state)
-    office_id_str = await redis_client.get(key)
-    if not office_id_str:
+    raw = await redis_client.get(key)
+    if not raw:
         raise GoogleCalendarError("Invalid or expired OAuth state")
     await redis_client.delete(key)
-    if isinstance(office_id_str, bytes):
-        office_id_str = office_id_str.decode()
-    return UUID(office_id_str)
+    if isinstance(raw, bytes):
+        raw = raw.decode()
+
+    try:
+        payload = json.loads(raw)
+    except ValueError:
+        # Nonce minted before return_to was stored (bare office id).
+        return UUID(raw), DEFAULT_RETURN_TO
+
+    return_to = payload.get("return_to", DEFAULT_RETURN_TO)
+    if return_to not in RETURN_TO_PATHS:
+        return_to = DEFAULT_RETURN_TO
+    return UUID(payload["office_id"]), return_to
 
 
 async def exchange_code_for_token(
@@ -229,6 +263,56 @@ async def refresh_google_token(
             error=str(e),
         )
         raise
+
+
+async def revoke_google_token(token_data: Optional[dict]) -> bool:
+    """Ask Google to revoke the office's grant. Best-effort.
+
+    Dropping our stored copy only makes the token unreachable *to us* — the
+    grant stays live on Google's side (still listed under the doctor's "Apps
+    with access to your account", and the old token would still work if it ever
+    leaked). Revoking kills it everywhere, which is what the privacy notice
+    promises.
+
+    Revoking the refresh token also invalidates every access token derived from
+    it, so one call is enough.
+
+    Returns True if Google acknowledged the revocation. Never raises — the
+    caller must still be able to disconnect locally if Google is unreachable.
+    """
+    import httpx
+
+    if not token_data:
+        return False
+
+    token = token_data.get("refresh_token") or token_data.get("access_token")
+    if not token:
+        return False
+
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                "https://oauth2.googleapis.com/revoke",
+                params={"token": token},
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+            )
+
+        # 400 is expected when the token was already expired or revoked —
+        # the grant is gone either way, which is the outcome we wanted.
+        if response.status_code == 200:
+            logger.info("google_token_revoked")
+            return True
+
+        logger.warning(
+            "google_token_revoke_rejected",
+            status_code=response.status_code,
+            response=response.text,
+        )
+        return False
+
+    except Exception as e:
+        logger.warning("google_token_revoke_failed", error=str(e))
+        return False
 
 
 async def get_valid_google_token(

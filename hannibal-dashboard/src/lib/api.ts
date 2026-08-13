@@ -277,9 +277,19 @@ export class ApiClient {
   }
 
   // Google Calendar Integration
-  async getGoogleCalendarAuthUrl(): Promise<ApiResponse<{ auth_url: string }>> {
-    return this.fetch<{ auth_url: string }>('/api/google-calendar/auth/url', {
-      method: 'GET',
+  /** `returnTo` names the page the OAuth callback sends the browser back to. */
+  async getGoogleCalendarAuthUrl(
+    returnTo: 'onboarding' | 'settings' = 'onboarding'
+  ): Promise<ApiResponse<{ auth_url: string }>> {
+    return this.fetch<{ auth_url: string }>(
+      `/api/google-calendar/auth/url?return_to=${returnTo}`,
+      { method: 'GET' }
+    )
+  }
+
+  async disconnectGoogleCalendar(): Promise<ApiResponse<{ success: boolean }>> {
+    return this.fetch<{ success: boolean }>('/api/google-calendar/disconnect', {
+      method: 'POST',
     })
   }
 
