@@ -10,9 +10,9 @@ interface StepDoneProps {
 }
 
 const nextSteps = [
-  { icon: Calendar, label: 'Ve tu agenda del dia en el panel' },
-  { icon: MessageSquare, label: 'Conecta WhatsApp cuando estes listo' },
-  { icon: Settings, label: 'Ajusta horarios desde Configuracion' },
+  { icon: Calendar, label: 'Ve tu agenda del día en el panel' },
+  { icon: MessageSquare, label: 'Conecta WhatsApp cuando estés listo' },
+  { icon: Settings, label: 'Ajusta horarios desde Configuración' },
 ]
 
 export const StepDone: React.FC<StepDoneProps> = ({
@@ -23,38 +23,36 @@ export const StepDone: React.FC<StepDoneProps> = ({
   return (
     <Card>
       <CardBody className="text-center py-12 px-8">
+        {/* Green appears exactly once in the whole flow, and this is it: the
+            only moment something has actually completed. */}
         <div
-          className="w-24 h-24 rounded-full flex items-center justify-center mx-auto mb-7"
+          className="w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-6 border"
           style={{
-            background: 'linear-gradient(135deg, #10b981, #059669)',
-            boxShadow: '0 16px 40px rgba(16,185,129,.35), inset 0 1px 0 rgba(255,255,255,.3)',
+            background: 'rgba(30,138,95,0.08)',
+            borderColor: 'rgba(30,138,95,0.28)',
           }}
         >
-          <Check className="w-12 h-12 text-white" strokeWidth={3} />
+          <Check className="w-8 h-8 text-brand-green" strokeWidth={2.4} />
         </div>
 
-        <h2 className="text-[32px] font-bold tracking-tight leading-tight text-gray-900 mb-3">
-          Tu asistente esta listo!
-        </h2>
-        <p className="text-base text-gray-600 mb-8 max-w-md mx-auto leading-relaxed">
-          {officeName} ya esta configurado y listo para atender pacientes.
+        <h2 className="display text-[32px] mb-3">¡Tu asistente está listo!</h2>
+        <p className="text-[15px] text-slate mb-8 max-w-md mx-auto leading-relaxed">
+          {officeName} ya está configurado y listo para atender pacientes.
         </p>
 
-        <Card className="max-w-md mx-auto text-left overflow-hidden mb-8">
+        <div className="max-w-md mx-auto text-left border border-line rounded-xl overflow-hidden mb-8">
           {nextSteps.map(({ icon: Icon, label }, i) => (
             <div
               key={label}
-              className={`flex items-center gap-3.5 px-5 py-4 ${
-                i < nextSteps.length - 1 ? 'border-b border-gray-200' : ''
+              className={`flex items-center gap-3.5 px-5 py-3.5 ${
+                i < nextSteps.length - 1 ? 'border-b border-line' : ''
               }`}
             >
-              <div className="w-9 h-9 rounded-lg bg-gray-50 flex items-center justify-center flex-shrink-0">
-                <Icon size={18} className="text-gray-700" />
-              </div>
-              <span className="text-sm font-medium text-gray-800">{label}</span>
+              <Icon size={18} className="text-accent flex-shrink-0" strokeWidth={1.7} />
+              <span className="text-sm text-navy">{label}</span>
             </div>
           ))}
-        </Card>
+        </div>
 
         <Button onClick={onFinish} isLoading={loading} size="lg" className="w-full max-w-sm">
           Ir al panel

@@ -55,7 +55,7 @@ async def get_current_user(
     except ValueError as e:
         raise UnauthorizedError("Invalid authorization header format") from e
 
-    return validate_jwt(token)
+    return await validate_jwt(token)
 
 
 async def get_office(

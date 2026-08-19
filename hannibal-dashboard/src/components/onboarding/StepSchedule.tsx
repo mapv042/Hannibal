@@ -86,7 +86,7 @@ interface StepScheduleProps {
   loading?: boolean
 }
 
-const DAY_NAMES = ['Domingo', 'Lunes', 'Martes', 'Miercoles', 'Jueves', 'Viernes', 'Sabado']
+const DAY_NAMES = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado']
 
 export const StepSchedule: React.FC<StepScheduleProps> = ({
   data,
@@ -153,37 +153,37 @@ export const StepSchedule: React.FC<StepScheduleProps> = ({
       <CardBody className="space-y-4 p-8">
         <StepHeader
           eyebrow="Paso 2"
-          title="Cuando estas disponible?"
-          subtitle="Define los horarios en los que tomas pacientes. El asistente solo ofrecera citas dentro de estos bloques."
+          title="¿Cuándo estás disponible?"
+          subtitle="Define los horarios en los que tomas pacientes. El asistente solo ofrecerá citas dentro de estos bloques."
         />
         {/* Days */}
         <div className="space-y-2.5">
           {data.days.map((day) => (
             <div
               key={day.dayOfWeek}
-              className={`p-4 rounded-xl border transition-colors ${
+              className={`p-4 rounded-lg border transition-colors ${
                 day.enabled
-                  ? 'border-gray-200 bg-white'
-                  : 'border-gray-200 bg-gray-50'
+                  ? 'border-line bg-white'
+                  : 'border-line bg-off-white'
               }`}
             >
               <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
                 <button
                   type="button"
                   onClick={() => toggleDay(day.dayOfWeek)}
-                  className={`w-6 h-6 rounded flex items-center justify-center border-2 transition-colors flex-shrink-0 ${
+                  className={`w-5 h-5 rounded-sm flex items-center justify-center border transition-colors flex-shrink-0 ${
                     day.enabled
-                      ? 'bg-primary-600 border-primary-600 text-white'
-                      : 'bg-white border-gray-300'
+                      ? 'bg-accent border-accent text-white'
+                      : 'bg-white border-slate-light'
                   }`}
                 >
                   {day.enabled && (
-                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
                     </svg>
                   )}
                 </button>
-                <span className={`text-sm font-medium w-24 ${day.enabled ? 'text-gray-900' : 'text-gray-500'}`}>
+                <span className={`text-sm font-medium w-24 ${day.enabled ? 'text-navy' : 'text-slate-light'}`}>
                   {DAY_NAMES[day.dayOfWeek]}
                 </span>
 
@@ -197,7 +197,7 @@ export const StepSchedule: React.FC<StepScheduleProps> = ({
                           onChange={(e) => updateBlock(day.dayOfWeek, bi, 'startTime', e.target.value)}
                           className="input-field py-1.5 px-2 text-sm flex-1 min-w-0 sm:flex-none sm:w-28"
                         />
-                        <span className="text-gray-400 text-sm flex-shrink-0">a</span>
+                        <span className="text-slate-light text-sm flex-shrink-0">a</span>
                         <input
                           type="time"
                           value={block.endTime}
@@ -208,7 +208,7 @@ export const StepSchedule: React.FC<StepScheduleProps> = ({
                           <button
                             type="button"
                             onClick={() => removeBlock(day.dayOfWeek, bi)}
-                            className="p-1 text-gray-400 hover:text-red-500 transition-colors"
+                            className="p-1 text-slate-light hover:text-red-500 transition-colors"
                           >
                             <X size={16} />
                           </button>
@@ -218,7 +218,7 @@ export const StepSchedule: React.FC<StepScheduleProps> = ({
                     <button
                       type="button"
                       onClick={() => addBlock(day.dayOfWeek)}
-                      className="flex items-center gap-1 text-xs text-primary-600 hover:text-primary-700 transition-colors"
+                      className="flex items-center gap-1 text-xs text-accent hover:text-accent-bright transition-colors"
                     >
                       <Plus size={14} />
                       Agregar bloque
@@ -231,12 +231,12 @@ export const StepSchedule: React.FC<StepScheduleProps> = ({
         </div>
 
         {/* Duration & Buffer */}
-        <div className="space-y-3 p-5 bg-white border border-gray-200 rounded-2xl">
-          <p className="text-sm font-semibold text-gray-900">Duracion de citas</p>
+        <div className="space-y-3 p-5 bg-off-white border border-line rounded-xl">
+          <p className="text-sm font-semibold text-navy">Duración de citas</p>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div className="flex flex-col">
-              <label className="block text-sm font-medium text-gray-700 mb-1.5">
-                Duracion primera consulta
+              <label className="block text-sm font-medium text-slate mb-1.5">
+                Duración primera consulta
               </label>
               <select
                 value={data.newPatientDuration}
@@ -258,8 +258,8 @@ export const StepSchedule: React.FC<StepScheduleProps> = ({
               </select>
             </div>
             <div className="flex flex-col">
-              <label className="block text-sm font-medium text-gray-700 mb-1.5">
-                Duracion consulta subsecuente
+              <label className="block text-sm font-medium text-slate mb-1.5">
+                Duración consulta subsecuente
               </label>
               <select
                 value={data.returningPatientDuration}
@@ -283,7 +283,7 @@ export const StepSchedule: React.FC<StepScheduleProps> = ({
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div className="flex flex-col">
-              <label className="block text-sm font-medium text-gray-700 mb-1.5">
+              <label className="block text-sm font-medium text-slate mb-1.5">
                 Descanso entre citas
               </label>
               <select
@@ -302,10 +302,10 @@ export const StepSchedule: React.FC<StepScheduleProps> = ({
         </div>
 
         {/* Reminders */}
-        <div className="space-y-3 p-5 bg-white border border-gray-200 rounded-2xl">
+        <div className="space-y-3 p-5 bg-off-white border border-line rounded-xl">
           <div>
-            <p className="text-sm font-semibold text-gray-900">Recordatorios automáticos</p>
-            <p className="text-xs text-gray-500 mt-0.5">
+            <p className="text-sm font-semibold text-navy">Recordatorios automáticos</p>
+            <p className="text-xs text-slate-light mt-0.5">
               Elige qué recordatorios enviará el asistente por WhatsApp a tus pacientes.
             </p>
           </div>
@@ -317,26 +317,26 @@ export const StepSchedule: React.FC<StepScheduleProps> = ({
                   key={reminder.type}
                   type="button"
                   onClick={() => toggleReminder(reminder.type)}
-                  className={`w-full flex items-center gap-3 p-3 rounded-xl border text-left transition-colors ${
-                    enabled ? 'border-primary-200 bg-primary-50' : 'border-gray-200 bg-gray-50'
+                  className={`w-full flex items-center gap-3 p-3 rounded-lg border text-left transition-colors ${
+                    enabled ? 'border-primary-200 bg-primary-50' : 'border-line bg-white hover:border-slate-light'
                   }`}
                 >
                   <span
                     className={`w-6 h-6 rounded flex items-center justify-center border-2 transition-colors flex-shrink-0 ${
-                      enabled ? 'bg-primary-600 border-primary-600 text-white' : 'bg-white border-gray-300'
+                      enabled ? 'bg-accent border-accent text-white' : 'bg-white border-line'
                     }`}
                   >
                     {enabled && (
-                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
                       </svg>
                     )}
                   </span>
                   <span>
-                    <span className={`block text-sm font-medium ${enabled ? 'text-gray-900' : 'text-gray-500'}`}>
+                    <span className={`block text-sm font-medium ${enabled ? 'text-navy' : 'text-slate-light'}`}>
                       {reminder.label}
                     </span>
-                    <span className="block text-xs text-gray-500">{reminder.description}</span>
+                    <span className="block text-xs text-slate-light">{reminder.description}</span>
                   </span>
                 </button>
               )
@@ -346,7 +346,7 @@ export const StepSchedule: React.FC<StepScheduleProps> = ({
 
         <div className="flex gap-3 pt-2">
           <Button variant="secondary" onClick={onBack}>
-            Atras
+            Atrás
           </Button>
           <Button
             onClick={onNext}

@@ -12,8 +12,8 @@ const dotColors: Record<NonNullable<BadgeProps['variant']>, string> = {
   warning: 'bg-warning',
   error: 'bg-error',
   info: 'bg-info',
-  primary: 'bg-primary-500',
-  default: 'bg-gray-400',
+  primary: 'bg-accent',
+  default: 'bg-slate-light',
 }
 
 export const Badge: React.FC<BadgeProps> = ({
@@ -28,8 +28,8 @@ export const Badge: React.FC<BadgeProps> = ({
     warning: 'badge-warning',
     error: 'badge-error',
     info: 'badge-info',
-    primary: 'inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-primary-50 text-primary-700',
-    default: 'inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-700',
+    primary: 'inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-primary-50 text-accent',
+    default: 'inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-off-white border border-line text-slate',
   }
 
   return (

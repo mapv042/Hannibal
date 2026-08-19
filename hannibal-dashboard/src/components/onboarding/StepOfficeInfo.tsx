@@ -37,12 +37,12 @@ export const StepOfficeInfo: React.FC<StepOfficeInfoProps> = ({
       <CardBody className="space-y-5 p-8">
         <StepHeader
           eyebrow="Paso 1"
-          title="Cuentanos sobre tu consultorio"
-          subtitle="Esta informacion ayuda al asistente a presentar tu practica correctamente a los pacientes."
+          title="Cuéntanos sobre tu consultorio"
+          subtitle="Esta información ayuda al asistente a presentar tu práctica correctamente a los pacientes."
         />
         <Input
           label="Nombre del consultorio"
-          placeholder="Consultorio Oftalmologico Garcia"
+          placeholder="Consultorio Oftalmológico García"
           value={data.officeName}
           onChange={(e) => onUpdate({ officeName: e.target.value })}
           required
@@ -50,7 +50,7 @@ export const StepOfficeInfo: React.FC<StepOfficeInfoProps> = ({
 
         <Input
           label="Especialidad"
-          placeholder="Oftalmologia"
+          placeholder="Oftalmología"
           value={data.specialty}
           onChange={(e) => onUpdate({ specialty: e.target.value })}
         />
@@ -63,7 +63,7 @@ export const StepOfficeInfo: React.FC<StepOfficeInfoProps> = ({
             onChange={(e) => onUpdate({ city: e.target.value })}
           />
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1.5">
+            <label className="block text-sm font-medium text-slate mb-1.5">
               Estado
             </label>
             <select
@@ -89,22 +89,22 @@ export const StepOfficeInfo: React.FC<StepOfficeInfoProps> = ({
         />
 
         <Input
-          label="Direccion del consultorio"
-          placeholder="Av. Mexico 1234, Col. Americana"
+          label="Dirección del consultorio"
+          placeholder="Av. México 1234, Col. Americana"
           value={data.address}
           onChange={(e) => onUpdate({ address: e.target.value })}
         />
 
-        <div className="flex items-start gap-2.5 p-3.5 bg-primary-50 border border-primary-100 rounded-xl">
-          <Lock size={16} className="text-primary-700 flex-shrink-0 mt-0.5" />
-          <span className="text-[13px] text-gray-700 leading-relaxed">
-            Todos tus datos se almacenan cifrados en servidores en Mexico. Nunca compartimos informacion con terceros.
+        <div className="flex items-start gap-2.5 p-3.5 bg-off-white border border-line rounded-lg">
+          <Lock size={15} className="text-accent flex-shrink-0 mt-0.5" strokeWidth={1.8} />
+          <span className="text-[13px] text-slate leading-relaxed">
+            Todos tus datos se almacenan cifrados en servidores en México. Nunca compartimos información con terceros.
           </span>
         </div>
 
         <div className="flex gap-3 pt-2">
           <Button variant="secondary" onClick={onBack}>
-            Atras
+            Atrás
           </Button>
           <Button
             onClick={onNext}

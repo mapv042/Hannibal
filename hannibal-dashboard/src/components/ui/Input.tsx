@@ -11,20 +11,20 @@ export const Input = React.forwardRef<HTMLInputElement, InputProps>(
     return (
       <div className="w-full">
         {label && (
-          <label className="block text-sm font-medium text-gray-700 mb-1.5">
+          <label className="block text-[13px] text-slate mb-1.5">
             {label}
           </label>
         )}
         <input
           ref={ref}
-          className={`input-field ${error ? 'border-red-500 focus:border-red-500 focus:ring-red-100' : ''} ${className}`}
+          className={`input-field ${error ? 'border-error focus:border-error' : ''} ${className}`}
           {...props}
         />
         {error && (
-          <p className="mt-1 text-sm text-red-600">{error}</p>
+          <p className="mt-1.5 text-[13px] text-error">{error}</p>
         )}
         {helpText && !error && (
-          <p className="mt-1 text-sm text-gray-500">{helpText}</p>
+          <p className="mt-1.5 text-[13px] text-slate-light">{helpText}</p>
         )}
       </div>
     )
