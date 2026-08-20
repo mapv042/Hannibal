@@ -17,12 +17,12 @@ export function Pricing() {
             only surface on the page that lifts off the paper. */}
         <div className="max-w-[440px] mx-auto bg-white border border-line rounded-3xl px-10 py-11 shadow-lg">
           <div className="font-serif text-[46px] font-semibold text-navy leading-none">
-            $3,499
+            $1,499
             <span className="text-lg font-normal text-slate"> MXN / mes</span>
           </div>
 
           <div className="text-[12.5px] text-slate mt-2">
-            + IVA (16%) — total: $4,058.84 MXN/mes
+            + IVA (16%) — total: $1,738.84 MXN/mes
           </div>
 
           <div className="inline-flex items-center gap-1.5 text-[12.5px] text-accent mt-2.5 mb-6">
