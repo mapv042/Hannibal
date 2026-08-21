@@ -1,4 +1,5 @@
 import React from 'react'
+import { EyeMark } from '@/components/brand/EyeMark'
 
 interface LogoProps {
   size?: number
@@ -8,9 +9,12 @@ interface LogoProps {
 }
 
 /**
- * Hannibal brand mark — rounded navy gradient tile with a stylized
- * "h" / chat-tail glyph. Matches the Claude Design reference.
- * Pass `light` to render the wordmark in white (e.g. on dark backgrounds).
+ * ArgosAI lockup — the feather-eye mark beside the wordmark, set in the same
+ * serif as every headline so the brand and its voice are the same object.
+ *
+ * The wordmark stays "ArgosAI" verbatim: Google's OAuth branding review checks
+ * that the consent screen's app name matches the one on the homepage, and this
+ * component renders that name on the homepage, the legal pages and the panel.
  */
 export const Logo: React.FC<LogoProps> = ({
   size = 28,
@@ -20,36 +24,19 @@ export const Logo: React.FC<LogoProps> = ({
 }) => {
   return (
     <div className={`inline-flex items-center gap-2.5 ${className}`}>
-      <svg width={size} height={size} viewBox="0 0 32 32" fill="none">
-        <defs>
-          <linearGradient
-            id="han-logo-g"
-            x1="0"
-            y1="0"
-            x2="32"
-            y2="32"
-            gradientUnits="userSpaceOnUse"
-          >
-            <stop offset="0" stopColor="#1535a3" />
-            <stop offset="1" stopColor="#092b82" />
-          </linearGradient>
-        </defs>
-        <rect x="2" y="2" width="28" height="28" rx="8" fill="url(#han-logo-g)" />
-        <path
-          d="M10 9 L10 23 M10 16 Q10 13 13 13 L17 13 Q20 13 20 16 L20 22 L23 25"
-          stroke="#fff"
-          strokeWidth="2.2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          fill="none"
-        />
-      </svg>
+      <EyeMark
+        size={size * 0.95}
+        variant={size < 26 ? 'compact' : 'full'}
+        color={light ? '#6E93D6' : '#2952A3'}
+        iris={light ? '#0B2545' : '#F7F9FC'}
+        pupil={light ? '#6E93D6' : '#0B2545'}
+      />
       {withText && (
         <span
-          className={`font-bold ${light ? 'text-white' : 'text-gray-900'}`}
-          style={{ fontSize: size * 0.65, letterSpacing: '-0.02em' }}
+          className={`font-serif font-semibold ${light ? 'text-white' : 'text-navy'}`}
+          style={{ fontSize: size * 0.68, letterSpacing: '-0.01em' }}
         >
-          Hannibal
+          ArgosAI
         </span>
       )}
     </div>

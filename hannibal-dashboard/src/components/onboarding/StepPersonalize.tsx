@@ -49,24 +49,24 @@ export const StepPersonalize: React.FC<StepPersonalizeProps> = ({
         <StepHeader
           eyebrow="Paso 4"
           title="Personaliza a tu asistente"
-          subtitle="Decide como se llama, como habla y que considera una emergencia."
+          subtitle="Decide cómo se llama, cómo habla y qué considera una emergencia."
         />
         <Input
           label="Nombre del asistente"
-          placeholder="Sofia"
+          placeholder="Sofía"
           value={data.assistantName}
           onChange={(e) => onUpdate({ assistantName: e.target.value })}
-          helpText="Este nombre aparecera en los mensajes a pacientes"
+          helpText="Este nombre aparecerá en los mensajes a pacientes"
         />
 
         <div>
-          <label className="block text-sm font-semibold text-gray-700 mb-2.5">
-            Tono de conversacion
+          <label className="block text-sm font-semibold text-navy mb-2.5">
+            Tono de conversación
           </label>
           <div className="grid grid-cols-2 gap-2.5">
             {[
-              { value: 'formal' as const, label: 'De usted', desc: 'Formal, profesional', example: '"Buen dia, en que le puedo ayudar?"' },
-              { value: 'informal' as const, label: 'De tu', desc: 'Cercano, casual', example: '"Hola! En que te ayudo?"' },
+              { value: 'formal' as const, label: 'De usted', desc: 'Formal, profesional', example: '«Buen día, ¿en qué le puedo ayudar?»' },
+              { value: 'informal' as const, label: 'De tú', desc: 'Cercano, casual', example: '«¡Hola! ¿En qué te ayudo?»' },
             ].map((option) => {
               const active = data.assistantTone === option.value
               return (
@@ -74,17 +74,11 @@ export const StepPersonalize: React.FC<StepPersonalizeProps> = ({
                   key={option.value}
                   type="button"
                   onClick={() => onUpdate({ assistantTone: option.value })}
-                  className={`p-4 rounded-xl border text-left transition-all ${
-                    active
-                      ? 'border-primary-500 bg-primary-50 ring-4 ring-primary-500/10'
-                      : 'border-gray-200 bg-white shadow-xs hover:border-gray-300'
-                  }`}
+                  className={`choice-card ${active ? 'selected' : ''}`}
                 >
-                  <p className="text-[15px] font-semibold text-gray-900">{option.label}</p>
-                  <p className="text-xs text-gray-500 mt-0.5 mb-2.5">{option.desc}</p>
-                  <p className={`text-[12.5px] italic px-2.5 py-2 rounded-lg border border-gray-200 text-gray-700 ${
-                    active ? 'bg-white' : 'bg-gray-50'
-                  }`}>
+                  <p className="text-[15px] font-semibold text-navy">{option.label}</p>
+                  <p className="text-xs text-slate-light mt-0.5 mb-2.5">{option.desc}</p>
+                  <p className="text-[12.5px] italic px-2.5 py-2 rounded-md bg-off-white text-slate">
                     {option.example}
                   </p>
                 </button>
@@ -94,27 +88,27 @@ export const StepPersonalize: React.FC<StepPersonalizeProps> = ({
         </div>
 
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1.5">
-            Sintomas de emergencia
+          <label className="block text-sm font-medium text-slate mb-1.5">
+            Síntomas de emergencia
           </label>
           <textarea
-            placeholder="Dolor severo, perdida de vision, dificultad para respirar..."
+            placeholder="Dolor severo, pérdida de visión, dificultad para respirar…"
             value={data.emergencySymptoms}
             onChange={(e) => onUpdate({ emergencySymptoms: e.target.value })}
             rows={3}
             className="input-field resize-none"
           />
-          <p className="text-xs text-gray-500 mt-1">
-            El asistente te avisara cuando detecte estos sintomas
+          <p className="text-xs text-slate-light mt-1">
+            El asistente te avisará cuando detecte estos síntomas
           </p>
         </div>
 
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1.5">
+          <label className="block text-sm font-medium text-slate mb-1.5">
             Mensaje de bienvenida
           </label>
           <textarea
-            placeholder="Hola, soy Sofia del Consultorio del Dr. Garcia. En que puedo ayudarte?"
+            placeholder="Hola, soy Sofía del Consultorio del Dr. García. ¿En qué puedo ayudarte?"
             value={data.welcomeMessage}
             onChange={(e) => onUpdate({ welcomeMessage: e.target.value })}
             rows={3}
@@ -123,11 +117,11 @@ export const StepPersonalize: React.FC<StepPersonalizeProps> = ({
         </div>
 
         <div>
-          <label className="block text-sm font-semibold text-gray-700 mb-1">
+          <label className="block text-sm font-semibold text-navy mb-1">
             Notificaciones al doctor
           </label>
-          <p className="text-xs text-gray-500 mb-2.5">
-            Elige de que eventos quieres que el asistente te avise por WhatsApp. Puedes cambiarlo despues.
+          <p className="text-xs text-slate-light mb-2.5">
+            Elige de qué eventos quieres que el asistente te avise por WhatsApp. Puedes cambiarlo después.
           </p>
           <div className="space-y-2">
             {NOTIFICATION_DEFS.map((notif) => {
@@ -137,26 +131,26 @@ export const StepPersonalize: React.FC<StepPersonalizeProps> = ({
                   key={notif.key}
                   type="button"
                   onClick={() => onUpdate({ [notif.key]: !enabled } as Partial<PersonalizeData>)}
-                  className={`w-full flex items-center gap-3 p-3 rounded-xl border text-left transition-colors ${
-                    enabled ? 'border-primary-200 bg-primary-50' : 'border-gray-200 bg-gray-50'
+                  className={`w-full flex items-center gap-3 p-3 rounded-lg border text-left transition-colors ${
+                    enabled ? 'border-primary-200 bg-primary-50' : 'border-line bg-white hover:border-slate-light'
                   }`}
                 >
                   <span
-                    className={`w-6 h-6 rounded flex items-center justify-center border-2 transition-colors flex-shrink-0 ${
-                      enabled ? 'bg-primary-600 border-primary-600 text-white' : 'bg-white border-gray-300'
+                    className={`w-5 h-5 rounded-sm flex items-center justify-center border transition-colors flex-shrink-0 ${
+                      enabled ? 'bg-accent border-accent text-white' : 'bg-white border-slate-light'
                     }`}
                   >
                     {enabled && (
-                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
                       </svg>
                     )}
                   </span>
                   <span>
-                    <span className={`block text-sm font-medium ${enabled ? 'text-gray-900' : 'text-gray-500'}`}>
+                    <span className={`block text-sm font-medium ${enabled ? 'text-navy' : 'text-slate'}`}>
                       {notif.label}
                     </span>
-                    <span className="block text-xs text-gray-500">{notif.description}</span>
+                    <span className="block text-xs text-slate-light">{notif.description}</span>
                   </span>
                 </button>
               )
@@ -166,7 +160,7 @@ export const StepPersonalize: React.FC<StepPersonalizeProps> = ({
 
         <div className="flex gap-3 pt-2">
           <Button variant="secondary" onClick={onBack}>
-            Atras
+            Atrás
           </Button>
           <Button
             onClick={onNext}

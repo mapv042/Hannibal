@@ -27,17 +27,17 @@ function buildCustomPrompt(
   // Insurance info goes in custom_prompt (pricing is now in dedicated columns)
   if (consultation.acceptsInsurance) {
     if (consultation.acceptsInsurance === 'Si' || consultation.acceptsInsurance === 'Algunos') {
-      parts.push(`SEGUROS MEDICOS:`)
+      parts.push(`SEGUROS MÉDICOS:`)
       parts.push(`- Seguros aceptados: ${consultation.insuranceDetails || 'Preguntar al consultorio'}`)
     } else if (consultation.acceptsInsurance === 'No') {
-      parts.push('SEGUROS MEDICOS:')
-      parts.push('- No se aceptan seguros medicos')
+      parts.push('SEGUROS MÉDICOS:')
+      parts.push('- No se aceptan seguros médicos')
     }
     parts.push('')
   }
 
   if (personalize.emergencySymptoms.trim()) {
-    parts.push('SINTOMAS DE EMERGENCIA:')
+    parts.push('SÍNTOMAS DE EMERGENCIA:')
     parts.push(personalize.emergencySymptoms.trim())
   }
 

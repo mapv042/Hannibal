@@ -140,8 +140,8 @@ export function OnboardingWizard({
   return (
     <div className={usesPreview ? 'w-full' : 'max-w-2xl mx-auto'}>
       {showPreviewBanner && (
-        <div className="max-w-2xl mx-auto mb-4 p-3 bg-yellow-100 border border-yellow-300 rounded-xl text-center">
-          <p className="text-sm text-yellow-800 font-medium">
+        <div className="max-w-2xl mx-auto mb-4 p-3 bg-amber-50 border border-amber-200 rounded-lg text-center">
+          <p className="text-sm text-amber-800 font-medium">
             Modo preview — los datos no se guardan
           </p>
         </div>
@@ -160,7 +160,7 @@ export function OnboardingWizard({
 
       {/* Error message */}
       {error && (
-        <div className="max-w-2xl mx-auto mb-4 p-3 bg-red-100 border border-red-300 rounded-xl">
+        <div className="max-w-2xl mx-auto mb-4 p-3 bg-red-50 border border-red-200 rounded-lg">
           <p className="text-sm text-red-800">{error}</p>
         </div>
       )}

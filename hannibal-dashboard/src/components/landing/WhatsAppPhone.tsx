@@ -1,194 +1,324 @@
-import React from 'react'
-import { ChevronLeft, Phone, MoreVertical, Mic } from 'lucide-react'
+'use client'
 
-const WA_HEADER = '#075e54'
-const WA_GREEN = '#075e54'
-const WA_BG = '#e5ddd5'
+import React, { useEffect, useRef, useState } from 'react'
+import { EyeMark } from '@/components/brand/EyeMark'
+import {
+  CLOSING_MESSAGE,
+  CTA_AFTER,
+  GREETING,
+  MAX_USER_MESSAGES,
+  SUGGESTIONS,
+  getDemoReply,
+  type Turn,
+} from '@/components/landing/demoScript'
 
-const WA_BG_PATTERN = `url("data:image/svg+xml;utf8,${encodeURIComponent(
-  `<svg xmlns='http://www.w3.org/2000/svg' width='200' height='200' viewBox='0 0 200 200'>
-    <g fill='none' stroke='%23000' stroke-opacity='0.04' stroke-width='1'>
-      <path d='M20 40 q10 -10 20 0 t20 0' />
-      <circle cx='130' cy='60' r='8' />
-      <path d='M50 120 l8 8 l16 -16' />
-      <rect x='150' y='130' width='14' height='14' rx='3' transform='rotate(15 157 137)'/>
-      <path d='M30 170 q15 -8 30 0' />
-      <circle cx='100' cy='100' r='3' fill='%23000' fill-opacity='0.05' stroke='none'/>
-    </g>
-  </svg>`
-)}")`
+/** WhatsApp's doodle wallpaper, inlined so the page makes no outside request. */
+const WA_DOODLES = `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='100' height='100'%3E%3Cg fill='%23000000' fill-opacity='0.025'%3E%3Cpath d='M11 18c3.866 0 7-3.134 7-7s-3.134-7-7-7-7 3.134-7 7 3.134 7 7 7zm48 25c3.866 0 7-3.134 7-7s-3.134-7-7-7-7 3.134-7 7 3.134 7 7 7zm-43-7c1.657 0 3-1.343 3-3s-1.343-3-3-3-3 1.343-3 3 1.343 3 3 3zm63 31c1.657 0 3-1.343 3-3s-1.343-3-3-3-3 1.343-3 3 1.343 3 3 3zM34 90c1.657 0 3-1.343 3-3s-1.343-3-3-3-3 1.343-3 3 1.343 3 3 3zm56-76c1.657 0 3-1.343 3-3s-1.343-3-3-3-3 1.343-3 3 1.343 3 3 3zM12 86c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm28-65c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm23-11c2.76 0 5-2.24 5-5s-2.24-5-5-5-5 2.24-5 5 2.24 5 5 5zm-6 60c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4z'/%3E%3C/g%3E%3C/svg%3E")`
 
-interface Message {
-  date?: string
-  from?: 'me' | 'them'
-  text?: string
-  time?: string
-  ticks?: number
+interface Bubble {
+  role: 'user' | 'assistant'
+  text: string
+  time: string
 }
 
-const DEMO_CONVO: Message[] = [
-  { date: 'HOY' },
-  { from: 'them', text: 'Hola, buenas tardes. Quería agendar una cita con el Dr. Méndez.', time: '14:22' },
-  {
-    from: 'me',
-    text: '¡Hola! Soy Sofía, asistente del Dr. Méndez 👋\n\nClaro que sí, te ayudo a agendar. ¿Es tu primera consulta o eres paciente recurrente?',
-    time: '14:22',
-    ticks: 2,
-  },
-  { from: 'them', text: 'Es mi primera vez.', time: '14:23' },
-  { from: 'me', text: 'Perfecto. ¿Me compartes tu nombre completo, por favor?', time: '14:23', ticks: 2 },
-  { from: 'them', text: 'Mariana López Reyes', time: '14:24' },
-  {
-    from: 'me',
-    text: 'Gracias, Mariana. Tengo estos espacios disponibles esta semana:\n\n• Jueves 25 — 11:00 hrs\n• Jueves 25 — 17:30 hrs\n• Viernes 26 — 09:00 hrs',
-    time: '14:24',
-    ticks: 2,
-  },
-  { from: 'them', text: 'El jueves 25 a las 17:30 me funciona', time: '14:25' },
-  {
-    from: 'me',
-    text: '✓ Cita confirmada\n\nJue 25 de septiembre, 17:30 hrs\nDr. Méndez · Primera consulta\nDuración: 45 min\n\nTe mandaré un recordatorio 24h antes. ¿Necesitas algo más?',
-    time: '14:25',
-    ticks: 2,
-  },
-]
+function fmtTime(d: Date) {
+  const m = d.getMinutes().toString().padStart(2, '0')
+  const ap = d.getHours() >= 12 ? 'p. m.' : 'a. m.'
+  const h = d.getHours() % 12 || 12
+  return `${h}:${m} ${ap}`
+}
 
-function Ticks({ blue }: { blue: boolean }) {
+function fmtClock(d: Date) {
+  const m = d.getMinutes().toString().padStart(2, '0')
+  return `${d.getHours() % 12 || 12}:${m}`
+}
+
+/** WhatsApp's read receipt. */
+function BlueTicks() {
   return (
-    <svg width="16" height="11" viewBox="0 0 16 11" fill="none" className="inline-block ml-1">
-      <path d="M11.07.4L5.27 6.2l-.85.84L2 4.62l-.71.7L5.27 9.3 12.5 1.1z" fill={blue ? '#4fc3f7' : '#667781'} />
-      <path d="M14.45.4l-5.8 5.8-.85.84-.7-.7L13.7 1.1z" fill={blue ? '#4fc3f7' : '#667781'} />
+    <svg width="15" height="10" viewBox="0 0 16 11" fill="none" className="flex-shrink-0">
+      <path
+        d="M1 5.5L4.5 9L11 1.5"
+        stroke="#53BDEB"
+        strokeWidth="1.6"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M5.5 5.5L9 9L15.5 1.5"
+        stroke="#53BDEB"
+        strokeWidth="1.6"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
     </svg>
   )
 }
 
-function Bubble({ msg }: { msg: Message }) {
-  const isMe = msg.from === 'me'
-  return (
-    <div className={`flex px-2 mb-1.5 ${isMe ? 'justify-end' : 'justify-start'}`}>
-      <div
-        className={`relative max-w-[80%] rounded-lg px-2.5 py-1.5 shadow-[0_1px_0.5px_rgba(0,0,0,.13)] ${
-          isMe ? 'bg-[#dcf8c6] rounded-tr-none' : 'bg-white rounded-tl-none'
-        }`}
-        style={{ fontFamily: '-apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif' }}
-      >
-        <div className="text-[14.5px] leading-snug text-[#0b141a] whitespace-pre-wrap">{msg.text}</div>
-        <div className="flex justify-end items-center text-[11px] text-[#667781] mt-0.5 tabular-nums">
-          {msg.time}
-          {isMe && <Ticks blue={(msg.ticks ?? 0) >= 2} />}
-        </div>
-      </div>
-    </div>
-  )
-}
-
 interface WhatsAppPhoneProps {
-  width?: number
-  name?: string
+  /** Fires once the visitor has exchanged enough turns to be worth asking. */
+  onEngaged?: () => void
 }
 
-export const WhatsAppPhone: React.FC<WhatsAppPhoneProps> = ({
-  width = 340,
-  name = 'Sofía · Asistente',
-}) => {
-  const height = Math.round(width / 0.462)
-  const radius = Math.round(width * 0.165)
+/**
+ * A WhatsApp conversation rendered as a screenshot, not as a device.
+ *
+ * Dropping the phone body is the point: a doctor evaluating this has seen a
+ * thousand marketing mockups inside a rounded rectangle with a notch. What
+ * convinces them is the chat looking like the one already open on their phone —
+ * so the details that get the budget are the iOS status bar showing their own
+ * clock, the encryption notice, the doodle wallpaper and the blue ticks.
+ */
+export const WhatsAppPhone: React.FC<WhatsAppPhoneProps> = ({ onEngaged }) => {
+  const [bubbles, setBubbles] = useState<Bubble[]>([])
+  const [history, setHistory] = useState<Turn[]>([
+    { role: 'assistant', content: GREETING },
+  ])
+  const [clock, setClock] = useState('9:15')
+  const [greetingTime, setGreetingTime] = useState('9:14 a. m.')
+  const [typing, setTyping] = useState(false)
+  const [input, setInput] = useState('')
+  const [userMsgCount, setUserMsgCount] = useState(0)
+  const [showChips, setShowChips] = useState(true)
+  const [finished, setFinished] = useState(false)
+  const bodyRef = useRef<HTMLDivElement>(null)
+
+  // Times come from the visitor's own device, so they can only be read after
+  // hydration — rendering them on the server would mismatch.
+  useEffect(() => {
+    const now = new Date()
+    setClock(fmtClock(now))
+    setGreetingTime(fmtTime(now))
+  }, [])
+
+  useEffect(() => {
+    const el = bodyRef.current
+    if (el) el.scrollTop = el.scrollHeight
+  }, [bubbles, typing])
+
+  const send = async (text: string) => {
+    const trimmed = text.trim()
+    if (!trimmed || typing || finished) return
+
+    setShowChips(false)
+    setInput('')
+    const now = new Date()
+    setBubbles((b) => [...b, { role: 'user', text: trimmed, time: fmtTime(now) }])
+
+    const nextCount = userMsgCount + 1
+    setUserMsgCount(nextCount)
+    if (nextCount >= CTA_AFTER) onEngaged?.()
+
+    const historyNow: Turn[] = [...history, { role: 'user', content: trimmed }]
+    setHistory(historyNow)
+    setTyping(true)
+
+    let reply: string
+    try {
+      reply = await getDemoReply(trimmed, historyNow)
+    } catch {
+      reply = 'Ups, tuve un problema de conexión. ¿Puede intentar de nuevo? 🙏'
+    }
+
+    setTyping(false)
+    setBubbles((b) => [
+      ...b,
+      { role: 'assistant', text: reply, time: fmtTime(new Date()) },
+    ])
+    setHistory((h) => [...h, { role: 'assistant', content: reply }])
+
+    if (nextCount >= MAX_USER_MESSAGES) {
+      setFinished(true)
+      setBubbles((b) => [
+        ...b,
+        { role: 'assistant', text: CLOSING_MESSAGE, time: fmtTime(new Date()) },
+      ])
+      onEngaged?.()
+    }
+  }
 
   return (
     <div
-      className="relative bg-[#0b1014]"
-      style={{
-        width,
-        height,
-        borderRadius: radius,
-        padding: 8,
-        boxShadow:
-          '0 30px 80px -20px rgba(15,30,40,.35), 0 6px 18px rgba(15,30,40,.18), inset 0 0 0 2px rgba(255,255,255,.06)',
-      }}
+      className="w-full max-w-[360px] mx-auto overflow-hidden bg-[#ECE5DD] shadow-float"
+      style={{ borderRadius: 32, border: '6px solid #0a0a0a' }}
     >
-      {/* Side buttons */}
-      <div className="absolute -left-0.5 top-[15%] w-[3px] h-8 bg-[#1a2228] rounded" />
-      <div className="absolute -left-0.5 top-[24%] w-[3px] h-14 bg-[#1a2228] rounded" />
-      <div className="absolute -left-0.5 top-[33%] w-[3px] h-14 bg-[#1a2228] rounded" />
-      <div className="absolute -right-0.5 top-[22%] w-[3px] h-[90px] bg-[#1a2228] rounded" />
-
-      {/* Screen */}
-      <div
-        className="relative w-full h-full overflow-hidden flex flex-col"
-        style={{ background: WA_BG, borderRadius: radius - 8 }}
-      >
-        {/* Dynamic island */}
-        <div
-          className="absolute top-2 left-1/2 -translate-x-1/2 bg-black rounded-full z-10"
-          style={{ width: width * 0.32, height: 26 }}
-        />
-
-        {/* Status bar */}
-        <div
-          className="h-11 px-5 flex items-center justify-between text-white text-sm font-semibold"
-          style={{ background: WA_HEADER, fontFamily: '-apple-system, BlinkMacSystemFont, sans-serif' }}
-        >
-          <span className="tabular-nums">9:41</span>
-          <div className="flex items-center gap-1.5">
-            <svg width="17" height="11" viewBox="0 0 17 11" fill="#fff"><rect x="0" y="7" width="3" height="4" rx="0.5" /><rect x="4.5" y="5" width="3" height="6" rx="0.5" /><rect x="9" y="3" width="3" height="8" rx="0.5" /><rect x="13.5" y="0" width="3" height="11" rx="0.5" /></svg>
-            <svg width="27" height="12" viewBox="0 0 27 12" fill="none"><rect x="0.5" y="0.5" width="22" height="11" rx="2.5" stroke="#fff" opacity="0.5" /><rect x="2" y="2" width="19" height="8" rx="1.5" fill="#fff" /><rect x="23.5" y="3.5" width="2" height="5" rx="1" fill="#fff" opacity="0.5" /></svg>
-          </div>
+      {/* iOS status bar */}
+      <div className="bg-[#F7F5F3] px-5 pt-1.5 pb-1 flex items-center justify-between">
+        <span className="text-[13.5px] font-semibold text-black tabular-nums">{clock}</span>
+        <div className="flex items-center gap-1.5">
+          <svg width="17" height="11" viewBox="0 0 17 11" fill="none" aria-hidden="true">
+            <rect x="0" y="6" width="3" height="5" rx="0.5" fill="#000" />
+            <rect x="4.5" y="4" width="3" height="7" rx="0.5" fill="#000" />
+            <rect x="9" y="2" width="3" height="9" rx="0.5" fill="#000" />
+            <rect x="13.5" y="0" width="3" height="11" rx="0.5" fill="#000" />
+          </svg>
+          <svg width="15" height="11" viewBox="0 0 15 11" fill="none" aria-hidden="true">
+            <path
+              d="M7.5 2.5C10 2.5 12 3.5 13.5 5.2L12.2 6.6C11 5.2 9.3 4.4 7.5 4.4C5.7 4.4 4 5.2 2.8 6.6L1.5 5.2C3 3.5 5 2.5 7.5 2.5Z"
+              fill="#000"
+            />
+            <path
+              d="M7.5 6.5C8.6 6.5 9.6 7 10.3 7.8L7.5 10.8L4.7 7.8C5.4 7 6.4 6.5 7.5 6.5Z"
+              fill="#000"
+            />
+          </svg>
+          <svg width="24" height="11" viewBox="0 0 24 11" fill="none" aria-hidden="true">
+            <rect
+              x="0.5"
+              y="0.5"
+              width="20"
+              height="10"
+              rx="2.3"
+              stroke="#000"
+              strokeOpacity="0.4"
+            />
+            <rect x="2" y="2" width="15" height="7" rx="1.3" fill="#000" />
+            <rect x="21.5" y="3.5" width="1.5" height="4" rx="0.7" fill="#000" fillOpacity="0.4" />
+          </svg>
         </div>
-
-        {/* Chat header */}
-        <div className="h-14 flex items-center px-3 gap-2.5 text-white" style={{ background: WA_HEADER }}>
-          <ChevronLeft size={22} strokeWidth={2.4} />
-          <div
-            className="w-9 h-9 rounded-full flex items-center justify-center font-bold text-sm"
-            style={{ background: 'linear-gradient(135deg, #3b5fc7, #1535a3)' }}
-          >
-            S
-          </div>
-          <div className="flex-1 min-w-0">
-            <div className="text-[15px] font-semibold">{name}</div>
-            <div className="text-xs opacity-85">en línea</div>
-          </div>
-          <Phone size={18} />
-          <MoreVertical size={18} />
-        </div>
-
-        {/* Chat */}
-        <div
-          className="flex-1 overflow-hidden py-2 flex flex-col"
-          style={{ background: WA_BG, backgroundImage: WA_BG_PATTERN, backgroundSize: '200px' }}
-        >
-          {DEMO_CONVO.map((m, i) =>
-            m.date ? (
-              <div key={i} className="flex justify-center py-2">
-                <div className="bg-[rgba(225,245,254,.92)] text-[#54656f] text-xs font-medium px-2.5 py-1 rounded-lg shadow-[0_1px_0.5px_rgba(0,0,0,.08)]">
-                  {m.date}
-                </div>
-              </div>
-            ) : (
-              <Bubble key={i} msg={m} />
-            )
-          )}
-        </div>
-
-        {/* Composer */}
-        <div className="px-2 py-1.5 flex items-center gap-2 bg-[#f0f2f5]">
-          <div className="flex-1 bg-white rounded-3xl px-3 py-2 flex items-center gap-2.5 text-sm text-[#8696a0]">
-            <span className="flex-1">Mensaje</span>
-          </div>
-          <div
-            className="w-10 h-10 rounded-full flex items-center justify-center text-white"
-            style={{ background: WA_GREEN }}
-          >
-            <Mic size={18} />
-          </div>
-        </div>
-
-        {/* Home indicator */}
-        <div
-          className="absolute bottom-1.5 left-1/2 -translate-x-1/2 h-1 bg-black rounded-full opacity-85 z-10"
-          style={{ width: width * 0.32 }}
-        />
       </div>
+
+      {/* Conversation header */}
+      <div className="bg-[#F7F5F3] flex items-center gap-2.5 px-3 pt-1.5 pb-2.5">
+        <svg width="11" height="19" viewBox="0 0 11 19" fill="none" aria-hidden="true">
+          <path
+            d="M9.5 1L1 9.5L9.5 18"
+            stroke="#028478"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+        <div className="w-[34px] h-[34px] rounded-full bg-[#0B141A] flex items-center justify-center flex-shrink-0 overflow-hidden">
+          <EyeMark size={26} variant="compact" color="#2952A3" iris="#0B141A" pupil="#2952A3" />
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="text-black text-[14.5px] font-semibold truncate">
+            Consultorio Dr. García
+          </div>
+          <div className="text-[#667781] text-[11.5px]">
+            {typing ? 'escribiendo…' : 'en línea'}
+          </div>
+        </div>
+        <div className="flex items-center gap-4 text-[#028478]" aria-hidden="true">
+          <svg width="19" height="19" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M17 10.5V7a1 1 0 00-1-1H4a1 1 0 00-1 1v10a1 1 0 001 1h12a1 1 0 001-1v-3.5l4 4v-11l-4 4z" />
+          </svg>
+          <svg width="4" height="18" viewBox="0 0 4 18" fill="currentColor">
+            <circle cx="2" cy="2" r="2" />
+            <circle cx="2" cy="9" r="2" />
+            <circle cx="2" cy="16" r="2" />
+          </svg>
+        </div>
+      </div>
+
+      {/* Messages */}
+      <div
+        ref={bodyRef}
+        className="h-[340px] sm:h-[380px] overflow-y-auto px-2.5 pt-3 pb-2 flex flex-col gap-1.5 scroll-smooth"
+        style={{ backgroundColor: '#ECE5DD', backgroundImage: WA_DOODLES }}
+      >
+        <div className="self-center bg-[#FFF3C4] text-[#7A6A2E] text-[9.5px] px-3 py-1.5 rounded-lg mb-1 flex items-center gap-1.5 max-w-[240px] text-center leading-tight">
+          <svg width="11" height="13" viewBox="0 0 11 13" fill="none" className="flex-shrink-0">
+            <path d="M2 5.5V3.5a3.5 3.5 0 017 0v2" stroke="#8696A0" strokeWidth="1.1" fill="none" />
+            <rect x="1" y="5.5" width="9" height="6.5" rx="1.3" fill="#8696A0" />
+          </svg>
+          <span>Los mensajes están cifrados de extremo a extremo</span>
+        </div>
+
+        <div className="self-center bg-[#E1F2FB] text-[#4C7C93] text-[10.5px] font-medium px-2.5 py-1 rounded-lg mb-1">
+          Hoy
+        </div>
+
+        <div className="wa-msg self-start bg-white max-w-[84%] px-2.5 py-2 rounded-lg rounded-tl-sm shadow-[0_1px_0.5px_rgba(11,20,26,0.13)] flex flex-col">
+          <span className="text-[13.5px] text-[#111B21] leading-snug">{GREETING}</span>
+          <span className="self-end text-[10px] text-[rgba(17,27,33,0.45)] mt-0.5">
+            {greetingTime}
+          </span>
+        </div>
+
+        {showChips && (
+          <div className="flex flex-wrap gap-1.5 mt-1">
+            {SUGGESTIONS.map((s) => (
+              <button
+                key={s}
+                type="button"
+                onClick={() => send(s)}
+                className="bg-white border border-accent text-accent text-[11px] font-semibold px-2.5 py-1.5 rounded-full hover:bg-primary-50 transition-colors"
+              >
+                {s}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {bubbles.map((b, i) => (
+          <div
+            key={i}
+            className={`wa-msg max-w-[84%] px-2.5 py-2 rounded-lg shadow-[0_1px_0.5px_rgba(11,20,26,0.13)] flex flex-col ${
+              b.role === 'user'
+                ? 'self-end bg-[#D9FDD3] rounded-tr-sm'
+                : 'self-start bg-white rounded-tl-sm'
+            }`}
+          >
+            <span className="text-[13.5px] text-[#111B21] leading-snug whitespace-pre-wrap">
+              {b.text}
+            </span>
+            <span className="self-end flex items-center gap-1 text-[10px] text-[rgba(17,27,33,0.45)] mt-0.5">
+              {b.time}
+              {b.role === 'user' && <BlueTicks />}
+            </span>
+          </div>
+        ))}
+
+        {typing && (
+          <div className="wa-msg self-start bg-white px-3 py-2.5 rounded-lg rounded-tl-sm shadow-[0_1px_0.5px_rgba(11,20,26,0.13)] flex gap-1">
+            <span className="wa-dot" />
+            <span className="wa-dot" />
+            <span className="wa-dot" />
+          </div>
+        )}
+
+        {finished && (
+          <div className="self-center bg-[#F0E6D6] text-[#8A6D3B] text-[10.5px] font-medium px-2.5 py-1 rounded-lg mt-1">
+            — Fin de la demo —
+          </div>
+        )}
+      </div>
+
+      {/* Composer */}
+      <form
+        onSubmit={(e) => {
+          e.preventDefault()
+          send(input)
+        }}
+        className="bg-[#F7F5F3] px-2.5 pt-2 pb-3 flex items-center gap-2"
+      >
+        <div className="flex-1 bg-white rounded-[20px] px-3.5 py-2 flex items-center gap-2 shadow-[0_1px_0.5px_rgba(11,20,26,0.1)]">
+          <input
+            type="text"
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            disabled={finished}
+            placeholder={
+              finished ? 'Demo terminada — actívelo abajo' : 'Escríbale a Sofía…'
+            }
+            aria-label="Escribir un mensaje a Sofía"
+            autoComplete="off"
+            className="flex-1 min-w-0 bg-transparent border-none outline-none text-[13.5px] text-[#111B21] placeholder:text-[#8696A0]"
+          />
+        </div>
+        <button
+          type="submit"
+          disabled={finished || typing}
+          aria-label="Enviar mensaje"
+          className="w-9 h-9 rounded-full bg-[#00A884] flex items-center justify-center flex-shrink-0 disabled:opacity-40 transition-opacity"
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="#fff" aria-hidden="true">
+            <path d="M3 20l17-8L3 4v6l12 2-12 2v6z" />
+          </svg>
+        </button>
+      </form>
     </div>
   )
 }

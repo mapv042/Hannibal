@@ -1,12 +1,14 @@
 'use client'
 
 import React, { useState, useEffect } from 'react'
+import { useSearchParams } from 'next/navigation'
 import { useApi, type ReminderRule } from '@/lib/api'
 import { createBrowserSupabaseClient } from '@/lib/supabase'
 import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { Card, CardBody, CardHeader } from '@/components/ui/Card'
+import { GoogleCalendarIntegration } from '@/components/settings/GoogleCalendarIntegration'
 import { Settings, Save, Globe, Zap, Clock, Bell, BellRing, LucideIcon } from 'lucide-react'
 import type { Office } from '@/lib/supabase'
 
@@ -106,6 +108,10 @@ export default function SettingsPage() {
   const [notificationsSaved, setNotificationsSaved] = useState(false)
   const api = useApi()
   const supabase = createBrowserSupabaseClient()
+
+  // Set by the Google OAuth callback when the flow started from this page.
+  const searchParams = useSearchParams()
+  const gcalNotice = searchParams.get('gcal')
 
   useEffect(() => {
     const loadOffice = async () => {
@@ -467,18 +473,29 @@ export default function SettingsPage() {
         <CardHeader>
           <SectionHeader
             icon={Globe}
-            title="Integraciones"
-            subtitle="Conecta tu calendario y otras herramientas"
-            soon
+            title="Google Calendar"
+            subtitle="Sincroniza las citas con tu calendario"
           />
         </CardHeader>
-        <CardBody className="space-y-4">
-          <p className="text-sm text-gray-600">
-            Conecta Google Calendar para sincronizar tus citas automáticamente
-          </p>
-          <Button variant="secondary" disabled>
-            Conectar Google Calendar
-          </Button>
+        <CardBody>
+          {gcalNotice === 'success' && (
+            <div className="mb-4 p-3 bg-green-50 border border-green-200 rounded-xl">
+              <p className="text-sm text-green-800">Google Calendar se conectó correctamente.</p>
+            </div>
+          )}
+          {gcalNotice === 'error' && (
+            <div className="mb-4 p-3 bg-red-100 border border-red-300 rounded-xl">
+              <p className="text-sm text-red-800">
+                No se pudo conectar Google Calendar. Intenta de nuevo.
+              </p>
+            </div>
+          )}
+          <GoogleCalendarIntegration
+            connected={!!office?.google_calendar_token}
+            onDisconnected={() =>
+              setOffice((prev) => (prev ? { ...prev, google_calendar_token: null } : prev))
+            }
+          />
         </CardBody>
       </Card>
 

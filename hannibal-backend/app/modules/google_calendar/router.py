@@ -11,9 +11,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.dependencies import get_db, get_current_user, get_redis
 from app.db.models import Office
 from app.modules.google_calendar.auth import (
+    DEFAULT_RETURN_TO,
+    RETURN_TO_PATHS,
     get_google_oauth_url,
     exchange_code_for_token,
     resolve_oauth_state,
+    revoke_google_token,
 )
 from app.modules.google_calendar.sync import import_calendar_changes
 from app.modules.google_calendar.watch import (
@@ -48,13 +51,17 @@ async def get_office_from_user(
 
 @router.get("/auth/url")
 async def get_oauth_url(
+    return_to: str = Query(
+        DEFAULT_RETURN_TO,
+        description=f"Page to land on after consent: {'|'.join(RETURN_TO_PATHS)}",
+    ),
     office: Office = Depends(get_office_from_user),
     redis_client: aioredis.Redis = Depends(get_redis),
 ):
     """
     Get Google OAuth2 authorization URL (requires JWT auth).
     """
-    auth_url = await get_google_oauth_url(office.id, redis_client)
+    auth_url = await get_google_oauth_url(office.id, redis_client, return_to)
     return {"auth_url": auth_url}
 
 
@@ -100,26 +107,27 @@ async def process_oauth_callback(
     from app.config import settings
 
     frontend_url = settings.frontend_url or "http://localhost:3000"
+    # Resolved from the nonce below; on failure we can't know where the flow
+    # started, so fall back to the onboarding page.
+    return_path = RETURN_TO_PATHS[DEFAULT_RETURN_TO]
 
     try:
-        office_id = await resolve_oauth_state(state, redis_client)
+        office_id, return_to = await resolve_oauth_state(state, redis_client)
+        return_path = RETURN_TO_PATHS[return_to]
 
         logger.info(
             "process_oauth_callback",
             office_id=str(office_id),
+            return_to=return_to,
         )
 
         await exchange_code_for_token(code, office_id, db)
 
-        return RedirectResponse(
-            url=f"{frontend_url}/onboarding?gcal=success"
-        )
+        return RedirectResponse(url=f"{frontend_url}{return_path}?gcal=success")
 
     except Exception as e:
         logger.error("oauth_callback_error", error=str(e))
-        return RedirectResponse(
-            url=f"{frontend_url}/onboarding?gcal=error"
-        )
+        return RedirectResponse(url=f"{frontend_url}{return_path}?gcal=error")
 
 
 @router.post("/disconnect")
@@ -130,7 +138,7 @@ async def disconnect_google_calendar(
     """
     Disconnect Google Calendar integration.
 
-    Removes stored credentials and stops watching.
+    Revokes the grant at Google, stops watching, and removes stored credentials.
     """
     try:
         logger.info(
@@ -138,7 +146,7 @@ async def disconnect_google_calendar(
             office_id=str(office.id),
         )
 
-        # Delete watch channel
+        # Delete watch channel (while the token is still usable).
         try:
             await delete_watch_channel(office.id, db)
         except Exception as e:
@@ -146,6 +154,17 @@ async def disconnect_google_calendar(
                 "error_deleting_watch",
                 office_id=str(office.id),
                 error=str(e),
+            )
+
+        # Revoke at Google so the grant disappears from the doctor's account,
+        # not just from our database. Best-effort: if Google is unreachable we
+        # still drop our credentials below, since refusing to disconnect would
+        # leave the user with no way out.
+        revoked = await revoke_google_token(office.google_calendar_token)
+        if not revoked:
+            logger.warning(
+                "google_disconnect_without_revoke",
+                office_id=str(office.id),
             )
 
         # Clear credentials

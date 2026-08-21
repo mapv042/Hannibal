@@ -1,7 +1,8 @@
 import React from 'react'
 import { Card, CardBody } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
-import { Calendar, MessageSquare, Bell, AlertTriangle, Sparkles } from 'lucide-react'
+import { EyeMark } from '@/components/brand/EyeMark'
+import { Calendar, MessageSquare, Bell, AlertTriangle } from 'lucide-react'
 
 interface StepWelcomeProps {
   onNext: () => void
@@ -18,36 +19,26 @@ export const StepWelcome: React.FC<StepWelcomeProps> = ({ onNext }) => {
   return (
     <Card>
       <CardBody className="text-center py-12 px-8">
-        <div
-          className="w-20 h-20 rounded-3xl flex items-center justify-center mx-auto mb-7"
-          style={{
-            background: 'linear-gradient(135deg, #1535a3, #092b82)',
-            boxShadow: '0 16px 40px rgba(var(--primary-rgb-500), .38), inset 0 1px 0 rgba(255,255,255,.3)',
-          }}
-        >
-          <Sparkles className="w-9 h-9 text-white" strokeWidth={2.2} />
+        <div className="flex justify-center mb-6">
+          <EyeMark size={64} animate />
         </div>
 
-        <h1 className="text-[32px] font-bold tracking-tight leading-tight text-gray-900 mb-3">
-          Bienvenido a Hannibal
-        </h1>
-        <p className="text-base text-gray-600 mb-9 max-w-md mx-auto leading-relaxed">
-          Configura tu asistente de WhatsApp en menos de 10 minutos.
-          Te guiaremos paso a paso.
+        <h1 className="display text-[32px] mb-3">Bienvenido a ArgosAI</h1>
+        <p className="text-[15px] text-slate mb-9 max-w-md mx-auto leading-relaxed">
+          Configura tu asistente de WhatsApp en menos de 10 minutos. Te guiaremos paso a
+          paso.
         </p>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-9 text-left max-w-lg mx-auto">
           {features.map(({ icon: Icon, title, desc }) => (
             <div
               key={title}
-              className="flex items-center gap-3.5 p-4 bg-white border border-gray-200 rounded-2xl shadow-xs"
+              className="flex items-center gap-3.5 p-4 bg-off-white border border-line rounded-lg"
             >
-              <div className="w-10 h-10 rounded-[10px] bg-primary-50 flex items-center justify-center flex-shrink-0">
-                <Icon size={20} className="text-primary-700" />
-              </div>
+              <Icon size={20} className="text-accent flex-shrink-0" strokeWidth={1.7} />
               <div>
-                <p className="text-sm font-semibold text-gray-900">{title}</p>
-                <p className="text-xs text-gray-500">{desc}</p>
+                <p className="text-sm font-semibold text-navy">{title}</p>
+                <p className="text-xs text-slate">{desc}</p>
               </div>
             </div>
           ))}

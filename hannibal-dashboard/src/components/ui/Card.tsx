@@ -24,7 +24,7 @@ export const CardHeader: React.FC<CardHeaderProps> = ({
   ...props
 }) => {
   return (
-    <div className={`px-6 py-4 border-b border-gray-200 ${className}`} {...props}>
+    <div className={`px-6 py-4 border-b border-line ${className}`} {...props}>
       {children}
     </div>
   )
@@ -60,7 +60,7 @@ export const CardFooter: React.FC<CardFooterProps> = ({
   ...props
 }) => {
   return (
-    <div className={`px-6 py-4 border-t border-gray-200 ${className}`} {...props}>
+    <div className={`px-6 py-4 border-t border-line ${className}`} {...props}>
       {children}
     </div>
   )

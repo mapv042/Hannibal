@@ -12,29 +12,13 @@ interface PreviewPaneProps {
 export const PreviewPane: React.FC<PreviewPaneProps> = ({ title, children }) => {
   return (
     <div
-      className="relative rounded-2xl border border-gray-200 overflow-hidden p-7"
-      style={{
-        background: `radial-gradient(ellipse 80% 60% at 80% 0%, rgba(var(--primary-rgb-500), .12), transparent 60%),
-                     radial-gradient(ellipse 70% 50% at 10% 100%, rgba(var(--secondary-rgb-500), .10), transparent 60%),
-                     linear-gradient(180deg, #eef1fa 0%, #d3dcf2 100%)`,
-      }}
+      className="rounded-xl border border-line bg-off-white p-7"
     >
-      <div
-        className="absolute inset-0 pointer-events-none opacity-50"
-        style={{
-          backgroundImage: 'radial-gradient(circle, #d1d5db 1px, transparent 1px)',
-          backgroundSize: '24px 24px',
-          maskImage: 'radial-gradient(ellipse 60% 60% at 50% 30%, transparent, #000 90%)',
-          WebkitMaskImage: 'radial-gradient(ellipse 60% 60% at 50% 30%, transparent, #000 90%)',
-        }}
-      />
-      <div className="relative flex items-center gap-2 mb-6">
-        <Sparkles size={14} className="text-primary-600" />
-        <span className="text-xs font-bold uppercase tracking-wider text-primary-700">
-          {title}
-        </span>
+      <div className="flex items-center gap-2 mb-6">
+        <Sparkles size={13} className="text-accent" />
+        <span className="eyebrow">{title}</span>
       </div>
-      <div className="relative">{children}</div>
+      <div>{children}</div>
     </div>
   )
 }
@@ -79,17 +63,17 @@ export const SchedulePreview: React.FC<SchedulePreviewProps> = ({
 
   return (
     <div>
-      <h3 className="text-[22px] font-bold tracking-tight text-gray-900 mb-1">Tu semana</h3>
-      <p className="text-sm text-gray-600 mb-5">Vista previa de tu disponibilidad</p>
+      <h3 className="display text-[22px] mb-1">Tu semana</h3>
+      <p className="text-sm text-slate mb-5">Vista previa de tu disponibilidad</p>
 
-      <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-4">
+      <div className="bg-white rounded-lg border border-line p-4">
         <div className="grid gap-0.5" style={{ gridTemplateColumns: '34px repeat(7, 1fr)' }}>
           <div />
           {DAY_LABELS.map((dn, i) => (
             <div
               key={dn}
               className={`text-[11px] font-semibold text-center pb-1.5 ${
-                ordered[i]?.enabled ? 'text-gray-700' : 'text-gray-400'
+                ordered[i]?.enabled ? 'text-slate' : 'text-slate-light'
               }`}
             >
               {dn}
@@ -97,7 +81,7 @@ export const SchedulePreview: React.FC<SchedulePreviewProps> = ({
           ))}
           {hours.map((h) => (
             <React.Fragment key={h}>
-              <div className="text-[10px] text-gray-400 text-right pr-1">
+              <div className="text-[10px] text-slate-light text-right pr-1">
                 {h.toString().padStart(2, '0')}
               </div>
               {ordered.map((day, di) => {
@@ -115,10 +99,10 @@ export const SchedulePreview: React.FC<SchedulePreviewProps> = ({
                     className="h-4 rounded-[3px]"
                     style={{
                       background: inBlock
-                        ? 'linear-gradient(180deg, #3b5fc7, #1535a3)'
+                        ? '#2952A3'
                         : isOn
-                        ? '#f9fafb'
-                        : 'repeating-linear-gradient(45deg, #f3f4f6, #f3f4f6 3px, transparent 3px, transparent 6px)',
+                        ? '#F7F9FC'
+                        : 'repeating-linear-gradient(45deg, #EEF2F8, #EEF2F8 3px, transparent 3px, transparent 6px)',
                     }}
                   />
                 )
@@ -135,10 +119,9 @@ export const SchedulePreview: React.FC<SchedulePreviewProps> = ({
       </div>
 
       <div
-        className="mt-4 p-3 rounded-xl flex items-center gap-2.5 text-[13px] text-gray-700"
-        style={{ background: 'rgba(var(--primary-rgb-500), .10)' }}
+        className="mt-4 p-3 rounded-lg border border-line bg-white flex items-center gap-2.5 text-[13px] text-slate"
       >
-        <Clock size={16} className="text-primary-700 flex-shrink-0" />
+        <Clock size={16} className="text-accent flex-shrink-0" />
         <span>
           <b>{enabledCount} días</b> activos esta semana ·{' '}
           <b>{totalHours.toFixed(1)} hrs</b> totales
@@ -150,9 +133,9 @@ export const SchedulePreview: React.FC<SchedulePreviewProps> = ({
 
 function MiniStat({ label, value }: { label: string; value: string }) {
   return (
-    <div className="bg-white rounded-xl border border-gray-200 px-3 py-2.5">
-      <div className="text-[11px] text-gray-500 mb-1">{label}</div>
-      <div className="text-sm font-bold text-gray-900">{value}</div>
+    <div className="bg-white rounded-md border border-line px-3 py-2.5">
+      <div className="text-[11px] text-slate-light mb-1">{label}</div>
+      <div className="text-sm font-bold text-navy">{value}</div>
     </div>
   )
 }
@@ -173,7 +156,7 @@ function BotBubble({ children, time }: { children: React.ReactNode; time: string
 function PatientBubble({ children, time }: { children: React.ReactNode; time: string }) {
   return (
     <div
-      className="bg-[#dcf8c6] text-[#0b141a] text-sm leading-snug px-3 py-2.5 rounded-lg rounded-tr-none shadow-[0_1px_0.5px_rgba(0,0,0,.13)] ml-auto"
+      className="bg-[#D9FDD3] text-[#0b141a] text-sm leading-snug px-3 py-2.5 rounded-lg rounded-tr-none shadow-[0_1px_0.5px_rgba(0,0,0,.13)] ml-auto"
       style={{ maxWidth: '70%' }}
     >
       {children}
@@ -198,14 +181,14 @@ export const ConsultationPreview: React.FC<ConsultationPreviewProps> = ({
 }) => {
   return (
     <div>
-      <h3 className="text-[22px] font-bold tracking-tight text-gray-900 mb-1">
+      <h3 className="display text-[22px] mb-1">
         Cómo se ve en WhatsApp
       </h3>
-      <p className="text-sm text-gray-600 mb-5">
+      <p className="text-sm text-slate mb-5">
         Esto es lo que el asistente le dirá a tus pacientes.
       </p>
 
-      <div className="bg-[#e5ddd5] rounded-2xl p-4">
+      <div className="bg-[#ECE5DD] rounded-lg p-4">
         <BotBubble time="14:32">
           Claro, te comparto la información:
           <br />
@@ -225,7 +208,7 @@ export const ConsultationPreview: React.FC<ConsultationPreviewProps> = ({
       </div>
 
       <div
-        className="mt-4 p-3.5 rounded-xl flex gap-2.5 text-[13px] text-gray-700 leading-relaxed"
+        className="mt-4 p-3.5 rounded-xl flex gap-2.5 text-[13px] text-slate leading-relaxed"
         style={{ background: 'rgba(14,165,233,.06)', border: '1px solid rgba(14,165,233,.18)' }}
       >
         <AlertCircle size={16} className="text-info flex-shrink-0 mt-0.5" />
@@ -258,12 +241,12 @@ export const AssistantPreview: React.FC<AssistantPreviewProps> = ({
 
   return (
     <div>
-      <h3 className="text-[22px] font-bold tracking-tight text-gray-900 mb-1">
+      <h3 className="display text-[22px] mb-1">
         Conoce a {name || 'tu asistente'}
       </h3>
-      <p className="text-sm text-gray-600 mb-5">Así sonará en las conversaciones reales.</p>
+      <p className="text-sm text-slate mb-5">Así sonará en las conversaciones reales.</p>
 
-      <div className="bg-[#e5ddd5] rounded-2xl p-3.5 space-y-2">
+      <div className="bg-[#ECE5DD] rounded-lg p-3.5 space-y-2">
         <BotBubble time="9:00">{welcome || greeting}</BotBubble>
         <PatientBubble time="9:01">
           {isCasual ? 'Hola, ¿tienes algo el viernes?' : 'Buen día, ¿tiene espacio el viernes?'}
@@ -275,16 +258,16 @@ export const AssistantPreview: React.FC<AssistantPreviewProps> = ({
         </BotBubble>
       </div>
 
-      <div className="mt-4 p-3.5 rounded-xl bg-white border border-gray-200 flex items-center gap-3">
+      <div className="mt-4 p-3.5 rounded-lg bg-white border border-line flex items-center gap-3">
         <div
           className="w-10 h-10 rounded-full text-white flex items-center justify-center font-bold text-base flex-shrink-0"
-          style={{ background: 'linear-gradient(135deg, #3b5fc7, #092b82)' }}
+          style={{ background: '#2952A3' }}
         >
           {displayName[0]?.toUpperCase()}
         </div>
         <div className="flex-1 min-w-0">
-          <div className="text-sm font-semibold text-gray-900">{displayName}</div>
-          <div className="text-xs text-gray-500">
+          <div className="text-sm font-semibold text-navy">{displayName}</div>
+          <div className="text-xs text-slate-light">
             Tono: <b>{isCasual ? 'De tú · cercano' : 'De usted · formal'}</b>
           </div>
         </div>
