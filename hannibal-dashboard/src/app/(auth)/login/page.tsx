@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useState } from 'react'
+import React, { useEffect, useState } from 'react'
 import Link from 'next/link'
 import { createBrowserSupabaseClient } from '@/lib/supabase'
 import { Card, CardBody } from '@/components/ui/Card'
@@ -12,6 +12,15 @@ export default function LoginPage() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const supabase = createBrowserSupabaseClient()
+
+  // Surface a failed OAuth exchange, which redirects here with ?error=auth.
+  // Read from window rather than useSearchParams to avoid needing a Suspense
+  // boundary around this page.
+  useEffect(() => {
+    if (new URLSearchParams(window.location.search).get('error') === 'auth') {
+      setError('No pudimos completar el inicio de sesión. Intenta de nuevo.')
+    }
+  }, [])
 
   const handleGoogleLogin = async () => {
     setError('')

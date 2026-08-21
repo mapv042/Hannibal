@@ -76,7 +76,16 @@ export default function OnboardingPage() {
           const existingOffice = response.data[0]
 
           if (existingOffice.onboarding_completed) {
-            router.push('/dashboard')
+            // Coming back from the Google OAuth flow with onboarding already
+            // finished: hand the notice to Settings rather than dropping it.
+            // The backend falls back to /onboarding when it cannot resolve the
+            // state nonce, so swallowing it here makes a real failure look
+            // exactly like a silent success.
+            router.push(
+              gcalParam === 'success' || gcalParam === 'error'
+                ? `/dashboard/settings?gcal=${gcalParam}`
+                : '/dashboard'
+            )
             return
           }
 

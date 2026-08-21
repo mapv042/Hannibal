@@ -5,7 +5,13 @@ import { NextResponse } from 'next/server'
 export async function GET(request: Request) {
   const { searchParams, origin } = new URL(request.url)
   const code = searchParams.get('code')
-  const next = searchParams.get('next') ?? '/'
+
+  // `next` is attacker-controllable, so only same-origin paths are accepted.
+  // The default lands on the dashboard; DashboardShell forwards users who
+  // still have setup pending on to /onboarding.
+  const requestedNext = searchParams.get('next')
+  const next =
+    requestedNext && /^\/(?!\/)/.test(requestedNext) ? requestedNext : '/dashboard'
 
   if (code) {
     const cookieStore = cookies()
@@ -37,6 +43,6 @@ export async function GET(request: Request) {
     }
   }
 
-  // Return the user to login with an error
-  return NextResponse.redirect(`${origin}/login`)
+  // Return the user to login with an error the page can surface
+  return NextResponse.redirect(`${origin}/login?error=auth`)
 }
