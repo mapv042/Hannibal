@@ -106,7 +106,12 @@ export default function PrivacyPage() {
         una autoridad competente.
       </p>
 
-      <h2>7. Conservación y eliminación</h2>
+      {/*
+        Anchored: Meta's App Review requires a "user data deletion instructions"
+        URL, and it points here (https://argosai.mx/privacy#eliminacion-de-datos).
+        Don't rename the id without updating it in the Meta App Dashboard.
+      */}
+      <h2 id="eliminacion-de-datos">7. Conservación y eliminación</h2>
       <ul>
         <li>Conservamos los datos del consultorio mientras la cuenta esté activa. Al cancelar el servicio, eliminamos o anonimizamos los datos personales dentro de los 90 días siguientes, salvo lo que la ley obligue a conservar (por ejemplo, comprobantes fiscales).</li>
         <li>El contexto de conversación en memoria temporal expira automáticamente a las 24 horas.</li>
