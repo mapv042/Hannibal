@@ -276,6 +276,32 @@ export class ApiClient {
     })
   }
 
+  // WhatsApp Integration (Embedded Signup)
+  async completeWhatsAppSignup(data: {
+    office_id: string
+    code: string
+    phone_number_id: string
+    waba_id: string
+    mode?: 'coexistence' | 'dedicated' | 'new'
+  }): Promise<ApiResponse<{ status: string; phone_number: string | null; verified_name: string | null }>> {
+    return this.fetch('/api/auth/whatsapp/embedded-signup', {
+      method: 'POST',
+      body: JSON.stringify({ mode: 'coexistence', ...data }),
+    })
+  }
+
+  async getWhatsAppStatus(office_id: string): Promise<ApiResponse<{
+    active: boolean
+    phone_number: string | null
+    phone_number_id: string | null
+    waba_id: string | null
+    mode: string | null
+  }>> {
+    return this.fetch(`/api/auth/whatsapp/status/${office_id}`, {
+      method: 'GET',
+    })
+  }
+
   // Google Calendar Integration
   /** `returnTo` names the page the OAuth callback sends the browser back to. */
   async getGoogleCalendarAuthUrl(

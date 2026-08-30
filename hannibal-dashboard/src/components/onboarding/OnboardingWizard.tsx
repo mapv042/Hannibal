@@ -78,6 +78,8 @@ type SubmitHandler = (data: OnboardingData) => Promise<boolean | void> | boolean
 interface OnboardingWizardProps {
   initialStep?: number
   initialData?: Partial<OnboardingData>
+  /** Needed by the WhatsApp step; null/absent in preview mode. */
+  officeId?: string | null
   gcalConnected?: boolean
   saving?: boolean
   error?: string
@@ -92,6 +94,7 @@ interface OnboardingWizardProps {
 export function OnboardingWizard({
   initialStep = 0,
   initialData,
+  officeId = null,
   gcalConnected = false,
   saving = false,
   error,
@@ -235,7 +238,9 @@ export function OnboardingWizard({
         </div>
       )}
 
-      {currentStep === 5 && <StepConnectWhatsApp onNext={advance} onBack={back} />}
+      {currentStep === 5 && (
+        <StepConnectWhatsApp onNext={advance} onBack={back} officeId={officeId} />
+      )}
 
       {currentStep === 6 && (
         <StepConnectCalendar onNext={advance} onBack={back} connected={gcalConnected} />

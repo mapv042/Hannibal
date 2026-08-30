@@ -23,8 +23,13 @@ from app.modules.whatsapp.schemas import (
     WebhookVerificationRequest,
     SendMessageRequest,
     SendMessageResponse,
+    EmbeddedSignupRequest,
 )
-from app.modules.whatsapp.provisioning import get_office_by_phone_id, get_whatsapp_status
+from app.modules.whatsapp.provisioning import (
+    get_office_by_phone_id,
+    get_whatsapp_status,
+    complete_embedded_signup,
+)
 from app.modules.whatsapp.coexistence import (
     check_pause,
     get_conversation_by_whatsapp_id,
@@ -599,70 +604,62 @@ async def _require_owned_office(
 
 @auth_router.post("/embedded-signup")
 async def complete_whatsapp_onboarding(
-    request: Request,
+    payload: EmbeddedSignupRequest,
     current_user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-) -> Dict[str, str]:
+) -> Dict[str, Any]:
     """
-    Complete WhatsApp embedded signup flow.
+    Complete WhatsApp Embedded Signup for the caller's office.
 
-    After user completes Meta's embedded signup, the frontend sends us
-    the resulting credentials (phone_number_id, waba_id, access_token).
-
-    This endpoint stores those credentials for the user's office.
-
-    Expected request body:
-    {
-        "office_id": "uuid",
-        "phone_number_id": "string",
-        "waba_id": "string",
-        "access_token": "string",
-        "mode": "coexistence|dedicated|new"
-    }
+    The frontend sends the one-time authorization code from FB.login plus the
+    phone_number_id/waba_id Meta reported in the popup's session info. All
+    token handling happens server-side: the code is exchanged with the app
+    secret, the token is validated against the claimed phone number, the app
+    is subscribed to the WABA's webhooks, the number is registered for Cloud
+    API and the credentials are stored encrypted on the office.
     """
     try:
-        payload = await request.json()
-
-        office_id = payload.get("office_id")
-        phone_number_id = payload.get("phone_number_id")
-        waba_id = payload.get("waba_id")
-        access_token = payload.get("access_token")
-        mode = payload.get("mode", "new")
-
-        if not all([office_id, phone_number_id, waba_id, access_token]):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Missing required fields",
-            )
-
         # Only the office's owner may attach WhatsApp credentials to it.
-        await _require_owned_office(office_id, current_user, db)
+        office = await _require_owned_office(payload.office_id, current_user, db)
 
-        # TODO: Import and use provisioning functions
-        # from app.modules.whatsapp.provisioning import register_meta_number
-        # success = await register_meta_number(
-        #     phone_number_id,
-        #     waba_id,
-        #     access_token,
-        #     office_id,
-        #     mode,
-        #     db,
-        # )
+        result = await complete_embedded_signup(
+            code=payload.code,
+            phone_number_id=payload.phone_number_id,
+            waba_id=payload.waba_id,
+            office_id=office.id,
+            mode=payload.mode,
+            db=db,
+        )
 
         logger.info(
             "whatsapp_onboarding_complete",
-            office_id=office_id,
-            phone_number_id=phone_number_id,
-            mode=mode,
+            office_id=payload.office_id,
+            phone_number_id=payload.phone_number_id,
+            mode=payload.mode,
+            registered=result.get("registered"),
         )
 
         return {
             "status": "success",
             "message": "WhatsApp configured successfully",
+            "phone_number": result.get("phone_number"),
+            "verified_name": result.get("verified_name"),
         }
 
     except HTTPException:
         raise  # auth/validation errors must reach the client unchanged
+    except WhatsAppError as e:
+        # A Meta-side failure: surface it as an upstream error so the frontend
+        # can tell the doctor to retry, without leaking internals.
+        logger.error(
+            "whatsapp_onboarding_meta_error",
+            office_id=payload.office_id,
+            error=str(e),
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=str(e),
+        )
     except Exception as e:
         logger.error("whatsapp_onboarding_error", error=str(e), exc_info=True)
         raise HTTPException(
@@ -703,10 +700,3 @@ async def get_whatsapp_activation_status(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to fetch status",
         )
-
-
-# Include both routers in main app
-def include_whatsapp_routes(app):
-    """Register WhatsApp routers with the FastAPI app."""
-    app.include_router(router)
-    app.include_router(auth_router)

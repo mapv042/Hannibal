@@ -32,6 +32,10 @@ class Settings(BaseSettings):
     meta_verify_token: str = ""
     meta_app_secret: str = ""
     meta_app_id: str = ""
+    # Two-step verification PIN sent when registering a number for Cloud API
+    # during Embedded Signup. If the number already has a 2FA PIN, Meta requires
+    # that exact PIN, so keep this stable once doctors are onboarded.
+    meta_register_pin: str = "000000"
 
     # Twilio
     twilio_account_sid: str = ""

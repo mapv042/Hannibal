@@ -18,6 +18,209 @@ from app.core.exceptions import WhatsAppError
 logger = get_logger(__name__)
 
 TWILIO_BASE_URL = "https://api.twilio.com"
+GRAPH_BASE_URL = "https://graph.facebook.com/v21.0"
+
+
+def _compact_phone(display_phone_number: str) -> str:
+    """Meta returns display numbers like '+52 1 33 1234 5678'; the column is
+    String(20), so keep only '+' and digits."""
+    return "".join(c for c in display_phone_number if c.isdigit() or c == "+")
+
+
+async def exchange_code_for_token(code: str) -> str:
+    """
+    Exchange an Embedded Signup authorization code for a business token.
+
+    The frontend never sees the token: FB.login(response_type='code') hands it
+    a one-time code, and only the backend (holding META_APP_SECRET) can turn
+    that into the long-lived business integration system user token.
+
+    Raises:
+        WhatsAppError: If the exchange fails or returns no token
+    """
+    url = f"{GRAPH_BASE_URL}/oauth/access_token"
+    params = {
+        "client_id": settings.meta_app_id,
+        "client_secret": settings.meta_app_secret,
+        "code": code,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            response = await client.get(url, params=params)
+    except httpx.HTTPError as e:
+        logger.error("es_code_exchange_transport_error", error=str(e))
+        raise WhatsAppError("Could not reach Meta to exchange the signup code") from e
+
+    if response.status_code >= 400:
+        logger.error(
+            "es_code_exchange_failed",
+            status_code=response.status_code,
+            response_body=response.text,
+        )
+        raise WhatsAppError("Failed to exchange Embedded Signup code for a token")
+
+    token = response.json().get("access_token")
+    if not token:
+        logger.error("es_code_exchange_no_token")
+        raise WhatsAppError("Meta returned no access token for the signup code")
+    return token
+
+
+async def fetch_phone_info(phone_number_id: str, access_token: str) -> Dict[str, Any]:
+    """
+    Fetch display number + verified name for a phone_number_id.
+
+    Doubles as validation that the exchanged token actually grants access to
+    the phone_number_id the client claimed — a forged or mismatched id fails
+    here before anything is stored.
+
+    Raises:
+        WhatsAppError: If the phone number can't be read with this token
+    """
+    url = f"{GRAPH_BASE_URL}/{phone_number_id}"
+    params = {"fields": "display_phone_number,verified_name"}
+    headers = {"Authorization": f"Bearer {access_token}"}
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            response = await client.get(url, params=params, headers=headers)
+    except httpx.HTTPError as e:
+        logger.error(
+            "es_phone_info_transport_error",
+            phone_number_id=phone_number_id,
+            error=str(e),
+        )
+        raise WhatsAppError("Could not reach Meta to verify the phone number") from e
+
+    if response.status_code >= 400:
+        logger.error(
+            "es_phone_info_failed",
+            phone_number_id=phone_number_id,
+            status_code=response.status_code,
+            response_body=response.text,
+        )
+        raise WhatsAppError(
+            "The signup token does not grant access to this phone number"
+        )
+    return response.json()
+
+
+async def subscribe_app_to_waba(waba_id: str, access_token: str) -> None:
+    """
+    Subscribe our app to the customer's WABA so its webhook events (messages,
+    statuses) are delivered to our app-level webhook URL.
+
+    Raises:
+        WhatsAppError: If the subscription call fails
+    """
+    url = f"{GRAPH_BASE_URL}/{waba_id}/subscribed_apps"
+    headers = {"Authorization": f"Bearer {access_token}"}
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            response = await client.post(url, headers=headers)
+    except httpx.HTTPError as e:
+        logger.error("es_waba_subscribe_transport_error", waba_id=waba_id, error=str(e))
+        raise WhatsAppError("Could not reach Meta to subscribe to the WABA") from e
+
+    if response.status_code >= 400:
+        logger.error(
+            "es_waba_subscribe_failed",
+            waba_id=waba_id,
+            status_code=response.status_code,
+            response_body=response.text,
+        )
+        raise WhatsAppError("Failed to subscribe the app to the WhatsApp account")
+    logger.info("es_waba_subscribed", waba_id=waba_id)
+
+
+async def register_phone_for_cloud_api(
+    phone_number_id: str, access_token: str
+) -> bool:
+    """
+    Register the phone number for Cloud API messaging (POST /register).
+
+    Best-effort by design: a number that is already registered (e.g. a
+    coexistence number the customer's flow registered during QR pairing, or a
+    reconnect) makes this call fail without meaning the onboarding failed. We
+    log loudly and let the caller store credentials either way — an actually
+    unregistered number will surface immediately on the first send attempt.
+
+    Returns:
+        True if Meta confirmed the registration, False if the call failed
+    """
+    url = f"{GRAPH_BASE_URL}/{phone_number_id}/register"
+    headers = {"Authorization": f"Bearer {access_token}"}
+    payload = {
+        "messaging_product": "whatsapp",
+        "pin": settings.meta_register_pin,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            response = await client.post(url, json=payload, headers=headers)
+    except httpx.HTTPError as e:
+        logger.warning(
+            "es_phone_register_transport_error",
+            phone_number_id=phone_number_id,
+            error=str(e),
+        )
+        return False
+
+    if response.status_code >= 400:
+        logger.warning(
+            "es_phone_register_failed",
+            phone_number_id=phone_number_id,
+            status_code=response.status_code,
+            response_body=response.text,
+        )
+        return False
+
+    logger.info("es_phone_registered", phone_number_id=phone_number_id)
+    return True
+
+
+async def complete_embedded_signup(
+    code: str,
+    phone_number_id: str,
+    waba_id: str,
+    office_id: uuid.UUID,
+    mode: str,
+    db: AsyncSession,
+) -> Dict[str, Any]:
+    """
+    Full server-side completion of Meta's Embedded Signup flow.
+
+    Steps: exchange the code for a business token → verify the token grants
+    access to the claimed phone number (and get its display number) →
+    subscribe our app to the WABA's webhooks → register the number for Cloud
+    API (best-effort) → persist credentials on the office.
+
+    Returns:
+        Dict with phone_number, verified_name and registered (bool)
+
+    Raises:
+        WhatsAppError: On any non-recoverable Meta API failure
+        ValueError: If the office doesn't exist or the mode is invalid
+    """
+    access_token = await exchange_code_for_token(code)
+    phone_info = await fetch_phone_info(phone_number_id, access_token)
+    await subscribe_app_to_waba(waba_id, access_token)
+    registered = await register_phone_for_cloud_api(phone_number_id, access_token)
+
+    display_number = phone_info.get("display_phone_number") or ""
+    await register_meta_number(
+        phone_number_id=phone_number_id,
+        waba_id=waba_id,
+        access_token=access_token,
+        office_id=office_id,
+        mode=mode,
+        db=db,
+        phone_number=_compact_phone(display_number) if display_number else None,
+    )
+
+    return {
+        "phone_number": display_number or None,
+        "verified_name": phone_info.get("verified_name"),
+        "registered": registered,
+    }
 
 
 async def buy_twilio_number(
@@ -116,6 +319,7 @@ async def register_meta_number(
     office_id: uuid.UUID,
     mode: str,
     db: AsyncSession,
+    phone_number: Optional[str] = None,
 ) -> bool:
     """
     Register a WhatsApp number with Meta Business Account.
@@ -135,6 +339,7 @@ async def register_meta_number(
         office_id: ID of the office to associate
         mode: Operating mode (coexistence|dedicated|new)
         db: Database session
+        phone_number: Display phone number to store (compact, e.g. +5213312345678)
 
     Returns:
         True if registration was successful
@@ -158,6 +363,8 @@ async def register_meta_number(
         office.whatsapp_token = access_token  # Encrypted at rest by EncryptedText
         office.whatsapp_mode = mode
         office.whatsapp_app_active = True
+        if phone_number:
+            office.whatsapp_phone = phone_number
 
         db.add(office)
         await db.commit()
@@ -215,7 +422,7 @@ async def get_whatsapp_status(
 
         return {
             "active": office.whatsapp_app_active,
-            "phone_number": office.whatsapp_phone_number,
+            "phone_number": office.whatsapp_phone,
             "phone_number_id": office.whatsapp_phone_id,
             "waba_id": office.whatsapp_waba_id,
             "mode": office.whatsapp_mode,

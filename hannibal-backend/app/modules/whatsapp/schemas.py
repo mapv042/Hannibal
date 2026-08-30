@@ -98,6 +98,25 @@ class WhatsAppStatusPayload(BaseModel):
     recipient_status_update_json: Optional[str] = Field(None, description="Status update JSON")
 
 
+class EmbeddedSignupRequest(BaseModel):
+    """Payload the frontend sends after Meta's Embedded Signup popup finishes.
+
+    Carries the one-time authorization code (NOT an access token — the code is
+    exchanged server-side with the app secret) plus the ids Meta reported via
+    the WA_EMBEDDED_SIGNUP session-info message event.
+    """
+
+    office_id: str = Field(..., description="UUID of the office to attach WhatsApp to")
+    code: str = Field(..., description="One-time code from FB.login(response_type='code')")
+    phone_number_id: str = Field(..., description="Meta phone number id from session info")
+    waba_id: str = Field(..., description="WhatsApp Business Account id from session info")
+    mode: str = Field(
+        default="coexistence",
+        pattern="^(coexistence|dedicated|new)$",
+        description="Operating mode for the number",
+    )
+
+
 class WebhookVerificationRequest(BaseModel):
     """Webhook verification request from Meta."""
 
