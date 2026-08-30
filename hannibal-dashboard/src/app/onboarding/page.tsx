@@ -316,6 +316,7 @@ export default function OnboardingPage() {
     <OnboardingWizard
       initialStep={initialStep}
       initialData={initialData}
+      officeId={office?.id ?? null}
       gcalConnected={gcalConnected}
       saving={saving}
       error={error}

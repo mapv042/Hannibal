@@ -30,7 +30,10 @@ from app.db.base import get_engine
 from app.utils.logger import configure_logging, get_logger
 
 # Import routers
-from app.modules.whatsapp.router import router as whatsapp_router
+from app.modules.whatsapp.router import (
+    router as whatsapp_router,
+    auth_router as whatsapp_auth_router,
+)
 from app.modules.scheduling.router import router as scheduling_router
 from app.modules.offices.router import router as offices_router
 from app.modules.patients.router import router as patients_router
@@ -265,6 +268,8 @@ async def generic_exception_handler(request, exc: Exception):
 
 # Include routers with prefixes
 app.include_router(whatsapp_router, prefix="/api/whatsapp", tags=["whatsapp"])
+# auth_router carries its own /auth/whatsapp prefix → /api/auth/whatsapp/...
+app.include_router(whatsapp_auth_router, prefix="/api")
 app.include_router(scheduling_router, prefix="/api/scheduling", tags=["scheduling"])
 app.include_router(offices_router, prefix="/api/offices", tags=["offices"])
 app.include_router(patients_router, prefix="/api/patients", tags=["patients"])

@@ -9,7 +9,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.dependencies import get_db, get_current_user, get_redis
-from app.db.models import Office
+from app.db.models import GoogleCalendarEvent, Office
 from app.modules.google_calendar.auth import (
     DEFAULT_RETURN_TO,
     RETURN_TO_PATHS,
@@ -24,7 +24,7 @@ from app.modules.google_calendar.watch import (
     delete_watch_channel,
 )
 from app.utils.logger import get_logger
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from app.core.exceptions import NotFoundError, GoogleCalendarError
 
 logger = get_logger(__name__)
@@ -166,6 +166,14 @@ async def disconnect_google_calendar(
                 "google_disconnect_without_revoke",
                 office_id=str(office.id),
             )
+
+        # Drop the synced copy of the doctor's calendar: once the grant is gone
+        # we have no reason to keep their event data (privacy policy §2).
+        await db.execute(
+            delete(GoogleCalendarEvent).where(
+                GoogleCalendarEvent.office_id == office.id
+            )
+        )
 
         # Clear credentials
         office.google_calendar_token = None
