@@ -58,7 +58,7 @@ export function Security() {
           </h2>
 
           <p className="text-[#A9B6CC] text-[15px] max-w-[560px] mx-auto mb-11 leading-relaxed">
-            ArgosAI no es un scraper ni una herramienta no oficial. Opera sobre la API
+            Argos no es un scraper ni una herramienta no oficial. Opera sobre la API
             oficial de WhatsApp Business — la misma infraestructura que usan miles de
             empresas verificadas por Meta en todo el mundo.
           </p>

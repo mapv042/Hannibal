@@ -18,14 +18,14 @@ export default function OnboardingLayout({
       }}
     >
       <div className="mb-8">
-        <Link href="/" aria-label="ArgosAI — inicio">
+        <Link href="/" aria-label="Argos — inicio">
           <Logo size={28} />
         </Link>
       </div>
 
       <div className="relative w-full max-w-5xl">{children}</div>
 
-      <p className="text-xs text-slate-light mt-8">ArgosAI &copy; 2026</p>
+      <p className="text-xs text-slate-light mt-8">Argos &copy; 2026</p>
     </div>
   )
 }

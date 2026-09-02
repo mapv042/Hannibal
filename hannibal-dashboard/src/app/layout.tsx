@@ -37,12 +37,12 @@ const jetbrainsMono = JetBrains_Mono({
 })
 
 export const metadata: Metadata = {
-  title: 'ArgosAI - AI Assistant',
+  title: 'Argos - AI Assistant',
   description: 'Control panel to manage your WhatsApp assistant',
-  keywords: ['argosai', 'whatsapp', 'assistant', 'appointments', 'doctors'],
-  authors: [{ name: 'ArgosAI' }],
+  keywords: ['argos', 'whatsapp', 'assistant', 'appointments', 'doctors'],
+  authors: [{ name: 'Argos' }],
   openGraph: {
-    title: 'ArgosAI - AI Assistant',
+    title: 'Argos - AI Assistant',
     description: 'Control panel to manage your WhatsApp assistant',
     type: 'website',
   },

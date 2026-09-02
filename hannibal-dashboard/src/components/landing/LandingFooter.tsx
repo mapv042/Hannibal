@@ -27,7 +27,7 @@ export function LandingFooter() {
       </div>
 
       <p className="text-[11px] text-[#A9B6CC] opacity-60 mt-4">
-        © 2026 ArgosAI · Operado por Miguel Angel Partida Velasco
+        © 2026 Argos · Operado por Miguel Angel Partida Velasco
       </p>
     </footer>
   )

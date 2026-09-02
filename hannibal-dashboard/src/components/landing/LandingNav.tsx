@@ -5,7 +5,7 @@ import { Logo } from '@/components/ui/Logo'
 export function LandingNav() {
   return (
     <nav className="fixed top-0 inset-x-0 z-50 flex items-center justify-between px-5 sm:px-6 lg:px-10 py-4 border-b border-line bg-white/85 backdrop-blur-md">
-      <Link href="/" aria-label="ArgosAI — inicio">
+      <Link href="/" aria-label="Argos — inicio">
         {/* The wordmark is the first thing to go when space is tight; the
             feather still identifies the site on its own. */}
         <span className="hidden min-[360px]:block">

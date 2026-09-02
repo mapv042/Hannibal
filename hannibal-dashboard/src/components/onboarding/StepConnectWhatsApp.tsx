@@ -89,7 +89,7 @@ export const StepConnectWhatsApp: React.FC<StepConnectWhatsAppProps> = ({
           subtitle={
             connected
               ? 'Tu número quedó conectado. Tus pacientes ya pueden escribirle al asistente.'
-              : 'ArgosAI usará el número de tu consultorio. No necesitas otro celular ni cambiar de SIM.'
+              : 'Argos usará el número de tu consultorio. No necesitas otro celular ni cambiar de SIM.'
           }
         />
 

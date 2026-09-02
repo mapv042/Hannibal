@@ -25,7 +25,7 @@ export function Statement() {
   return (
     <section className="px-6 py-24 bg-white">
       <FadeUp className="max-w-[760px] mx-auto text-center">
-        <div className="eyebrow mb-4">Por qué existe ArgosAI</div>
+        <div className="eyebrow mb-4">Por qué existe Argos</div>
 
         <h2 className="display text-[clamp(26px,4.2vw,40px)] leading-[1.3]">
           Déjenos la parte repetitiva.

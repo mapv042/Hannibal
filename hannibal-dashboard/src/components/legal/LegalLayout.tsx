@@ -38,7 +38,7 @@ export function LegalLayout({
       </main>
 
       <footer className="px-6 py-8 border-t border-line text-center text-[13px] text-slate">
-        © 2026 ArgosAI · Hecho en CDMX
+        © 2026 Argos · Hecho en Guadalajara
       </footer>
     </div>
   )

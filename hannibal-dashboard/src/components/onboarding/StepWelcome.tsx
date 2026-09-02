@@ -23,7 +23,7 @@ export const StepWelcome: React.FC<StepWelcomeProps> = ({ onNext }) => {
           <EyeMark size={64} animate />
         </div>
 
-        <h1 className="display text-[32px] mb-3">Bienvenido a ArgosAI</h1>
+        <h1 className="display text-[32px] mb-3">Bienvenido a Argos</h1>
         <p className="text-[15px] text-slate mb-9 max-w-md mx-auto leading-relaxed">
           Configura tu asistente de WhatsApp en menos de 10 minutos. Te guiaremos paso a
           paso.

@@ -2,15 +2,15 @@ import type { Metadata } from 'next'
 import { LegalLayout } from '@/components/legal/LegalLayout'
 
 export const metadata: Metadata = {
-  title: 'Aviso de privacidad · ArgosAI',
-  description: 'Aviso de privacidad de ArgosAI, el asistente de WhatsApp para consultorios.',
+  title: 'Aviso de privacidad · Argos',
+  description: 'Aviso de privacidad de Argos, el asistente de WhatsApp para consultorios.',
 }
 
 export default function PrivacyPage() {
   return (
     <LegalLayout title="Aviso de privacidad" updated="25 de agosto de 2026">
       <p>
-        Este aviso describe cómo <strong>ArgosAI</strong> (&quot;ArgosAI&quot;, &quot;nosotros&quot;), operado por{' '}
+        Este aviso describe cómo <strong>Argos</strong> (&quot;Argos&quot;, &quot;nosotros&quot;), operado por{' '}
         Miguel Angel Partida Velasco, con domicilio en{' '}
         <strong>Guadalajara, Jalisco, México</strong>, recaba, usa, comparte, protege y elimina los datos personales
         de los doctores que contratan el servicio (&quot;el consultorio&quot;) y de los pacientes que interactúan con
@@ -33,7 +33,7 @@ export default function PrivacyPage() {
 
       <h2>2. Uso de los datos de Google (Google Calendar)</h2>
       <p>
-        Si el consultorio conecta su cuenta de Google, ArgosAI accede únicamente a los eventos y disponibilidad
+        Si el consultorio conecta su cuenta de Google, Argos accede únicamente a los eventos y disponibilidad
         de su Google Calendar para: mostrar los horarios libres a los pacientes, crear el evento correspondiente
         cuando se agenda una cita, y mantener el calendario sincronizado cuando una cita se reprograma o cancela.
       </p>
@@ -42,8 +42,8 @@ export default function PrivacyPage() {
         <li>No compartimos los datos de tu Google Calendar con nadie fuera de la operación del servicio.</li>
         <li><strong>No usamos los datos obtenidos de las APIs de Google Workspace —incluido Google Calendar— para desarrollar, mejorar o entrenar modelos generalizados de inteligencia artificial o aprendizaje automático</strong>, ni propios ni de terceros. Tampoco enviamos títulos, descripciones, invitados ni ningún otro contenido de tus eventos a nuestros proveedores de IA: la disponibilidad se calcula únicamente a partir de intervalos de tiempo ocupado/libre.</li>
         <li>Ningún ser humano lee el contenido de tu calendario, salvo que tú lo solicites expresamente para resolver un problema de soporte que reportes.</li>
-        <li>Puedes revocar el acceso en cualquier momento desde la configuración de tu cuenta de Google o desde el panel de ArgosAI. Al desconectar, revocamos el token ante Google, lo borramos de nuestra base de datos, cancelamos los canales de notificación y eliminamos la copia sincronizada de tus eventos.</li>
-        <li>El uso que ArgosAI hace de la información recibida de las APIs de Google se apega a la <a href="https://developers.google.com/terms/api-services-user-data-policy" target="_blank" rel="noopener noreferrer">Política de Datos de Usuario de los Servicios de API de Google</a>, incluyendo los requisitos de Uso Limitado (Limited Use).</li>
+        <li>Puedes revocar el acceso en cualquier momento desde la configuración de tu cuenta de Google o desde el panel de Argos. Al desconectar, revocamos el token ante Google, lo borramos de nuestra base de datos, cancelamos los canales de notificación y eliminamos la copia sincronizada de tus eventos.</li>
+        <li>El uso que Argos hace de la información recibida de las APIs de Google se apega a la <a href="https://developers.google.com/terms/api-services-user-data-policy" target="_blank" rel="noopener noreferrer">Política de Datos de Usuario de los Servicios de API de Google</a>, incluyendo los requisitos de Uso Limitado (Limited Use).</li>
       </ul>
 
       <h2>3. Finalidades del tratamiento</h2>
@@ -83,7 +83,7 @@ export default function PrivacyPage() {
       </p>
       <ul>
         <li><strong>Minimización:</strong> el asistente solo pide lo necesario para agendar o para que el doctor decida sobre una urgencia; no solicita historial clínico, estudios ni diagnósticos.</li>
-        <li><strong>Acceso restringido:</strong> esta información es visible únicamente para el consultorio al que el paciente escribió. El personal de ArgosAI no accede a ella de forma rutinaria; solo puede hacerlo un administrador autorizado, de forma puntual, cuando es indispensable para resolver una falla reportada.</li>
+        <li><strong>Acceso restringido:</strong> esta información es visible únicamente para el consultorio al que el paciente escribió. El personal de Argos no accede a ella de forma rutinaria; solo puede hacerlo un administrador autorizado, de forma puntual, cuando es indispensable para resolver una falla reportada.</li>
         <li><strong>Sin entrenamiento de modelos:</strong> ni el contenido de las conversaciones ni los datos de salud se usan para entrenar, ajustar o mejorar modelos de inteligencia artificial. Contratamos a nuestros proveedores de IA bajo condiciones de uso empresarial que prohíben el entrenamiento con los datos enviados a través de la API.</li>
         <li><strong>Retención acotada:</strong> el contexto vivo de la conversación se guarda en memoria temporal con expiración automática a las 24 horas; solo persiste en la base de datos el historial de la cita y los mensajes necesarios para dar continuidad a la atención.</li>
         <li><strong>Consentimiento:</strong> el paciente comparte esta información de forma voluntaria en el chat; puede pedir su eliminación en cualquier momento por los medios de la sección 7.</li>
