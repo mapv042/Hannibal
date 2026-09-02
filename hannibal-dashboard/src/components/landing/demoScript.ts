@@ -135,7 +135,7 @@ function scriptedReply(text: string, history: Turn[]): string {
   }
 
   if (has(t, ['quien eres', 'que eres', 'eres un bot', 'eres una ia', 'robot'])) {
-    return 'Soy la asistente de WhatsApp del consultorio — contesto, agendo y le recuerdo sus citas. Funciono con ArgosAI 😊'
+    return 'Soy la asistente de WhatsApp del consultorio — contesto, agendo y le recuerdo sus citas. Funciono con Argos'
   }
 
   return 'Con gusto le ayudo. ¿Quiere agendar, cancelar o mover una cita?'

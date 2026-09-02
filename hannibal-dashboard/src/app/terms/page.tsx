@@ -2,22 +2,22 @@ import type { Metadata } from 'next'
 import { LegalLayout } from '@/components/legal/LegalLayout'
 
 export const metadata: Metadata = {
-  title: 'Términos de servicio · ArgosAI',
-  description: 'Términos de servicio de ArgosAI, el asistente de WhatsApp para consultorios.',
+  title: 'Términos de servicio · Argos',
+  description: 'Términos de servicio de Argos, el asistente de WhatsApp para consultorios.',
 }
 
 export default function TermsPage() {
   return (
     <LegalLayout title="Términos de servicio" updated="3 de agosto de 2026">
       <p>
-        Estos términos rigen el uso de ArgosAI (&quot;el servicio&quot;), operado por{' '}
+        Estos términos rigen el uso de Argos (&quot;el servicio&quot;), operado por{' '}
         Miguel Angel Partida Velasco. Al crear una cuenta o usar el servicio, aceptas
         estos términos.
       </p>
 
       <h2>1. Qué es el servicio</h2>
       <p>
-        ArgosAI es un asistente automatizado que opera por WhatsApp para agendar, confirmar, recordar y cancelar
+        Argos es un asistente automatizado que opera por WhatsApp para agendar, confirmar, recordar y cancelar
         citas de un consultorio médico o de salud, y un panel web para administrar esa configuración.
       </p>
 
@@ -35,7 +35,7 @@ export default function TermsPage() {
       </p>
 
       <h2>4. Uso aceptable</h2>
-      <p>No puedes usar ArgosAI para:</p>
+      <p>No puedes usar Argos para:</p>
       <ul>
         <li>Enviar mensajes masivos no solicitados (spam) a través del WhatsApp conectado.</li>
         <li>Suplantar a otra persona o negocio.</li>

@@ -5,7 +5,7 @@ const STEPS = [
   {
     n: '1',
     title: 'Llene el formulario',
-    body: 'Sus horarios, su especialidad, cómo quiere que hable ArgosAI. 10 minutos.',
+    body: 'Sus horarios, su especialidad, cómo quiere que hable Argos. 10 minutos.',
   },
   {
     n: '2',
@@ -20,7 +20,7 @@ const STEPS = [
   {
     n: '4',
     title: 'Usted elige la hora del cambio',
-    body: 'Le avisamos cuándo está listo. ArgosAI entra exactamente cuando usted diga — cero interrupciones.',
+    body: 'Le avisamos cuándo está listo. Argos entra exactamente cuando usted diga — cero interrupciones.',
     highlight: true,
   },
 ]

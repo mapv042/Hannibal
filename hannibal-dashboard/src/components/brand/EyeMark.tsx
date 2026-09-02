@@ -39,7 +39,7 @@ interface EyeMarkProps {
 }
 
 /**
- * The ArgosAI mark: a peacock feather's eye. Argos Panoptes was the giant with
+ * The Argos mark: a peacock feather's eye. Argos Panoptes was the giant with
  * a hundred eyes who never slept — the whole product promise in one image, and
  * the reason the assistant can answer at 2am. When Argos was killed his eyes
  * were set into the peacock's tail, which is the shape drawn here.
