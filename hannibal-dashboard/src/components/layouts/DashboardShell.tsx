@@ -5,6 +5,7 @@ import Link from 'next/link'
 import { useRouter, usePathname } from 'next/navigation'
 import { createBrowserSupabaseClient } from '@/lib/supabase'
 import { BotStatusBadge } from '@/components/coexistence/BotStatusBadge'
+import { ConnectCalendarBanner } from '@/components/dashboard/ConnectCalendarBanner'
 import { Button } from '@/components/ui/Button'
 import { Logo } from '@/components/ui/Logo'
 import { useApi } from '@/lib/api'
@@ -212,7 +213,15 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
 
         {/* Page Content */}
         <main className="flex-1 overflow-auto">
-          <div className="p-4 lg:p-8">{children}</div>
+          <div className="p-4 lg:p-8">
+            {office && (
+              <ConnectCalendarBanner
+                officeId={office.id}
+                connected={!!office.google_calendar_token}
+              />
+            )}
+            {children}
+          </div>
         </main>
       </div>
 
