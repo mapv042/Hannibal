@@ -335,6 +335,9 @@ body {
   .prose-legal h2:first-child {
     @apply mt-0;
   }
+  .prose-legal h3 {
+    @apply font-serif text-[17px] font-semibold text-navy mt-6 mb-2;
+  }
   .prose-legal p {
     @apply mb-4 text-[15px];
   }

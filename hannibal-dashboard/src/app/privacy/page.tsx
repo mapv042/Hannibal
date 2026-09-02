@@ -101,10 +101,17 @@ export default function PrivacyPage() {
         <li><strong>Proveedores de infraestructura</strong> (hosting de la aplicación, base de datos administrada y caché): almacenamiento y ejecución del servicio.</li>
         <li><strong>Proveedor de modelos de lenguaje</strong> (OpenAI o Anthropic, según la configuración): procesa el texto del mensaje para redactar la respuesta del asistente, bajo condiciones que prohíben usar esos datos para entrenar modelos. <strong>Los datos provenientes de las APIs de Google no se envían a estos proveedores.</strong></li>
       </ul>
+      <h3>Solicitudes de autoridades</h3>
       <p>
         También podríamos divulgar información cuando la ley lo exija o para responder a un requerimiento válido de
-        una autoridad competente.
+        una autoridad competente. Ante una solicitud de este tipo aplicamos, sin excepción, las siguientes reglas:
       </p>
+      <ul>
+        <li><strong>Revisión de legalidad:</strong> ninguna solicitud se atiende sin verificar antes que provenga de una autoridad competente, que invoque un fundamento legal aplicable y que cumpla las formalidades que la ley exige. Si no acredita lo anterior, se rechaza.</li>
+        <li><strong>Impugnación:</strong> si consideramos que la solicitud es ilegal, excesiva o carece de fundamento, la impugnamos por los medios legales disponibles y, cuando la ley lo permita, damos aviso al consultorio afectado antes de entregar dato alguno.</li>
+        <li><strong>Minimización:</strong> entregamos únicamente el dato mínimo indispensable para satisfacer la solicitud. Nunca entregamos la base de datos completa ni información de consultorios o pacientes ajenos a lo requerido.</li>
+        <li><strong>Documentación:</strong> registramos cada solicitud recibida, la autoridad solicitante, su fundamento legal, nuestra respuesta y el razonamiento que la sustenta. Ese registro se conserva y queda disponible para auditoría.</li>
+      </ul>
 
       {/*
         Anchored: Meta's App Review requires a "user data deletion instructions"
