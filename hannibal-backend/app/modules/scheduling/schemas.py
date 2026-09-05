@@ -57,6 +57,9 @@ class AppointmentResponse(BaseModel):
     id: UUID
     office_id: UUID
     patient_id: UUID
+    # Denormalised so the dashboard never has to render a raw UUID; populated
+    # from the eagerly-loaded patient relationship (None if not loaded).
+    patient_name: Optional[str] = None
     start_datetime: datetime
     end_datetime: datetime
     duration_minutes: int
@@ -71,6 +74,10 @@ class AppointmentResponse(BaseModel):
     reminder_4h_sent: bool
     reminder_1h_sent: bool
     follow_up_sent: bool
+    # Waiting room: on_the_way | arrived | no_answer (None = not asked / no reply)
+    arrival_status: Optional[str]
+    arrival_reported_at: Optional[datetime]
+    arrival_eta_minutes: Optional[int]
     google_event_id: Optional[str]
     created_at: datetime
     updated_at: Optional[datetime]

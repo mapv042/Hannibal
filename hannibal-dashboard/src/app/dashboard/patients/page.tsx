@@ -2,9 +2,8 @@
 
 import React, { useState, useEffect, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
-import { format } from 'date-fns'
-import { es } from 'date-fns/locale'
 import { useApi } from '@/lib/api'
+import { formatDateSafe } from '@/lib/appointments'
 import { createBrowserSupabaseClient } from '@/lib/supabase'
 import { Input } from '@/components/ui/Input'
 import { Card, CardBody, CardHeader } from '@/components/ui/Card'
@@ -117,14 +116,12 @@ export default function PatientsPage() {
                         onClick={() => router.push(`/dashboard/patients/${patient.id}`)}
                         className="border-b border-gray-200 hover:bg-gray-50 transition-colors cursor-pointer"
                       >
-                        <td className="py-3 px-4 text-sm font-medium text-gray-900">{patient.name}</td>
-                        <td className="py-3 px-4 text-sm text-gray-600 tabular-nums">{patient.whatsapp_number}</td>
+                        <td className="py-3 px-4 text-sm font-medium text-gray-900">{patient.name || 'Sin nombre'}</td>
+                        <td className="py-3 px-4 text-sm text-gray-600 tabular-nums">{patient.phone}</td>
                         <td className="py-3 px-4 text-sm text-gray-600">{patient.email || '—'}</td>
-                        <td className="py-3 px-4 text-sm text-gray-900 font-medium tabular-nums">{patient.total_consultations}</td>
+                        <td className="py-3 px-4 text-sm text-gray-900 font-medium tabular-nums">{patient.total_appointments}</td>
                         <td className="py-3 px-4 text-sm text-gray-600 tabular-nums">
-                          {patient.last_consultation_at
-                            ? format(new Date(patient.last_consultation_at), 'dd/MM/yy', { locale: es })
-                            : '—'}
+                          {formatDateSafe(patient.last_appointment_at, 'dd/MM/yy')}
                         </td>
                         <td className="py-3 px-4 text-right">
                           <ChevronRight size={16} className="text-gray-400" />
@@ -145,12 +142,12 @@ export default function PatientsPage() {
                     className="w-full flex items-center justify-between gap-3 p-3 rounded-xl border border-gray-200 text-left hover:bg-gray-50 transition-colors"
                   >
                     <div className="min-w-0">
-                      <p className="text-sm font-semibold text-gray-900 truncate">{patient.name}</p>
-                      <p className="text-xs text-gray-500 tabular-nums mt-0.5">{patient.whatsapp_number}</p>
+                      <p className="text-sm font-semibold text-gray-900 truncate">{patient.name || 'Sin nombre'}</p>
+                      <p className="text-xs text-gray-500 tabular-nums mt-0.5">{patient.phone}</p>
                       <p className="text-xs text-gray-500 mt-0.5">
-                        {patient.total_consultations} cita{patient.total_consultations !== 1 ? 's' : ''}
-                        {patient.last_consultation_at &&
-                          ` · ${format(new Date(patient.last_consultation_at), 'dd/MM/yy', { locale: es })}`}
+                        {patient.total_appointments} cita{patient.total_appointments !== 1 ? 's' : ''}
+                        {patient.last_appointment_at &&
+                          ` · ${formatDateSafe(patient.last_appointment_at, 'dd/MM/yy')}`}
                       </p>
                     </div>
                     <ChevronRight size={18} className="text-gray-400 flex-shrink-0" />

@@ -80,6 +80,9 @@ class UpdateOfficeRequest(BaseModel):
     notify_unconfirmed: Optional[bool] = Field(
         None, description="Notify the doctor of today's unconfirmed appointments"
     )
+    notify_arrival: Optional[bool] = Field(
+        None, description="Notify the doctor when a patient reports arriving"
+    )
 
 
 class ReminderRuleSchema(BaseModel):
@@ -134,6 +137,7 @@ class OfficeResponse(BaseModel):
     notify_cancellation: bool
     notify_new_patient: bool
     notify_unconfirmed: bool
+    notify_arrival: bool
     plan: str
 
     class Config:

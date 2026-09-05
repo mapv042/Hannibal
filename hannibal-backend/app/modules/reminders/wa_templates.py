@@ -12,6 +12,7 @@ in the WhatsApp Manager. Current approved templates (language es_MX):
   appointment_follow_up               -> patient_name, location
   appointment_confirmation_day_before -> patient_name, location, appointment_date, appointment_time
   appointment_reminder                -> patient_name, appointment_date, appointment_time, location
+  arrival_check_in                    -> patient_name, location
   urgency_alert                       -> patient_name   (doctor-facing, out-of-window)
 """
 
@@ -30,6 +31,12 @@ TEMPLATE_OFFICE_MESSAGE = "office_message"
 TEMPLATE_FOLLOW_UP = "appointment_follow_up"
 TEMPLATE_CONFIRMATION_DAY_BEFORE = "appointment_confirmation_day_before"
 TEMPLATE_REMINDER = "appointment_reminder"
+# Waiting-room check-in sent at the appointment's start time when the patient's
+# 24h window is closed (in-window it goes out as interactive buttons instead).
+# Suggested body:
+#   "Hola {{patient_name}}, es la hora de su cita en {{location}}.
+#    Respóndanos a este mensaje para avisarnos que ya llegó."
+TEMPLATE_ARRIVAL_CHECK_IN = "arrival_check_in"
 # Doctor-facing "alert that opens the window": sent to the doctor's WhatsApp
 # when their 24h window is closed, so they reply and the bot can then send the
 # urgency details as free text. Suggested body:
@@ -57,6 +64,10 @@ TEMPLATE_DOCTOR_NEW_PATIENT_APPOINTMENT = "doctor_new_patient_appointment"
 TEMPLATE_DOCTOR_CANCELLATION = "doctor_cancellation"
 TEMPLATE_DOCTOR_NEW_PATIENT = "doctor_new_patient"
 TEMPLATE_DOCTOR_UNCONFIRMED_SUMMARY = "doctor_unconfirmed_summary"
+#   doctor_patient_arrived          -> "El paciente {{patient_name}} avisó: {{detail}}. Revisa tu sala de espera."
+#   doctor_sync_warning             -> "Aviso sobre la cita de {{patient_name}}: {{detail}}. Conviene revisarla."
+TEMPLATE_DOCTOR_PATIENT_ARRIVED = "doctor_patient_arrived"
+TEMPLATE_DOCTOR_SYNC_WARNING = "doctor_sync_warning"
 
 # Set to False if the templates were created with positional params ({{1}}, {{2}})
 # instead of named params ({{patient_name}}). Named is the modern default and
@@ -146,6 +157,26 @@ def build_office_message_params(
     ]
 
 
+def build_arrival_check_params(
+    patient_name: str, location: str
+) -> List[Dict[str, str]]:
+    """arrival_check_in: patient_name, location."""
+    return [
+        _param("patient_name", patient_name),
+        _param("location", location),
+    ]
+
+
+def build_doctor_patient_arrived_params(
+    patient_name: str, detail: str
+) -> List[Dict[str, str]]:
+    """doctor_patient_arrived: patient_name, detail (status + brief, one line)."""
+    return [
+        _param("patient_name", patient_name),
+        _param("detail", detail),
+    ]
+
+
 def build_urgency_alert_params(patient_name: str) -> List[Dict[str, str]]:
     """urgency_alert: patient_name (doctor-facing alert that opens the window)."""
     return [
@@ -197,6 +228,16 @@ def build_doctor_new_patient_params(patient_name: str) -> List[Dict[str, str]]:
     """doctor_new_patient: patient_name."""
     return [
         _param("patient_name", patient_name),
+    ]
+
+
+def build_doctor_sync_warning_params(
+    patient_name: str, detail: str
+) -> List[Dict[str, str]]:
+    """doctor_sync_warning: patient_name, detail (what diverged, one line)."""
+    return [
+        _param("patient_name", patient_name),
+        _param("detail", detail),
     ]
 
 

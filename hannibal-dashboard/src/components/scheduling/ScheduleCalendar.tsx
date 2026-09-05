@@ -8,7 +8,7 @@ import interactionPlugin from '@fullcalendar/interaction'
 import esLocale from '@fullcalendar/core/locales/es'
 import { useApi } from '@/lib/api'
 import { getStatus, TONE_HEX } from '@/lib/status'
-import { patientLabel } from '@/lib/appointments'
+import { patientLabel, timestampSafe } from '@/lib/appointments'
 import type { Appointment } from '@/lib/supabase'
 
 interface ScheduleCalendarProps {
@@ -44,20 +44,24 @@ export const ScheduleCalendar: React.FC<ScheduleCalendarProps> = ({
     loadAppointments()
   }, [loadAppointments])
 
-  const events = appointments.map((appointment) => {
-    const color = TONE_HEX[getStatus(appointment.status).tone]
-    return {
-      id: appointment.id,
-      title: patientLabel(appointment),
-      start: appointment.date_time,
-      end: new Date(new Date(appointment.date_time).getTime() + appointment.duration_minutes * 60000).toISOString(),
-      backgroundColor: color,
-      borderColor: color,
-      extendedProps: {
-        appointment,
-      },
-    }
-  })
+  // An appointment without a usable start can't be placed on a calendar; drop
+  // it rather than hand FullCalendar an invalid date it renders at epoch.
+  const events = appointments
+    .filter((appointment) => timestampSafe(appointment.start_datetime) !== null)
+    .map((appointment) => {
+      const color = TONE_HEX[getStatus(appointment.status).tone]
+      return {
+        id: appointment.id,
+        title: patientLabel(appointment),
+        start: appointment.start_datetime,
+        end: appointment.end_datetime,
+        backgroundColor: color,
+        borderColor: color,
+        extendedProps: {
+          appointment,
+        },
+      }
+    })
 
   const handleEventClick = (info: any) => {
     const appointment = info.event.extendedProps.appointment

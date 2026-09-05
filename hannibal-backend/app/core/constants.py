@@ -106,6 +106,7 @@ class BlockOrigin(str, Enum):
 
     MANUAL = "manual"  # Manually blocked
     GOOGLE_CALENDAR = "google_calendar"  # Blocked via calendar
+    HOLIDAY = "holiday"  # Seeded Mexican statutory holiday
 
 
 # Time Preference
@@ -138,6 +139,7 @@ class ReminderType(str, Enum):
     DAY_BEFORE = "day_before"  # Day before the appointment
     FOUR_HOURS = "4h"  # 4 hours before
     ONE_HOUR = "1h"  # 1 hour before
+    AT_TIME = "at_time"  # At appointment time: the waiting-room check-in
     POST_APPOINTMENT = "post_appointment"  # After the appointment (follow-up)
 
 
@@ -148,6 +150,7 @@ DEFAULT_REMINDER_RULES: list[tuple[ReminderType, int]] = [
     (ReminderType.DAY_BEFORE, -1440),  # 24h before
     (ReminderType.FOUR_HOURS, -240),  # 4h before
     (ReminderType.ONE_HOUR, -60),  # 1h before
+    (ReminderType.AT_TIME, 0),  # at the appointment time: "¿ya llegaste?"
     (ReminderType.POST_APPOINTMENT, 120),  # 2h after
 ]
 
@@ -157,8 +160,18 @@ SENT_FLAG_BY_REMINDER_TYPE: dict[str, str] = {
     ReminderType.DAY_BEFORE.value: "reminder_day_before_sent",
     ReminderType.FOUR_HOURS.value: "reminder_4h_sent",
     ReminderType.ONE_HOUR.value: "reminder_1h_sent",
+    ReminderType.AT_TIME.value: "arrival_check_sent",
     ReminderType.POST_APPOINTMENT.value: "follow_up_sent",
 }
+
+
+# Waiting room: how the patient answered the check-in sent at appointment time.
+class ArrivalStatus(str, Enum):
+    """Patient's reported state for an appointment that has just started."""
+
+    ON_THE_WAY = "on_the_way"  # Reported they're on their way
+    ARRIVED = "arrived"  # Reported they're at the office
+    NO_ANSWER = "no_answer"  # Check-in sent, patient never replied
 
 
 # Urgency handling

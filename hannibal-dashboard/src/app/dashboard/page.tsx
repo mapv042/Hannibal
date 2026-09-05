@@ -12,6 +12,7 @@ import { EmptyState } from '@/components/ui/states/EmptyState'
 import { ErrorState } from '@/components/ui/states/ErrorState'
 import { SkeletonStats, SkeletonList } from '@/components/ui/states/Skeleton'
 import { getStatus } from '@/lib/status'
+import { byStartTime } from '@/lib/appointments'
 import { Calendar, CheckCircle, AlertCircle, Users } from 'lucide-react'
 import type { Appointment } from '@/lib/supabase'
 
@@ -126,7 +127,7 @@ export default function DashboardPage() {
             <div className="space-y-3">
               {appointments
                 .slice()
-                .sort((a, b) => new Date(a.date_time).getTime() - new Date(b.date_time).getTime())
+                .sort(byStartTime)
                 .map((appointment) => (
                   <AppointmentCard key={appointment.id} appointment={appointment} />
                 ))}

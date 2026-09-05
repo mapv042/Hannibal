@@ -6,6 +6,8 @@ import {
   CalendarCheck,
   CircleSlash,
   Circle,
+  MapPin,
+  Navigation,
   type LucideIcon,
 } from 'lucide-react'
 
@@ -64,6 +66,37 @@ export function getStatus(raw?: string | null): StatusConfig {
   if (!raw) return UNKNOWN
   const key = ALIAS[raw] ?? raw
   return STATUS[key] ?? { label: raw, tone: 'neutral', icon: Circle }
+}
+
+/**
+ * Waiting-room state, a separate axis from the appointment status: a cita can be
+ * "Confirmada" and the patient still stuck in traffic. Rendered as its own chip
+ * so the two never overwrite each other.
+ */
+export interface ArrivalConfig {
+  label: string
+  tone: StatusTone
+  icon: LucideIcon
+}
+
+const ARRIVAL: Record<string, ArrivalConfig> = {
+  arrived: { label: 'Ya llegó', tone: 'success', icon: MapPin },
+  on_the_way: { label: 'En camino', tone: 'warning', icon: Navigation },
+  no_answer: { label: 'Sin respuesta', tone: 'neutral', icon: CircleSlash },
+}
+
+/** null when the patient hasn't been asked yet — render nothing in that case. */
+export function getArrival(
+  raw?: string | null,
+  etaMinutes?: number | null
+): ArrivalConfig | null {
+  if (!raw) return null
+  const config = ARRIVAL[raw]
+  if (!config) return null
+  if (raw === 'on_the_way' && etaMinutes) {
+    return { ...config, label: `En camino · ${etaMinutes} min` }
+  }
+  return config
 }
 
 /** Tailwind classes for a soft badge of each tone. */

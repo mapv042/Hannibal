@@ -66,6 +66,7 @@ celery_app.autodiscover_tasks([
     "app.modules.notifications",
     "app.modules.google_calendar",
     "app.modules.urgencies",
+    "app.modules.audit",
 ])
 
 # Ensure task modules are imported so Celery registers them
@@ -74,3 +75,4 @@ import app.modules.urgencies.tasks  # noqa: F401
 import app.modules.scheduling.tasks  # noqa: F401
 import app.modules.notifications.tasks  # noqa: F401
 import app.modules.google_calendar.tasks  # noqa: F401
+import app.modules.audit.tasks  # noqa: F401

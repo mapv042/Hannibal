@@ -9,6 +9,7 @@ from uuid import UUID
 import redis.asyncio as aioredis
 from sqlalchemy import select, and_
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.db.models import Appointment, Office, Patient
 from app.modules.reminders.scheduler import schedule_reminders_for_appointment
@@ -21,6 +22,13 @@ from app.modules.scheduling.availability import (
 )
 from app.modules.scheduling.booking import book_appointment
 from app.core.exceptions import NotFoundError, SlotNotAvailableError
+from app.modules.audit.tasks import enqueue_write_audit
+from app.modules.google_calendar.service import update_calendar_event
+from app.modules.google_calendar.sync import cancel_appointment_in_calendar
+from app.modules.scheduling.tasks import (
+    enqueue_patient_cancellation_notice,
+    enqueue_patient_reschedule_notice,
+)
 from app.utils.logger import get_logger
 from app.utils.phone import display_or_raw
 
@@ -126,6 +134,18 @@ async def cancel_appointment(
     appointment.cancelled_by = cancelled_by
     appointment.cancellation_reason = reason
 
+    # Free the slot on the doctor's calendar too. Best-effort: the cancellation
+    # itself must go through, and the write audit below catches a calendar left
+    # holding the slot.
+    try:
+        await cancel_appointment_in_calendar(appointment_id, office_id, db)
+    except Exception as e:
+        logger.error(
+            "dashboard_cancel_gcal_failed",
+            appointment_id=str(appointment_id),
+            error=str(e),
+        )
+
     # Invalidate cache
     await invalidate_availability_cache(
         office_id, appointment.start_datetime.date(), redis_client
@@ -133,6 +153,12 @@ async def cancel_appointment(
 
     await db.commit()
     await db.refresh(appointment)
+
+    # Rule 9: a cancellation is never silent. The WhatsApp flows already tell
+    # the patient; until now the dashboard didn't, so the patient could show up
+    # for a cita cancelled hours earlier.
+    enqueue_patient_cancellation_notice(appointment_id)
+    enqueue_write_audit(appointment_id, "cancel", status="cancelled")
 
     logger.info(
         "appointment_cancelled",
@@ -186,7 +212,7 @@ async def reschedule_appointment(
             office_id, new_start_time, new_end_time, db
         )
         if conflict:
-            raise SlotNotAvailableError(conflict)
+            raise SlotNotAvailableError(conflict.message)
 
         # Invalidate old cache
         await invalidate_availability_cache(
@@ -203,11 +229,33 @@ async def reschedule_appointment(
         appointment.reminder_1h_sent = False
         appointment.follow_up_sent = False
         appointment.confirmation_request_sent = False
+        appointment.arrival_check_sent = False
+        appointment.arrival_status = None
+        appointment.arrival_reported_at = None
+        appointment.arrival_eta_minutes = None
 
         # Invalidate new cache
         await invalidate_availability_cache(
             office_id, new_start_time.date(), redis_client
         )
+
+        # Move the event on the doctor's calendar so it doesn't keep holding the
+        # old slot. Best-effort — the write audit catches a stale event.
+        if appointment.google_event_id:
+            try:
+                await update_calendar_event(
+                    office_id=office_id,
+                    google_event_id=appointment.google_event_id,
+                    start_time=appointment.start_datetime,
+                    end_time=appointment.end_datetime,
+                    db=db,
+                )
+            except Exception as e:
+                logger.error(
+                    "dashboard_reschedule_gcal_failed",
+                    appointment_id=str(appointment_id),
+                    error=str(e),
+                )
 
         await db.commit()
         await db.refresh(appointment)
@@ -215,6 +263,16 @@ async def reschedule_appointment(
         # Reminders were reset above — schedule them for the new datetime
         await schedule_reminders_for_appointment(
             db, office_id, appointment.id, appointment.start_datetime
+        )
+
+        # Rule 9: the patient has to hear that their cita moved.
+        enqueue_patient_reschedule_notice(appointment_id)
+        enqueue_write_audit(
+            appointment_id,
+            "reschedule",
+            start_datetime=new_start_time,
+            status=appointment.status,
+            patient_id=appointment.patient_id,
         )
 
         logger.info(
@@ -334,7 +392,13 @@ async def get_appointments(
     Returns:
         List of Appointment objects
     """
-    query = select(Appointment).where(Appointment.office_id == office_id)
+    # Eager-load the patient: AppointmentResponse serialises patient_name, and a
+    # lazy load per row would raise MissingGreenlet under asyncio.
+    query = (
+        select(Appointment)
+        .options(selectinload(Appointment.patient))
+        .where(Appointment.office_id == office_id)
+    )
 
     if start_date:
         query = query.where(Appointment.start_datetime >= start_date)
@@ -368,7 +432,11 @@ async def get_appointment(
     Raises:
         NotFoundError: If appointment not found
     """
-    appointment = await db.get(Appointment, appointment_id)
+    appointment = await db.get(
+        Appointment,
+        appointment_id,
+        options=[selectinload(Appointment.patient)],
+    )
     if not appointment or appointment.office_id != office_id:
         raise NotFoundError("Appointment not found")
     return appointment

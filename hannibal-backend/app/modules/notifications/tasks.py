@@ -26,6 +26,7 @@ from app.db.base import get_async_session_maker
 from app.db.models import AvailabilitySchedule, Office
 from app.modules.notifications.service import (
     notify_appointment,
+    notify_arrival,
     notify_cancellation,
     notify_unconfirmed_summary,
 )
@@ -39,6 +40,11 @@ logger = get_logger(__name__)
 NOTIFY_COUNTDOWN_SECONDS = 10
 NOTIFY_RETRY_DELAY_SECONDS = 10
 NOTIFY_MAX_RETRIES = 5
+
+# The arrival alert is the one the doctor is actively waiting on, so it goes out
+# faster and retries tighter than the rest.
+ARRIVAL_COUNTDOWN_SECONDS = 3
+ARRIVAL_RETRY_DELAY_SECONDS = 5
 
 # How long the per-office "already sent today" guard lives (1 day).
 UNCONFIRMED_FLAG_TTL_SECONDS = 24 * 60 * 60
@@ -73,6 +79,19 @@ def enqueue_cancellation_notification(appointment_id: UUID) -> None:
     logger.info("cancellation_notification_enqueued", appointment_id=str(appointment_id))
 
 
+def enqueue_arrival_notification(appointment_id: UUID) -> None:
+    """Tell the doctor the patient just reported arriving (or running late).
+
+    Uses a shorter countdown than the other notifications: the doctor is waiting
+    on this one right now, and the retry-on-not_found still covers a turn that
+    takes longer than expected to commit.
+    """
+    notify_arrival_task.apply_async(
+        args=[str(appointment_id)], countdown=ARRIVAL_COUNTDOWN_SECONDS
+    )
+    logger.info("arrival_notification_enqueued", appointment_id=str(appointment_id))
+
+
 async def _notify_appointment_async(appointment_id: str, is_new_patient: bool) -> str:
     from app.modules.whatsapp.meta_client import MetaCloudClient
 
@@ -81,6 +100,21 @@ async def _notify_appointment_async(appointment_id: str, is_new_patient: bool) -
         async with get_async_session_maker()() as db:
             status = await notify_appointment(
                 db, redis_client, MetaCloudClient(), UUID(appointment_id), is_new_patient
+            )
+            await db.commit()
+            return status
+    finally:
+        await redis_client.close()
+
+
+async def _notify_arrival_async(appointment_id: str) -> str:
+    from app.modules.whatsapp.meta_client import MetaCloudClient
+
+    redis_client = aioredis.from_url(settings.redis_url, decode_responses=True)
+    try:
+        async with get_async_session_maker()() as db:
+            status = await notify_arrival(
+                db, redis_client, MetaCloudClient(), UUID(appointment_id)
             )
             await db.commit()
             return status
@@ -143,6 +177,27 @@ def notify_cancellation_task(self, appointment_id: str):
         return
 
     _log(f"notify_cancellation: DONE ({status}) appointment_id={appointment_id}")
+
+
+@shared_task(bind=True, max_retries=NOTIFY_MAX_RETRIES)
+def notify_arrival_task(self, appointment_id: str):
+    """Notify the doctor that the patient arrived. Retries on 'not_found'."""
+    _log(f"notify_arrival: START appointment_id={appointment_id}")
+    try:
+        status = asyncio.run(_notify_arrival_async(appointment_id))
+    except Exception as e:
+        _log_exception("notify_arrival", e)
+        raise
+
+    if status == "not_found":
+        _log(f"notify_arrival: arrival not visible yet, retrying id={appointment_id}")
+        try:
+            self.retry(countdown=ARRIVAL_RETRY_DELAY_SECONDS)
+        except self.MaxRetriesExceededError:
+            _log(f"notify_arrival: gave up (arrival never appeared) id={appointment_id}")
+        return
+
+    _log(f"notify_arrival: DONE ({status}) appointment_id={appointment_id}")
 
 
 # --------------------------------------------------------------------------- #

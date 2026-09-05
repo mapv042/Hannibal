@@ -11,6 +11,7 @@ doctor-in-the-loop notification pattern in app/modules/urgencies/service.py.
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from typing import Optional
 from uuid import UUID
 
 import redis.asyncio as aioredis
@@ -49,6 +50,58 @@ def _doctor_reschedule_text(patient_name: str, old_slot: str, new_slot: str) -> 
     )
 
 
+def _doctor_gave_up_text(patient_name: str, old_slot: str) -> str:
+    """Free-text alert: the patient walked away instead of rescheduling."""
+    return (
+        f"{patient_name} no reagendó la cita que cancelaste ({old_slot}): "
+        f"decidió cancelar en definitiva.\n\n"
+        f"Si quieres recuperarlo, avísame y le escribo."
+    )
+
+
+async def find_pending_doctor_cancellation(
+    db: AsyncSession,
+    office_id,
+    patient_id,
+    exclude_appointment_id=None,
+) -> Optional[Appointment]:
+    """The doctor cancellation this patient still hasn't answered, if any.
+
+    Shared by the two outcomes a doctor cancellation can have: the patient
+    rebooks (link_pending_doctor_cancellation) or the patient gives up
+    (Rule 13 — the doctor has to hear about that one too, or they keep believing
+    the patient is coming back).
+    """
+    cutoff = datetime.now(MX_TIMEZONE) - timedelta(days=PENDING_CANCELLATION_LOOKBACK_DAYS)
+
+    conditions = [
+        Appointment.office_id == office_id,
+        Appointment.patient_id == patient_id,
+        Appointment.status == "cancelled",
+        Appointment.cancelled_by == "doctor",
+        Appointment.start_datetime >= cutoff,
+    ]
+    if exclude_appointment_id is not None:
+        conditions.append(Appointment.id != exclude_appointment_id)
+
+    result = await db.execute(
+        select(Appointment)
+        .where(*conditions)
+        .order_by(Appointment.start_datetime.desc())
+    )
+
+    for cancelled in result.scalars().all():
+        # Skip cancellations already answered by a reschedule.
+        already_linked = await db.execute(
+            select(Appointment.id)
+            .where(Appointment.rescheduled_from == cancelled.id)
+            .limit(1)
+        )
+        if already_linked.scalar_one_or_none() is None:
+            return cancelled
+    return None
+
+
 async def link_pending_doctor_cancellation(
     db: AsyncSession, new_appointment: Appointment
 ) -> bool:
@@ -60,44 +113,23 @@ async def link_pending_doctor_cancellation(
     that distinguishes "reschedule after doctor cancellation" from a normal
     booking) and returns True. Otherwise a no-op returning False.
     """
-    cutoff = datetime.now(MX_TIMEZONE) - timedelta(days=PENDING_CANCELLATION_LOOKBACK_DAYS)
-
-    result = await db.execute(
-        select(Appointment)
-        .where(
-            (Appointment.office_id == new_appointment.office_id)
-            & (Appointment.patient_id == new_appointment.patient_id)
-            & (Appointment.status == "cancelled")
-            & (Appointment.cancelled_by == "doctor")
-            & (Appointment.id != new_appointment.id)
-            & (Appointment.start_datetime >= cutoff)
-        )
-        .order_by(Appointment.start_datetime.desc())
+    cancelled = await find_pending_doctor_cancellation(
+        db,
+        new_appointment.office_id,
+        new_appointment.patient_id,
+        exclude_appointment_id=new_appointment.id,
     )
-    candidates = result.scalars().all()
-    if not candidates:
+    if cancelled is None:
         return False
 
-    for cancelled in candidates:
-        # Skip cancellations already answered by a reschedule.
-        already_linked = await db.execute(
-            select(Appointment.id)
-            .where(Appointment.rescheduled_from == cancelled.id)
-            .limit(1)
-        )
-        if already_linked.scalar_one_or_none() is not None:
-            continue
-
-        new_appointment.rescheduled_from = cancelled.id
-        await db.flush()
-        logger.info(
-            "reschedule_linked_to_doctor_cancellation",
-            new_appointment_id=str(new_appointment.id),
-            cancelled_appointment_id=str(cancelled.id),
-        )
-        return True
-
-    return False
+    new_appointment.rescheduled_from = cancelled.id
+    await db.flush()
+    logger.info(
+        "reschedule_linked_to_doctor_cancellation",
+        new_appointment_id=str(new_appointment.id),
+        cancelled_appointment_id=str(cancelled.id),
+    )
+    return True
 
 
 async def notify_doctor_of_reschedule(
@@ -165,6 +197,76 @@ async def notify_doctor_of_reschedule(
     logger.info(
         "reschedule_doctor_notified",
         new_appointment_id=str(new_appointment_id),
+        via=via,
+    )
+    return "notified"
+
+
+async def notify_doctor_of_abandoned_reschedule(
+    db: AsyncSession,
+    redis_client: aioredis.Redis,
+    meta_client,
+    cancelled_appointment_id: UUID,
+) -> str:
+    """Rule 13: report that a doctor-requested reschedule ended in a cancellation.
+
+    The doctor cancelled a cita and asked the patient to rebook; the patient
+    instead cancelled outright. Without this the doctor only sees the generic
+    cancellation notice — or nothing, if that toggle is off — and keeps a slot
+    mentally reserved for someone who isn't coming back.
+    """
+    cancelled = await db.get(Appointment, cancelled_appointment_id)
+    if not cancelled:
+        return "not_found"
+
+    office = await db.get(Office, cancelled.office_id)
+    patient = (
+        await db.get(Patient, cancelled.patient_id) if cancelled.patient_id else None
+    )
+    if not office or not patient:
+        return "skipped"
+    if not (office.owner_phone and office.whatsapp_phone_id and office.whatsapp_token):
+        logger.warning("abandoned_reschedule_missing_config", office_id=str(office.id))
+        return "skipped"
+
+    patient_name = patient.name or "El paciente"
+    old_slot = _format_slot(cancelled.start_datetime)
+
+    try:
+        if await doctor_service_window_open(redis_client, office.id):
+            await meta_client.send_text_message(
+                phone_number_id=office.whatsapp_phone_id,
+                token=office.whatsapp_token,
+                to=office.owner_phone,
+                text=_doctor_gave_up_text(patient_name, old_slot),
+            )
+            via = "text"
+        else:
+            # Reuses the reschedule_notice template: same shape (patient + slot),
+            # and the free-text path carries the nuance when the window is open.
+            await meta_client.send_template_message(
+                phone_number_id=office.whatsapp_phone_id,
+                token=office.whatsapp_token,
+                to=office.owner_phone,
+                template_name=TEMPLATE_RESCHEDULE_NOTICE,
+                params=build_reschedule_notice_params(
+                    patient_name, f"canceló en definitiva ({old_slot})"
+                ),
+                language_code=TEMPLATE_LANGUAGE,
+            )
+            via = "template"
+    except Exception as e:
+        logger.error(
+            "abandoned_reschedule_notify_failed",
+            cancelled_appointment_id=str(cancelled_appointment_id),
+            error=str(e),
+            exc_info=True,
+        )
+        return "skipped"
+
+    logger.info(
+        "abandoned_reschedule_doctor_notified",
+        cancelled_appointment_id=str(cancelled_appointment_id),
         via=via,
     )
     return "notified"

@@ -39,6 +39,7 @@ def schedule_reminders(
         send_reminder_day_before,
         send_reminder_4h,
         send_reminder_1h,
+        send_arrival_check,
         post_follow_up,
     )
 
@@ -46,6 +47,7 @@ def schedule_reminders(
         ReminderType.DAY_BEFORE.value: send_reminder_day_before,
         ReminderType.FOUR_HOURS.value: send_reminder_4h,
         ReminderType.ONE_HOUR.value: send_reminder_1h,
+        ReminderType.AT_TIME.value: send_arrival_check,
         ReminderType.POST_APPOINTMENT.value: post_follow_up,
     }
 

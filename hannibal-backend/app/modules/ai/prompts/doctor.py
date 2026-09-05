@@ -34,13 +34,34 @@ def _build_pending_urgencies_context(pending_urgencies: Optional[list[dict]]) ->
     return "\n".join(lines)
 
 
+def _build_waiting_room_context(waiting_room: Optional[list[dict]]) -> str:
+    # Only while somebody has actually answered today's check-in. The rest of
+    # the day the doctor channel shouldn't mention a waiting room at all.
+    if not waiting_room:
+        return ""
+    lines = [
+        "\n\nSALA DE ESPERA (hoy):",
+        "Así respondieron los pacientes cuando les preguntamos si ya llegaron. "
+        "Si el doctor quiere avisarle algo a alguno (que espere, que ya puede pasar), "
+        "redacta el mensaje con send_message_to_patient:",
+    ]
+    for entry in waiting_room:
+        # patient_name comes from patient-supplied data — sanitize before it
+        # enters the doctor's prompt (injection defense).
+        patient_name = sanitize_for_prompt(entry["patient_name"])
+        lines.append(f"- {patient_name} ({entry['slot']}): {entry['state']}")
+    return "\n".join(lines)
+
+
 def build_doctor_system_prompt(
-    office: Office, pending_urgencies: Optional[list[dict]] = None
+    office: Office,
+    pending_urgencies: Optional[list[dict]] = None,
+    waiting_room: Optional[list[dict]] = None,
 ) -> tuple[str, str]:
     """Build the doctor system prompt as (static, dynamic) parts.
 
     Static = office-config-dependent only (cacheable prefix across turns);
-    dynamic = per-turn context (current date/time, pending urgencies).
+    dynamic = per-turn context (current date/time, pending urgencies, waiting room).
     """
     now = now_mx()
     date_reference = build_date_reference_block(now)
@@ -97,5 +118,9 @@ REGLAS CRÍTICAS:
 
 Tu objetivo es ayudar al doctor a gestionar su agenda y la comunicación con pacientes de forma rápida y confiable."""
 
-    dynamic_part = f"{date_reference}{_build_pending_urgencies_context(pending_urgencies)}"
+    dynamic_part = (
+        f"{date_reference}"
+        f"{_build_pending_urgencies_context(pending_urgencies)}"
+        f"{_build_waiting_room_context(waiting_room)}"
+    )
     return static_part, dynamic_part

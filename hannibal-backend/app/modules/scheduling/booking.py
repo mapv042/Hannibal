@@ -22,6 +22,7 @@ from app.db.models import Appointment, Office
 from app.modules.google_calendar.service import create_calendar_event
 from app.modules.reminders.scheduler import schedule_reminders_for_appointment
 from app.modules.scheduling.availability import (
+    OVERRIDABLE_CONFLICTS,
     check_slot_bookable,
     invalidate_availability_cache,
     lock_slot_temporarily,
@@ -48,6 +49,9 @@ class BookingOutcome:
     appointment: Optional[Appointment] = None
     error: Optional[str] = None
     conflict: bool = False
+    # SlotConflict.kind when `conflict` is set. Lets the doctor flow offer the
+    # allow_conflict override only for the conflicts it can actually override.
+    conflict_kind: Optional[str] = None
 
 
 async def book_appointment(
@@ -64,8 +68,17 @@ async def book_appointment(
     redis_client: Optional[aioredis.Redis] = None,
     allow_conflict: bool = False,
     gcal_color_id: str = "9",
+    booked_by_patient_id: Optional[uuid.UUID] = None,
 ) -> BookingOutcome:
     """Validate, lock and create an appointment (plus GCal event, cache, reminders).
+
+    `allow_conflict` tolerates only an overlap with another appointment (a
+    deliberate doctor overbook). Time blocks and the office's working hours are
+    never overridden — see OVERRIDABLE_CONFLICTS.
+
+    `booked_by_patient_id` is who asked for the appointment; it defaults to the
+    patient it's for. It's what lets a parent later cancel the appointment they
+    booked for their child.
 
     The slot lock is deliberately NOT released on success — its 60s TTL covers
     the window until the caller's transaction commits; releasing earlier would
@@ -74,10 +87,16 @@ async def book_appointment(
     """
     end_dt = start_dt + timedelta(minutes=duration_min)
 
-    if not allow_conflict:
-        conflict = await check_slot_bookable(office.id, start_dt, end_dt, db)
-        if conflict:
-            return BookingOutcome(error=conflict, conflict=True)
+    # Validation always runs. `allow_conflict` is a deliberate overbook, not a
+    # blanket override: it lets the doctor stack a patient on top of another
+    # appointment, but a time block (vacation, lunch) and the working-hours
+    # window stay hard — those are the doctor's own explicit constraints, and
+    # silently paving over them is what Rule 11 forbids.
+    conflict = await check_slot_bookable(office.id, start_dt, end_dt, db)
+    if conflict and not (allow_conflict and conflict.kind in OVERRIDABLE_CONFLICTS):
+        return BookingOutcome(
+            error=conflict.message, conflict=True, conflict_kind=conflict.kind
+        )
 
     if redis_client is not None:
         locked = await lock_slot_temporarily(office.id, start_dt, redis_client)
@@ -111,6 +130,9 @@ async def book_appointment(
         consultation_reason=reason,
         status="scheduled",
         google_event_id=google_event_id,
+        # Defaults to the patient themselves so every row has an owner; differs
+        # only when someone booked on another person's behalf.
+        booked_by_patient_id=booked_by_patient_id or patient_id,
     )
     db.add(appointment)
     await db.flush()

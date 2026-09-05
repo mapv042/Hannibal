@@ -2,9 +2,8 @@
 
 import React, { useState, useEffect } from 'react'
 import { useParams, useRouter } from 'next/navigation'
-import { format } from 'date-fns'
-import { es } from 'date-fns/locale'
 import { useApi } from '@/lib/api'
+import { byStartTime, formatDateSafe } from '@/lib/appointments'
 import { Button } from '@/components/ui/Button'
 import { Card, CardBody, CardHeader } from '@/components/ui/Card'
 import { StatusBadge } from '@/components/ui/Badge'
@@ -115,7 +114,7 @@ export default function PatientDetailPage() {
         </Button>
         <div>
           <h1 className="text-2xl sm:text-[28px] font-bold tracking-tight text-gray-900 leading-tight">
-            {patient.name}
+            {patient.name || 'Sin nombre'}
           </h1>
           <p className="text-sm text-gray-500 mt-1">Perfil del paciente</p>
         </div>
@@ -130,7 +129,7 @@ export default function PatientDetailPage() {
               <p className="text-xs font-medium uppercase">Teléfono</p>
             </div>
             <p className="text-lg font-semibold text-gray-900">
-              {patient.whatsapp_number}
+              {patient.phone}
             </p>
           </CardBody>
         </Card>
@@ -154,20 +153,20 @@ export default function PatientDetailPage() {
               <p className="text-xs font-medium uppercase">Total de citas</p>
             </div>
             <p className="text-lg font-semibold text-gray-900">
-              {patient.total_consultations}
+              {patient.total_appointments}
             </p>
           </CardBody>
         </Card>
       </div>
 
       {/* Notes */}
-      {patient.notes && (
+      {patient.internal_notes && (
         <Card>
           <CardHeader>
             <h3 className="font-semibold text-gray-900">Notas</h3>
           </CardHeader>
           <CardBody>
-            <p className="text-gray-700">{patient.notes}</p>
+            <p className="text-gray-700">{patient.internal_notes}</p>
           </CardBody>
         </Card>
       )}
@@ -185,7 +184,7 @@ export default function PatientDetailPage() {
           ) : (
             <div className="space-y-3">
               {appointments
-                .sort((a, b) => new Date(b.date_time).getTime() - new Date(a.date_time).getTime())
+                .sort((a, b) => byStartTime(b, a))
                 .map((appointment) => (
                   <div
                     key={appointment.id}
@@ -194,19 +193,22 @@ export default function PatientDetailPage() {
                     <div className="flex items-start justify-between mb-2">
                       <div>
                         <p className="font-medium text-gray-900">
-                          {format(new Date(appointment.date_time), "MMMM d, yyyy", {
-                            locale: es,
-                          })}{' '}
-                          - {format(new Date(appointment.date_time), 'HH:mm')}
+                          {formatDateSafe(appointment.start_datetime, 'MMMM d, yyyy')}{' '}
+                          - {formatDateSafe(appointment.start_datetime, 'HH:mm')}
                         </p>
                         <p className="text-sm text-gray-600">
-                          {appointment.consultation_type} · {appointment.duration_minutes} min
+                          {appointment.consultation_reason
+                            ? `${appointment.consultation_reason} · `
+                            : ''}
+                          {appointment.duration_minutes} min
                         </p>
                       </div>
                       <StatusBadge estado={appointment.status} />
                     </div>
-                    {appointment.notes && (
-                      <p className="text-sm text-gray-600 mt-2">{appointment.notes}</p>
+                    {appointment.post_consultation_notes && (
+                      <p className="text-sm text-gray-600 mt-2">
+                        {appointment.post_consultation_notes}
+                      </p>
                     )}
                   </div>
                 ))}
@@ -216,14 +218,12 @@ export default function PatientDetailPage() {
       </Card>
 
       {/* Last Appointment */}
-      {patient.last_consultation_at && (
+      {patient.last_appointment_at && (
         <Card>
           <CardBody className="space-y-1">
             <p className="text-xs font-medium text-gray-600 uppercase">Última cita</p>
             <p className="text-sm text-gray-900">
-              {format(new Date(patient.last_consultation_at), 'PPp', {
-                locale: es,
-              })}
+              {formatDateSafe(patient.last_appointment_at, 'PPp')}
             </p>
           </CardBody>
         </Card>

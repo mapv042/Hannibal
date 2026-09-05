@@ -15,7 +15,7 @@ export interface ScheduleDay {
   blocks: TimeBlock[]
 }
 
-export type ReminderType = 'day_before' | '4h' | '1h' | 'post_appointment'
+export type ReminderType = 'day_before' | '4h' | '1h' | 'at_time' | 'post_appointment'
 
 /**
  * Reminder catalog shown in onboarding. The offset (minutes relative to the
@@ -32,6 +32,7 @@ export const REMINDER_DEFS: {
   { type: 'day_before', label: 'Un día antes', description: 'Recordatorio el día previo a la cita', offsetMinutes: -1440 },
   { type: '4h', label: '4 horas antes', description: 'Recordatorio 4 horas antes de la cita', offsetMinutes: -240 },
   { type: '1h', label: '1 hora antes', description: 'Recordatorio 1 hora antes de la cita', offsetMinutes: -60 },
+  { type: 'at_time', label: 'Aviso de llegada', description: 'A la hora de la cita le preguntamos al paciente si ya llegó y te avisamos', offsetMinutes: 0 },
   { type: 'post_appointment', label: 'Seguimiento post-consulta', description: 'Mensaje de seguimiento después de la cita', offsetMinutes: 120 },
 ]
 
@@ -41,6 +42,7 @@ export const DEFAULT_REMINDER_TOGGLES: ReminderToggles = {
   day_before: true,
   '4h': true,
   '1h': true,
+  at_time: true,
   post_appointment: true,
 }
 

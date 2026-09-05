@@ -17,6 +17,7 @@ from app.modules.offices.schemas import (
     ReminderRuleSchema,
 )
 from app.modules.reminders.rules import default_reminder_rules
+from app.modules.scheduling.holidays import build_holiday_blocks
 from app.core.exceptions import NotFoundError
 from app.utils.logger import get_logger
 
@@ -57,6 +58,14 @@ async def create_office(
         db.add(rule)
 
     db.add(office)
+    await db.flush()  # assigns office.id, needed by the holiday blocks below
+
+    # Block the statutory holidays so the bot never offers a slot on one. They
+    # are ordinary TimeBlocks: a practice that does work that day just deletes
+    # the block from the doctor channel.
+    for block in build_holiday_blocks(office.id):
+        db.add(block)
+
     await db.commit()
     await db.refresh(office)
 
@@ -181,6 +190,8 @@ async def update_office(
         office.notify_cancellation = data.notify_cancellation
     if data.notify_new_patient is not None:
         office.notify_new_patient = data.notify_new_patient
+    if data.notify_arrival is not None:
+        office.notify_arrival = data.notify_arrival
     if data.notify_unconfirmed is not None:
         office.notify_unconfirmed = data.notify_unconfirmed
 

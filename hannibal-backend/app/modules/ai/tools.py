@@ -3,30 +3,39 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import datetime, time
 from typing import Any, Optional
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.constants import DAYS_ES, MX_TIMEZONE
+from app.core.constants import ArrivalStatus, DAYS_ES, MX_TIMEZONE
 from app.db.models import Appointment, Office, Patient
 from app.modules.ai.tool_helpers import (
+    appointment_access_error,
     availability_for_dates,
     format_appointment_dt,
     localize_mx,
     parse_requested_dates,
+    resolve_appointment_duration,
 )
 from app.modules.google_calendar.service import update_event_color
 from app.modules.google_calendar.sync import cancel_appointment_in_calendar
 from app.modules.scheduling.availability import invalidate_availability_cache
 from app.modules.scheduling.booking import book_appointment
-from app.modules.scheduling.reschedule_notify import link_pending_doctor_cancellation
-from app.modules.scheduling.tasks import enqueue_reschedule_notification
+from app.modules.scheduling.reschedule_notify import (
+    find_pending_doctor_cancellation,
+    link_pending_doctor_cancellation,
+)
+from app.modules.scheduling.tasks import (
+    enqueue_abandoned_reschedule_notification,
+    enqueue_reschedule_notification,
+)
 from app.modules.notifications.tasks import (
     enqueue_appointment_notification,
     enqueue_cancellation_notification,
 )
+from app.modules.audit.tasks import enqueue_write_audit
 from app.utils.logger import get_logger
 from app.utils.phone import (
     display_or_raw,
@@ -37,6 +46,10 @@ from app.utils.phone import (
 )
 
 logger = get_logger(__name__)
+
+# An ETA beyond this isn't "on my way", it's a reschedule — don't record it as
+# a waiting-room state the doctor might act on.
+MAX_ARRIVAL_ETA_MINUTES = 90
 
 
 # ---------------------------------------------------------------------------
@@ -118,6 +131,13 @@ TOOL_DEFINITIONS = [
                         "esa persona, no el de quien escribe."
                     ),
                 },
+                "confirm_second_same_day": {
+                    "type": "boolean",
+                    "description": (
+                        "Usa true SOLO cuando el paciente ya fue avisado de que tiene otra cita "
+                        "ese mismo día y confirmó que aun así quiere una segunda."
+                    ),
+                },
             },
             "required": ["patient_name", "patient_phone", "date", "time", "reason"],
         },
@@ -184,6 +204,39 @@ TOOL_DEFINITIONS = [
                 },
             },
             "required": ["appointment_id"],
+        },
+    },
+    {
+        "name": "report_arrival",
+        "description": (
+            "Registra si el paciente ya llegó al consultorio o viene en camino, en respuesta al "
+            "mensaje que le enviamos a la hora de su cita. El doctor recibe el aviso de inmediato. "
+            "Úsala solo cuando haya una LLEGADA PENDIENTE; no la uses para citas futuras."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "appointment_id": {
+                    "type": "string",
+                    "description": "ID de la cita, tomado del bloque LLEGADA PENDIENTE.",
+                },
+                "status": {
+                    "type": "string",
+                    "enum": ["arrived", "on_the_way"],
+                    "description": (
+                        "arrived si el paciente ya está en el consultorio; on_the_way si "
+                        "todavía viene en camino."
+                    ),
+                },
+                "eta_minutes": {
+                    "type": "integer",
+                    "description": (
+                        "Minutos que el paciente dice que tardará en llegar. Solo cuando lo "
+                        "diga; no lo estimes tú."
+                    ),
+                },
+            },
+            "required": ["appointment_id", "status"],
         },
     },
     {
@@ -267,6 +320,33 @@ async def _invalidate_avail(ctx, *dates) -> None:
             logger.warning("tool_avail_cache_invalidate_failed", error=str(e))
 
 
+async def _find_same_day_appointment(
+    ctx, patient_id: uuid.UUID, start_dt: datetime
+) -> Optional[Appointment]:
+    """An active appointment this patient already has on the same MX day, if any.
+
+    Compared on the Mexico City calendar day rather than a UTC range, so an
+    evening appointment isn't counted against the following day.
+    """
+    day = start_dt.astimezone(MX_TIMEZONE).date()
+    day_start = datetime.combine(day, time.min, tzinfo=MX_TIMEZONE)
+    day_end = datetime.combine(day, time.max, tzinfo=MX_TIMEZONE)
+
+    result = await ctx.db.execute(
+        select(Appointment)
+        .where(
+            (Appointment.office_id == ctx.office.id)
+            & (Appointment.patient_id == patient_id)
+            & (Appointment.status.in_(["scheduled", "confirmed"]))
+            & (Appointment.start_datetime >= day_start)
+            & (Appointment.start_datetime <= day_end)
+        )
+        .order_by(Appointment.start_datetime)
+        .limit(1)
+    )
+    return result.scalars().first()
+
+
 # ---------------------------------------------------------------------------
 # Tool executor (dispatcher)
 # ---------------------------------------------------------------------------
@@ -315,7 +395,15 @@ async def _handle_get_available_slots(args: dict, ctx: ToolContext) -> dict:
     dates = parse_requested_dates(args)
     if isinstance(dates, dict):
         return dates
-    return await availability_for_dates(ctx.office.id, dates, ctx.db)
+    # Lay the grid out in the slot length this patient's appointment will take,
+    # so we never offer a 30-minute gap and then reserve 45 on top of the next
+    # appointment.
+    duration_min, _ = await resolve_appointment_duration(
+        ctx.db, ctx.office, ctx.patient_id
+    )
+    return await availability_for_dates(
+        ctx.office.id, dates, ctx.db, slot_minutes=duration_min
+    )
 
 
 @_handler("get_patient_appointments")
@@ -445,20 +533,36 @@ async def _handle_create_appointment(args: dict, ctx: ToolContext) -> dict:
             if not patient.name:
                 patient.name = patient_name
 
-    # Determine duration based on patient type (new vs returning)
-    existing_appt = await ctx.db.execute(
-        select(Appointment).where(
-            (Appointment.office_id == ctx.office.id)
-            & (Appointment.patient_id == patient.id)
-            & (Appointment.status.in_(["completed", "confirmed", "scheduled"]))
-        ).limit(1)
+    # Same patient, same day: could be a second appointment they really want, or
+    # the patient forgetting they already have one. The model can't tell, and
+    # booking silently is the wrong guess — hand back the existing appointment
+    # and let it ask.
+    same_day = (
+        None
+        if args.get("confirm_second_same_day")
+        else await _find_same_day_appointment(ctx, patient.id, start_dt)
     )
-    is_returning = existing_appt.scalars().first() is not None
-    duration_min = (
-        ctx.office.returning_patient_duration_min if is_returning
-        else ctx.office.new_patient_duration_min
+    if same_day is not None:
+        return {
+            "existing_appointment": {
+                "appointment_id": str(same_day.id),
+                "formatted": format_appointment_dt(same_day.start_datetime),
+                "status": same_day.status,
+            },
+            "next_step": (
+                "Este paciente ya tiene una cita ese mismo día. Antes de agendar, "
+                "pregúntale si quiere mover la que ya tiene (reschedule_appointment) "
+                "o si de verdad necesita una segunda cita el mismo día — no lo asumas. "
+                "Si confirma que quiere las dos, vuelve a llamar create_appointment "
+                "con confirm_second_same_day=true."
+            ),
+        }
+
+    # Duration and type from the shared resolver — the same one that laid out
+    # the slots this patient was offered.
+    duration_min, appt_type = await resolve_appointment_duration(
+        ctx.db, ctx.office, patient.id
     )
-    appt_type = "follow_up" if is_returning else "first_visit"
 
     outcome = await book_appointment(
         ctx.db,
@@ -475,6 +579,7 @@ async def _handle_create_appointment(args: dict, ctx: ToolContext) -> dict:
             f"Agendada por WhatsApp"
         ),
         redis_client=ctx.redis_client,
+        booked_by_patient_id=ctx.patient_id,
     )
     if outcome.error:
         return _booking_error(outcome.error)
@@ -487,6 +592,17 @@ async def _handle_create_appointment(args: dict, ctx: ToolContext) -> dict:
         enqueue_reschedule_notification(appointment.id)
     else:
         enqueue_appointment_notification(appointment.id, is_new_patient)
+
+    # Rule 12: check afterwards that the booking really landed where we told the
+    # patient it did — including the Google Calendar event, whose failure
+    # book_appointment deliberately swallows.
+    enqueue_write_audit(
+        appointment.id,
+        "book",
+        start_datetime=start_dt,
+        status="scheduled",
+        patient_id=patient.id,
+    )
 
     day_name = DAYS_ES[start_dt.weekday()]
     logger.info("tool_appointment_created", appointment_id=str(appointment.id), office_id=str(ctx.office.id))
@@ -520,6 +636,10 @@ async def _handle_cancel_appointment(args: dict, ctx: ToolContext) -> dict:
     if not appointment or appointment.office_id != ctx.office.id:
         return {"error": "No se encontró la cita."}
 
+    access_error = appointment_access_error(appointment, ctx)
+    if access_error:
+        return {"error": access_error}
+
     if appointment.status == "cancelled":
         return {"error": "La cita ya fue cancelada previamente."}
 
@@ -542,6 +662,23 @@ async def _handle_cancel_appointment(args: dict, ctx: ToolContext) -> dict:
         await cancel_appointment_in_calendar(appt_id, ctx.office.id, ctx.db)
     except Exception as e:
         logger.warning("tool_cancel_gcal_failed", error=str(e))
+
+    # Rule 12: a cancellation that leaves the calendar event standing is worse
+    # than a failed cancellation — the slot looks taken and the patient thinks
+    # they're free.
+    enqueue_write_audit(appointment.id, "cancel", status="cancelled")
+
+    # Rule 13: if the doctor had cancelled a cita and asked this patient to
+    # rebook, and they cancelled instead, the doctor has to hear how it actually
+    # ended — otherwise they keep holding a slot for someone who isn't coming.
+    pending = await find_pending_doctor_cancellation(
+        ctx.db,
+        ctx.office.id,
+        appointment.patient_id,
+        exclude_appointment_id=appointment.id,
+    )
+    if pending is not None:
+        enqueue_abandoned_reschedule_notification(pending.id)
 
     logger.info("tool_appointment_cancelled", appointment_id=appt_id_str)
 
@@ -567,6 +704,10 @@ async def _handle_reschedule_appointment(args: dict, ctx: ToolContext) -> dict:
     appointment = await ctx.db.get(Appointment, appt_id)
     if not appointment or appointment.office_id != ctx.office.id:
         return {"error": "No se encontró la cita."}
+
+    access_error = appointment_access_error(appointment, ctx)
+    if access_error:
+        return {"error": access_error}
 
     if appointment.status == "cancelled":
         return {"error": "La cita ya fue cancelada y no puede reagendarse. Ofrece agendar una nueva."}
@@ -601,6 +742,9 @@ async def _handle_reschedule_appointment(args: dict, ctx: ToolContext) -> dict:
         gcal_title=f"Cita: {patient_name}",
         gcal_description=f"Motivo: {reason}\n{phone_line}Reagendada por WhatsApp",
         redis_client=ctx.redis_client,
+        # Carry the original booker forward: moving an appointment must not
+        # strip the parent who booked it of the right to touch it again.
+        booked_by_patient_id=appointment.booked_by_patient_id,
     )
     if outcome.error:
         return _booking_error(outcome.error)
@@ -621,6 +765,17 @@ async def _handle_reschedule_appointment(args: dict, ctx: ToolContext) -> dict:
     # If this booking answers a slot the doctor cancelled, report back to the doctor.
     if await link_pending_doctor_cancellation(ctx.db, new_appointment):
         enqueue_reschedule_notification(new_appointment.id)
+
+    # Rule 12: audit both halves — the new appointment must exist on the
+    # calendar and the old one must have stopped occupying its slot.
+    enqueue_write_audit(
+        new_appointment.id,
+        "reschedule",
+        start_datetime=new_start,
+        status="scheduled",
+        patient_id=new_appointment.patient_id,
+    )
+    enqueue_write_audit(appointment.id, "cancel", status="cancelled")
 
     new_day_name = DAYS_ES[new_start.weekday()]
     logger.info("tool_appointment_rescheduled", old_id=appt_id_str, new_id=str(new_appointment.id))
@@ -652,6 +807,10 @@ async def _handle_confirm_appointment(args: dict, ctx: ToolContext) -> dict:
     if not appointment or appointment.office_id != ctx.office.id:
         return {"error": "No se encontró la cita."}
 
+    access_error = appointment_access_error(appointment, ctx)
+    if access_error:
+        return {"error": access_error}
+
     if appointment.status == "cancelled":
         return {"error": "La cita fue cancelada y no puede confirmarse."}
 
@@ -672,6 +831,70 @@ async def _handle_confirm_appointment(args: dict, ctx: ToolContext) -> dict:
         "formatted": format_appointment_dt(appointment.start_datetime),
         "office_name": ctx.office.name,
         "office_address": ctx.office.address or "",
+    }
+
+
+@_handler("report_arrival")
+async def _handle_report_arrival(args: dict, ctx: ToolContext) -> dict:
+    # Local import keeps Celery out of this module's import graph.
+    from app.modules.notifications.tasks import enqueue_arrival_notification
+
+    appt_id_str = args.get("appointment_id", "")
+    status = args.get("status", "")
+
+    if status not in (ArrivalStatus.ARRIVED.value, ArrivalStatus.ON_THE_WAY.value):
+        return {"error": f"Estado de llegada inválido: {status}"}
+
+    try:
+        appt_id = uuid.UUID(appt_id_str)
+    except ValueError:
+        return {"error": f"ID de cita inválido: {appt_id_str}"}
+
+    appointment = await ctx.db.get(Appointment, appt_id)
+    if not appointment or appointment.office_id != ctx.office.id:
+        return {"error": "No se encontró la cita."}
+
+    access_error = appointment_access_error(appointment, ctx)
+    if access_error:
+        return {"error": access_error}
+
+    if appointment.status == "cancelled":
+        return {"error": "La cita fue cancelada."}
+
+    eta_minutes = args.get("eta_minutes")
+    if eta_minutes is not None:
+        try:
+            eta_minutes = int(eta_minutes)
+        except (TypeError, ValueError):
+            eta_minutes = None
+        else:
+            # A patient saying "llego en 3 horas" is rescheduling, not arriving.
+            if not 0 < eta_minutes <= MAX_ARRIVAL_ETA_MINUTES:
+                eta_minutes = None
+
+    appointment.arrival_status = status
+    appointment.arrival_reported_at = datetime.now(MX_TIMEZONE)
+    appointment.arrival_eta_minutes = (
+        eta_minutes if status == ArrivalStatus.ON_THE_WAY.value else None
+    )
+
+    enqueue_arrival_notification(appointment.id)
+
+    logger.info(
+        "tool_arrival_reported",
+        appointment_id=appt_id_str,
+        office_id=str(ctx.office.id),
+        arrival_status=status,
+        eta_minutes=eta_minutes,
+    )
+
+    return {
+        "success": True,
+        "appointment_id": appt_id_str,
+        "status": status,
+        "eta_minutes": eta_minutes,
+        "office_name": ctx.office.name,
+        "doctor_notified": True,
     }
 
 

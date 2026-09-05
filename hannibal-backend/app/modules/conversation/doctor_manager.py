@@ -21,6 +21,7 @@ from app.modules.ai.doctor_tools import (
 from app.modules.conversation.base_manager import BaseToolConversationManager
 from app.modules.whatsapp.meta_client import MetaCloudClient
 from app.modules.whatsapp.window import record_doctor_inbound
+from app.modules.scheduling.waiting_room import get_waiting_room
 from app.modules.urgencies.service import get_pending_urgencies
 
 logger = get_logger(__name__)
@@ -81,10 +82,16 @@ class DoctorConversationManager(BaseToolConversationManager):
             history = await self._get_history(office.id)
             history.append({"role": "user", "content": message_text})
 
-            # Build system prompt and tool context. Pending urgent requests are
-            # injected so the doctor can approve/reject them in this turn.
+            # Build system prompt and tool context. Pending urgent requests and
+            # today's waiting room are injected so the doctor can act on both in
+            # this turn.
             pending_urgencies = await get_pending_urgencies(office.id, db)
-            system_prompt = build_doctor_system_prompt(office, pending_urgencies=pending_urgencies)
+            waiting_room = await get_waiting_room(office.id, db)
+            system_prompt = build_doctor_system_prompt(
+                office,
+                pending_urgencies=pending_urgencies,
+                waiting_room=waiting_room,
+            )
             tool_ctx = DoctorToolContext(
                 db=db,
                 office=office,

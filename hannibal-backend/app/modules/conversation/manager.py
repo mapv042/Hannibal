@@ -12,7 +12,7 @@ from app.utils.dates import now_mx
 from app.utils.logger import get_logger
 from app.core.exceptions import ConversationError
 from app.db.models import Appointment, Office, Patient, Conversation, Message
-from app.modules.ai.prompts.base import build_system_prompt
+from app.modules.ai.prompts.base import WAITING_ARRIVAL_STATUS, build_system_prompt
 from app.modules.ai.tools import TOOL_DEFINITIONS, ToolContext, execute_tool
 from app.modules.conversation.base_manager import BaseToolConversationManager
 from app.modules.conversation.session_store import SessionStore
@@ -141,6 +141,7 @@ class ConversationManager(BaseToolConversationManager):
                 active_appointment_id=active_appt_id,
                 is_returning_patient=is_returning,
                 patient_name=patient.name if patient else None,
+                session_status=session.status,
             )
             session.claude_history = self.sanitize_history(session.claude_history)
             session.claude_history.append({"role": "user", "content": message_text})
@@ -168,10 +169,19 @@ class ConversationManager(BaseToolConversationManager):
             if tool_ctx.patient_id and tool_ctx.patient_id != session.patient_id:
                 session.patient_id = tool_ctx.patient_id
 
-            # Clear confirmation state if the appointment was confirmed or cancelled
+            # Release the pending-question state once it's been answered: the
+            # appointment was confirmed/cancelled, or — while we were waiting on
+            # an arrival report — the patient told us where they are.
             if session.active_appointment_id:
                 appt = await db.get(Appointment, session.active_appointment_id)
-                if not appt or appt.status in ("confirmed", "cancelled"):
+                answered = appt is None or appt.status in ("confirmed", "cancelled")
+                if (
+                    not answered
+                    and session.status == WAITING_ARRIVAL_STATUS
+                    and appt.arrival_status is not None
+                ):
+                    answered = True
+                if answered:
                     session.active_appointment_id = None
                     session.status = "active"
 

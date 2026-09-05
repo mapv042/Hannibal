@@ -28,11 +28,13 @@ from app.modules.reminders.wa_templates import (
     TEMPLATE_DOCTOR_NEW_APPOINTMENT,
     TEMPLATE_DOCTOR_NEW_PATIENT,
     TEMPLATE_DOCTOR_NEW_PATIENT_APPOINTMENT,
+    TEMPLATE_DOCTOR_PATIENT_ARRIVED,
     TEMPLATE_DOCTOR_UNCONFIRMED_SUMMARY,
     build_doctor_cancellation_params,
     build_doctor_new_appointment_params,
     build_doctor_new_patient_appointment_params,
     build_doctor_new_patient_params,
+    build_doctor_patient_arrived_params,
     build_doctor_unconfirmed_summary_params,
 )
 from app.modules.whatsapp.doctor_notify import send_doctor_alert
@@ -127,6 +129,88 @@ async def notify_cancellation(
         template_name=TEMPLATE_DOCTOR_CANCELLATION,
         template_params=build_doctor_cancellation_params(patient_name, slot),
         log_event="doctor_cancellation",
+    )
+
+
+async def _build_patient_brief(
+    db: AsyncSession, appointment: Appointment, patient: Patient
+) -> list[str]:
+    """Short pre-consultation brief: what the doctor needs before walking in.
+
+    Deliberately narrow — the reason for today's visit, when the patient was
+    last seen, and the doctor's own internal note. Anything longer stops being
+    read, which defeats the point of putting a human at the risk moment.
+    """
+    lines: list[str] = []
+
+    if appointment.consultation_reason:
+        lines.append(f"Motivo: {appointment.consultation_reason}")
+
+    previous = (
+        await db.execute(
+            select(Appointment)
+            .where(
+                (Appointment.office_id == appointment.office_id)
+                & (Appointment.patient_id == patient.id)
+                & (Appointment.id != appointment.id)
+                & (Appointment.status == "completed")
+            )
+            .order_by(Appointment.start_datetime.desc())
+            .limit(1)
+        )
+    ).scalars().first()
+    if previous is not None:
+        lines.append(f"Última consulta: {templates.format_slot(previous.start_datetime)}")
+    else:
+        lines.append("Primera consulta con ustedes")
+
+    if patient.internal_notes:
+        lines.append(f"Nota: {patient.internal_notes}")
+
+    return lines
+
+
+async def notify_arrival(
+    db: AsyncSession,
+    redis_client: aioredis.Redis,
+    meta_client,
+    appointment_id: UUID,
+) -> str:
+    """Tell the doctor the patient answered the waiting-room check-in."""
+    appointment = await db.get(Appointment, appointment_id)
+    if not appointment:
+        return "not_found"
+    if appointment.arrival_status is None:
+        # The report hasn't committed yet — let the task retry.
+        return "not_found"
+
+    office = await db.get(Office, appointment.office_id)
+    patient = await db.get(Patient, appointment.patient_id)
+    if not office or not patient:
+        return "skipped"
+    if not office.notify_arrival:
+        return "skipped"
+
+    patient_name = patient.name or "El paciente"
+    brief_lines = await _build_patient_brief(db, appointment, patient)
+    detail = templates.arrival_detail(
+        appointment.arrival_status, appointment.arrival_eta_minutes
+    )
+
+    return await send_doctor_alert(
+        redis_client,
+        meta_client,
+        office,
+        text=templates.doctor_patient_arrived(
+            patient_name,
+            appointment.arrival_status,
+            appointment.arrival_eta_minutes,
+            brief_lines,
+            office.assistant_tone,
+        ),
+        template_name=TEMPLATE_DOCTOR_PATIENT_ARRIVED,
+        template_params=build_doctor_patient_arrived_params(patient_name, detail),
+        log_event="doctor_patient_arrived",
     )
 
 

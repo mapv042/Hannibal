@@ -488,6 +488,47 @@ async def update_calendar_event(
         raise
 
 
+async def get_calendar_event(
+    office_id: UUID,
+    google_event_id: str,
+    db: AsyncSession,
+) -> Optional[dict]:
+    """Read one event back from Google Calendar.
+
+    Used by the write audit (Rule 12) to check that what we believe we wrote is
+    actually on the doctor's calendar. Returns the raw event dict, or None when
+    Google says it doesn't exist (404).
+
+    Raises:
+        GoogleCalendarError: If the event can't be read for any other reason —
+            the caller must not treat "we couldn't check" as "it's fine".
+    """
+    from app.db.models import Office
+
+    access_token = await get_valid_google_token(office_id, db)
+    office = await db.get(Office, office_id)
+    calendar_id = office.google_calendar_id or "primary"
+
+    async with httpx.AsyncClient(timeout=15) as client:
+        response = await client.get(
+            f"https://www.googleapis.com/calendar/v3/calendars/{calendar_id}/events/{google_event_id}",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+
+    if response.status_code == 404:
+        return None
+    if response.status_code >= 400:
+        logger.error(
+            "google_calendar_get_event_failed",
+            office_id=str(office_id),
+            google_event_id=google_event_id,
+            status_code=response.status_code,
+        )
+        raise GoogleCalendarError("Failed to read Google Calendar event")
+
+    return response.json()
+
+
 async def delete_calendar_event(
     office_id: UUID,
     google_event_id: str,

@@ -18,20 +18,24 @@ from app.modules.reminders.templates import (
     reminder_day_before,
     reminder_4h,
     reminder_1h,
+    arrival_check,
     post_appointment_followup,
     confirmation_request,
 )
 from app.modules.reminders.wa_templates import (
     TEMPLATE_LANGUAGE,
     TEMPLATE_REMINDER,
+    TEMPLATE_ARRIVAL_CHECK_IN,
     TEMPLATE_CONFIRMATION_DAY_BEFORE,
     TEMPLATE_FOLLOW_UP,
     format_appointment_date,
     format_explicit_date,
+    build_arrival_check_params,
     build_reminder_params,
     build_confirmation_params,
     build_follow_up_params,
 )
+from app.modules.conversation.session_store import SessionStore
 from app.modules.whatsapp.window import service_window_open
 from app.utils.logger import get_logger
 
@@ -44,6 +48,9 @@ MX_TZ = ZoneInfo("America/Mexico_City")
 CONFIRMATION_WINDOW_START_HOUR = 8
 CONFIRMATION_WINDOW_END_HOUR = 20
 
+# Reminder types handled by the generic _send_reminder path. `at_time` is not
+# here: the arrival check needs interactive buttons and its own session priming,
+# so it has a dedicated task (see _send_arrival_check).
 FLAG_MAP = {
     "day_before": "reminder_day_before_sent",
     "4h": "reminder_4h_sent",
@@ -91,6 +98,49 @@ async def _get_or_create_conversation(
         db.add(conversation)
         await db.flush()
     return conversation
+
+
+async def _prime_session_for_appointment(
+    session_store,
+    db: AsyncSession,
+    office: Office,
+    patient: Patient,
+    appointment: Appointment,
+    outgoing_text: str,
+    *,
+    status: str,
+) -> None:
+    """Point the patient's session at an appointment we just asked about.
+
+    A tapped button reaches the model as its title text — the button id is
+    dropped on the way in — so the appointment being asked about has to travel
+    in the session instead. `status` gates which context block the prompt
+    builder emits (confirmation vs. arrival).
+    """
+    from app.modules.conversation.schemas import SessionContext
+
+    session = await session_store.get_session(patient.whatsapp_id, str(office.id))
+    if not session:
+        conversation = await _get_or_create_conversation(
+            db, office.id, patient.whatsapp_id, patient.id
+        )
+        session = SessionContext(
+            conversation_id=conversation.id,
+            office_id=office.id,
+            whatsapp_id=patient.whatsapp_id,
+            patient_id=patient.id,
+            status="active",
+            claude_history=[],
+            collected_data={},
+        )
+
+    # The question itself goes into the history, so the reply ("sí", "ya casi")
+    # has something to attach to.
+    session.claude_history.append({"role": "assistant", "content": outgoing_text})
+    session.status = status
+    session.active_appointment_id = appointment.id
+
+    await session_store.save_session(patient.whatsapp_id, str(office.id), session)
 
 
 async def _record_outgoing_message(
@@ -309,6 +359,121 @@ def send_reminder_1h(self, appointment_id: str):
         raise
 
 
+@shared_task(bind=True)
+def send_arrival_check(self, appointment_id: str):
+    """Ask the patient whether they've arrived, at the appointment's start time."""
+    _log(f"send_arrival_check: START appointment_id={appointment_id}")
+    try:
+        asyncio.run(_send_arrival_check(appointment_id))
+        _log(f"send_arrival_check: DONE appointment_id={appointment_id}")
+    except Exception as e:
+        _log_exception("send_arrival_check", e)
+        raise
+
+
+async def _send_arrival_check(appointment_id: str) -> None:
+    """Waiting-room check-in: "¿ya llegaste?" at the appointment's start time.
+
+    Follows the same shape as _send_reminder (FOR UPDATE, idempotency flag,
+    status guard) but sends interactive buttons in-window, and primes the
+    patient's session so their reply is read as an arrival report rather than a
+    new scheduling request.
+    """
+    from app.modules.whatsapp.meta_client import MetaCloudClient
+
+    async with get_async_session_maker()() as db:
+        result = await db.execute(
+            select(Appointment)
+            .where(Appointment.id == UUID(appointment_id))
+            .with_for_update()
+        )
+        appointment = result.scalar_one_or_none()
+        if not appointment:
+            _log(f"send_arrival_check: not found appointment_id={appointment_id}")
+            return
+
+        if appointment.arrival_check_sent:
+            _log(f"send_arrival_check: already sent appointment_id={appointment_id}")
+            return
+
+        if appointment.status not in ("scheduled", "confirmed"):
+            _log(
+                f"send_arrival_check: skipped status={appointment.status} "
+                f"appointment_id={appointment_id}"
+            )
+            return
+
+        patient = await db.get(Patient, appointment.patient_id)
+        office = await db.get(Office, appointment.office_id)
+        if not patient or not office:
+            _log(f"send_arrival_check: missing patient/office appointment_id={appointment_id}")
+            return
+        if not office.whatsapp_phone_id or not office.whatsapp_token:
+            _log(f"send_arrival_check: office missing whatsapp config office_id={office.id}")
+            return
+        if not patient.whatsapp_id:
+            _log(f"send_arrival_check: patient missing whatsapp_id patient_id={patient.id}")
+            return
+
+        patient_name = patient.name or "paciente"
+        free_text = arrival_check(
+            {"patient_name": patient_name, "office_name": office.name},
+            tone=office.assistant_tone,
+        )
+
+        meta_client = MetaCloudClient()
+        session_store = SessionStore()
+        try:
+            # In-window: two taps ("Ya llegué" / "Voy en camino"). Out of window
+            # buttons aren't delivered at all, so fall back to the template.
+            if await service_window_open(db, office.id, patient.whatsapp_id):
+                message_id = await meta_client.send_interactive_buttons(
+                    phone_number_id=office.whatsapp_phone_id,
+                    token=office.whatsapp_token,
+                    to=patient.whatsapp_id,
+                    body_text=free_text,
+                    buttons=[
+                        {"id": f"arrived_{appointment.id}", "title": "Ya llegué"},
+                        {"id": f"onway_{appointment.id}", "title": "Voy en camino"},
+                    ],
+                )
+                await _record_outgoing_message(
+                    db,
+                    office,
+                    patient,
+                    content=free_text,
+                    via="interactive",
+                    template_name=TEMPLATE_ARRIVAL_CHECK_IN,
+                    whatsapp_message_id=message_id,
+                )
+                via = "interactive"
+            else:
+                via = await _send_free_or_template(
+                    meta_client,
+                    db,
+                    office,
+                    patient,
+                    free_text=free_text,
+                    template_name=TEMPLATE_ARRIVAL_CHECK_IN,
+                    params=build_arrival_check_params(patient_name, office.name),
+                )
+
+            await _prime_session_for_appointment(
+                session_store, db, office, patient, appointment, free_text,
+                status="waiting_arrival_report",
+            )
+        finally:
+            await session_store.close()
+
+        appointment.arrival_check_sent = True
+        await db.commit()
+
+        _log(
+            f"send_arrival_check: sent via {via} to patient_id={patient.id} "
+            f"appointment_id={appointment_id}"
+        )
+
+
 # --- Existing tasks (kept) ---
 
 
@@ -400,9 +565,6 @@ def send_confirmation_requests(self):
 async def _send_confirmation_requests_async():
     """Async implementation of day-before confirmation requests."""
     from app.modules.whatsapp.meta_client import MetaCloudClient
-    from app.modules.conversation.session_store import SessionStore
-    from app.modules.conversation.schemas import SessionContext
-    from app.db.models import Conversation
 
     # Safety net: if the task fires outside the allowed window (e.g. a beat
     # schedule misconfigured to UTC), defer to the next 8:00 AM MX instead of
@@ -524,58 +686,11 @@ async def _send_confirmation_requests_async():
                             params=params,
                         )
 
-                    # Text fed to the AI history so it has context on the reply
-                    message = free_text
-
-                    # Set up session so the patient's reply routes correctly
-                    session = await session_store.get_session(
-                        patient.whatsapp_id, str(office.id)
-                    )
-                    if not session:
-                        # Find or create a conversation record
-                        conv_result = await db.execute(
-                            select(Conversation).where(
-                                and_(
-                                    Conversation.office_id == office.id,
-                                    Conversation.whatsapp_id == patient.whatsapp_id,
-                                    Conversation.status != "archived",
-                                )
-                            )
-                        )
-                        conversation = conv_result.scalar_one_or_none()
-                        if not conversation:
-                            import uuid as uuid_mod
-                            conversation = Conversation(
-                                id=uuid_mod.uuid4(),
-                                office_id=office.id,
-                                whatsapp_id=patient.whatsapp_id,
-                                status="active",
-                            )
-                            db.add(conversation)
-                            await db.flush()
-
-                        session = SessionContext(
-                            conversation_id=conversation.id,
-                            office_id=office.id,
-                            whatsapp_id=patient.whatsapp_id,
-                            patient_id=patient.id,
-                            status="active",
-                            claude_history=[],
-                            collected_data={},
-                        )
-
-                    # Add confirmation message to claude_history so the AI
-                    # has context when the patient replies
-                    session.claude_history.append({
-                        "role": "assistant",
-                        "content": message,
-                    })
-
-                    session.status = "waiting_appointment_confirmation"
-                    session.active_appointment_id = appointment.id
-
-                    await session_store.save_session(
-                        patient.whatsapp_id, str(office.id), session
+                    # Point the session at this appointment so the reply is
+                    # read as an answer to the confirmation request.
+                    await _prime_session_for_appointment(
+                        session_store, db, office, patient, appointment, free_text,
+                        status="waiting_appointment_confirmation",
                     )
 
                     # Mark as sent

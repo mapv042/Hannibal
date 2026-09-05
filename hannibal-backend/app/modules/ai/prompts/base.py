@@ -11,6 +11,11 @@ if TYPE_CHECKING:
     from app.db.models import Office
 
 
+# Session status set by the waiting-room check-in task; while it holds, the
+# patient's reply is an answer about arriving, not about confirming.
+WAITING_ARRIVAL_STATUS = "waiting_arrival_report"
+
+
 def _build_confirmation_context(active_appointment_id: str | None) -> str:
     # Confirmation guidance only exists when the office actually sent a confirmation
     # request and a cita is awaiting confirmation. Outside that case the bot must not
@@ -27,11 +32,28 @@ def _build_confirmation_context(active_appointment_id: str | None) -> str:
     )
 
 
+def _build_arrival_context(active_appointment_id: str | None) -> str:
+    # Only after the check-in went out at the appointment's start time. The
+    # patient is standing outside (or stuck in traffic), so the whole turn is
+    # about that, not about scheduling.
+    if not active_appointment_id:
+        return ""
+    return (
+        f"\n\nLLEGADA PENDIENTE:"
+        f"\nAcabas de preguntarle al paciente si ya llegó a su cita (ID: {active_appointment_id})."
+        f" Usa este ID al llamar report_arrival."
+        f"\n- Si dice que ya está ahí (\"ya llegué\", \"estoy afuera\", \"aquí estoy\"), usa report_arrival con status=arrived"
+        f"\n- Si viene en camino (\"voy llegando\", \"en 10 minutos\", \"me atoré en el tráfico\"), usa report_arrival con status=on_the_way y eta_minutes si lo menciona"
+        f"\n- Si ya no puede asistir, usa cancel_appointment con este ID"
+    )
+
+
 def build_system_prompt(
     office: Office,
     active_appointment_id: str | None = None,
     is_returning_patient: bool = False,
     patient_name: str | None = None,
+    session_status: str | None = None,
 ) -> tuple[str, str]:
     """
     Build the system prompt for tool-use mode as (static, dynamic) parts.
@@ -153,5 +175,13 @@ REGLAS CRÍTICAS:
 
 Tu objetivo es facilitar el agendamiento de forma eficiente y amigable. Siempre ofrece alternativas cuando algo no está disponible."""
 
-    dynamic_part = f"{date_reference}{_build_confirmation_context(active_appointment_id)}"
+    # The two pending-question blocks are mutually exclusive: an appointment is
+    # either awaiting confirmation or awaiting an arrival report, and shipping
+    # both would have the model offering to confirm a cita already under way.
+    if session_status == WAITING_ARRIVAL_STATUS:
+        pending_context = _build_arrival_context(active_appointment_id)
+    else:
+        pending_context = _build_confirmation_context(active_appointment_id)
+
+    dynamic_part = f"{date_reference}{pending_context}"
     return static_part, dynamic_part

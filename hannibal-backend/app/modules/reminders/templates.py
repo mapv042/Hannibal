@@ -75,6 +75,27 @@ def reminder_1h(appointment_data: dict, tone: str = "formal") -> str:
         )
 
 
+def arrival_check(appointment_data: dict, tone: str = "formal") -> str:
+    """Waiting-room check-in, sent at the appointment's start time.
+
+    Short and warm: this is the body of an interactive message with
+    "Ya llegué" / "Voy en camino" buttons, so it carries no reply instructions.
+    """
+    patient_name = appointment_data.get("patient_name", "estimado cliente")
+    office_name = appointment_data.get("office_name", "nuestro consultorio")
+
+    if tone == "informal":
+        return (
+            f"Hola {patient_name}, es la hora de tu cita en {office_name}.\n\n"
+            f"¿Ya estás aquí? Avísanos para que el doctor te pase."
+        )
+    else:  # formal
+        return (
+            f"Hola {patient_name}, es la hora de su cita en {office_name}.\n\n"
+            f"¿Ya se encuentra aquí? Avísenos para que el doctor le reciba."
+        )
+
+
 def confirmation_request(appointment_data: dict, tone: str = "formal") -> str:
     """
     Generate day-before confirmation request message.

@@ -49,6 +49,41 @@ def doctor_new_patient(patient_name: str, tone: str = "informal") -> str:
     return f"Nuevo paciente registrado: {patient_name}."
 
 
+def doctor_patient_arrived(
+    patient_name: str,
+    arrival_status: str,
+    eta_minutes: int | None,
+    brief_lines: List[str],
+    tone: str = "informal",
+) -> str:
+    """Alert: the patient answered the waiting-room check-in.
+
+    Carries the pre-consultation brief in the same message rather than sending a
+    second one — this is the moment the doctor needs it, and it's the last point
+    where a wrong detail can still be caught before the patient walks in.
+    """
+    if arrival_status == "arrived":
+        headline = f"{patient_name} ya está en el consultorio."
+    elif eta_minutes:
+        headline = f"{patient_name} viene en camino, llega en unos {eta_minutes} minutos."
+    else:
+        headline = f"{patient_name} viene en camino."
+
+    if not brief_lines:
+        return headline
+    body = "\n".join(f"• {line}" for line in brief_lines)
+    return f"{headline}\n\n{body}"
+
+
+def arrival_detail(arrival_status: str, eta_minutes: int | None) -> str:
+    """One-line arrival state for the out-of-window template parameter."""
+    if arrival_status == "arrived":
+        return "ya está en el consultorio"
+    if eta_minutes:
+        return f"viene en camino, llega en unos {eta_minutes} minutos"
+    return "viene en camino"
+
+
 def doctor_unconfirmed_summary(slots: List[str], tone: str = "informal") -> str:
     """Morning digest: today's appointments still awaiting patient confirmation."""
     count = len(slots)

@@ -21,8 +21,12 @@ from app.modules.ai.tool_helpers import (
     localize_mx,
     parse_requested_dates,
 )
-from app.modules.scheduling.availability import invalidate_availability_cache
+from app.modules.scheduling.availability import (
+    OVERRIDABLE_CONFLICTS,
+    invalidate_availability_cache,
+)
 from app.modules.scheduling.booking import book_appointment
+from app.modules.audit.tasks import enqueue_write_audit
 from app.modules.google_calendar.sync import cancel_appointment_in_calendar, sync_time_block
 from app.modules.whatsapp.coexistence import pause_bot, resume_bot, check_pause
 from app.modules.whatsapp.meta_client import MetaCloudClient
@@ -296,7 +300,9 @@ DOCTOR_TOOL_DEFINITIONS = [
                     "type": "boolean",
                     "description": (
                         "Usa true SOLO cuando el doctor ya vio el conflicto de horario y confirmó "
-                        "explícitamente que quiere sobreagendar de todos modos."
+                        "explícitamente que quiere sobreagendar de todos modos. Solo sirve para "
+                        "encimar otra cita: un horario bloqueado o fuera del horario de atención "
+                        "se rechaza igual, aunque mandes true."
                     ),
                 },
                 "create_new_patient": {
@@ -356,7 +362,9 @@ DOCTOR_TOOL_DEFINITIONS = [
                     "type": "boolean",
                     "description": (
                         "Usa true SOLO cuando el doctor ya vio el conflicto de horario y confirmó "
-                        "explícitamente que quiere sobreagendar de todos modos."
+                        "explícitamente que quiere sobreagendar de todos modos. Solo sirve para "
+                        "encimar otra cita: un horario bloqueado o fuera del horario de atención "
+                        "se rechaza igual, aunque mandes true."
                     ),
                 },
             },
@@ -440,10 +448,12 @@ def _handler(name: str):
 def _doctor_booking_error(outcome) -> dict:
     """Wrap a BookingOutcome failure for the doctor flow.
 
-    Availability conflicts get the allow_conflict escape hatch (the doctor may
-    deliberately overbook after confirming); transient lock errors don't.
+    An overlap with another appointment gets the allow_conflict escape hatch
+    (the doctor may deliberately overbook after confirming). A time block or a
+    slot outside working hours does not: retrying with allow_conflict=true
+    fails identically, so offering it would just loop.
     """
-    if outcome.conflict:
+    if outcome.conflict and outcome.conflict_kind in OVERRIDABLE_CONFLICTS:
         return {
             "error": f"No se agendó: {outcome.error}",
             "next_step": (
@@ -451,6 +461,15 @@ def _doctor_booking_error(outcome) -> dict:
                 "horario (usa get_available_slots) o sobreagendar de todos "
                 "modos — si confirma sobreagendar, vuelve a llamar la "
                 "herramienta con allow_conflict=true. No lo asumas."
+            ),
+        }
+    if outcome.conflict:
+        return {
+            "error": f"No se agendó: {outcome.error}",
+            "next_step": (
+                "Este conflicto no se puede sobreagendar: el doctor tiene que "
+                "quitar el bloqueo o ampliar su horario primero. Explícaselo y "
+                "ofrécele otro horario con get_available_slots."
             ),
         }
     return {"error": outcome.error}
@@ -608,6 +627,9 @@ async def _handle_cancel_appointment(args: dict, ctx: DoctorToolContext) -> dict
     appointment.cancellation_reason = reason
 
     await _invalidate_avail(ctx, dt.date())
+
+    # Rule 12: confirm the slot really came free on both systems of record.
+    enqueue_write_audit(appointment.id, "cancel", status="cancelled")
 
     logger.info("doctor_cancelled_appointment", appointment_id=appt_id_str)
 
@@ -1299,6 +1321,15 @@ async def _handle_create_appointment(args: dict, ctx: DoctorToolContext) -> dict
         return _doctor_booking_error(outcome)
     appointment = outcome.appointment
 
+    # Rule 12: the doctor booked this by hand — verify it reached the calendar.
+    enqueue_write_audit(
+        appointment.id,
+        "book",
+        start_datetime=start_dt,
+        status="scheduled",
+        patient_id=appointment.patient_id,
+    )
+
     day_name = DAYS_ES[start_dt.weekday()]
     logger.info("doctor_created_appointment", appointment_id=str(appointment.id))
 
@@ -1386,6 +1417,16 @@ async def _handle_reschedule_appointment(args: dict, ctx: DoctorToolContext) -> 
     appointment.cancellation_reason = "Reagendada por el doctor"
 
     await _invalidate_avail(ctx, old_date)
+
+    # Rule 12: verify both halves landed — new slot present, old slot released.
+    enqueue_write_audit(
+        new_appointment.id,
+        "reschedule",
+        start_datetime=new_start,
+        status="scheduled",
+        patient_id=new_appointment.patient_id,
+    )
+    enqueue_write_audit(appointment.id, "cancel", status="cancelled")
 
     new_day_name = DAYS_ES[new_start.weekday()]
     new_formatted = format_appointment_dt(new_start)

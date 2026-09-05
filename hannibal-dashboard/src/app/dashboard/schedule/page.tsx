@@ -8,9 +8,7 @@ import { Card, CardBody } from '@/components/ui/Card'
 import { StatusBadge } from '@/components/ui/Badge'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { Skeleton } from '@/components/ui/states/Skeleton'
-import { patientLabel } from '@/lib/appointments'
-import { format } from 'date-fns'
-import { es } from 'date-fns/locale'
+import { formatDateSafe, patientLabel } from '@/lib/appointments'
 import type { Appointment } from '@/lib/supabase'
 
 export default function SchedulePage() {
@@ -67,15 +65,13 @@ export default function SchedulePage() {
                 <div>
                   <p className="text-xs font-medium text-gray-600 uppercase">Fecha</p>
                   <p className="text-sm text-gray-900">
-                    {format(new Date(selectedAppointment.date_time), "MMMM d", {
-                      locale: es,
-                    })}
+                    {formatDateSafe(selectedAppointment.start_datetime, 'MMMM d')}
                   </p>
                 </div>
                 <div>
                   <p className="text-xs font-medium text-gray-600 uppercase">Hora</p>
                   <p className="text-sm text-gray-900">
-                    {format(new Date(selectedAppointment.date_time), 'HH:mm', { locale: es })}
+                    {formatDateSafe(selectedAppointment.start_datetime, 'HH:mm')}
                   </p>
                 </div>
               </div>
@@ -88,9 +84,9 @@ export default function SchedulePage() {
                   </p>
                 </div>
                 <div>
-                  <p className="text-xs font-medium text-gray-600 uppercase">Tipo</p>
+                  <p className="text-xs font-medium text-gray-600 uppercase">Motivo</p>
                   <p className="text-sm text-gray-900">
-                    {selectedAppointment.consultation_type}
+                    {selectedAppointment.consultation_reason || '—'}
                   </p>
                 </div>
               </div>
@@ -102,11 +98,11 @@ export default function SchedulePage() {
                 <StatusBadge estado={selectedAppointment.status} />
               </div>
 
-              {selectedAppointment.notes && (
+              {selectedAppointment.post_consultation_notes && (
                 <div>
                   <p className="text-xs font-medium text-gray-600 uppercase">Notas</p>
                   <p className="text-sm text-gray-700 mt-1">
-                    {selectedAppointment.notes}
+                    {selectedAppointment.post_consultation_notes}
                   </p>
                 </div>
               )}
@@ -115,9 +111,7 @@ export default function SchedulePage() {
             <div className="pt-4 border-t border-gray-200">
               <p className="text-xs text-gray-500">
                 Creada:{' '}
-                {format(new Date(selectedAppointment.created_at), 'PPp', {
-                  locale: es,
-                })}
+                {formatDateSafe(selectedAppointment.created_at, 'PPp')}
               </p>
             </div>
           </div>

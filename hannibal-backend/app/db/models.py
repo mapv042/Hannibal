@@ -148,6 +148,9 @@ class Office(Base):
     notify_unconfirmed: Mapped[bool] = mapped_column(
         Boolean, default=True, nullable=False
     )
+    notify_arrival: Mapped[bool] = mapped_column(
+        Boolean, default=True, nullable=False
+    )
 
     # Status & Plan
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
@@ -450,12 +453,32 @@ class Appointment(Base):
         nullable=True,
     )
 
+    # Who asked for this appointment. Usually the same as patient_id, but differs
+    # when someone books on another person's behalf — that booker keeps the right
+    # to cancel or move it (see ai/tool_helpers.appointment_access_error).
+    booked_by_patient_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("patients.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
     # Reminders & Follow-ups (idempotency flags, one per active ReminderType)
     reminder_day_before_sent: Mapped[bool] = mapped_column(Boolean, default=False)
     reminder_4h_sent: Mapped[bool] = mapped_column(Boolean, default=False)
     reminder_1h_sent: Mapped[bool] = mapped_column(Boolean, default=False)
     follow_up_sent: Mapped[bool] = mapped_column(Boolean, default=False)
     confirmation_request_sent: Mapped[bool] = mapped_column(Boolean, default=False)
+    arrival_check_sent: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    # Waiting room: how the patient answered the check-in sent at appointment
+    # time. arrival_status is on_the_way | arrived | no_answer (NULL = not asked
+    # yet or no reply). Kept on the row, not in the Redis session, because the
+    # doctor's context and the dashboard both need to query it per appointment.
+    arrival_status: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    arrival_reported_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    arrival_eta_minutes: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
     # Google Calendar Integration
     google_event_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
@@ -485,6 +508,18 @@ class Appointment(Base):
         foreign_keys=[rescheduled_from],
         backref="rescheduled_to",
     )
+
+    @property
+    def patient_name(self) -> Optional[str]:
+        """Patient display name, or None when the relationship isn't loaded.
+
+        Read straight off __dict__ so it never triggers a lazy load: under
+        asyncio an implicit refresh raises MissingGreenlet, and this property is
+        serialized by AppointmentResponse for every appointment the dashboard
+        lists. Callers that need the name eager-load it (selectinload).
+        """
+        patient = self.__dict__.get("patient")
+        return patient.name if patient is not None else None
 
     def __repr__(self) -> str:
         return f"<Appointment(id={self.id}, patient_id={self.patient_id}, start_datetime={self.start_datetime})>"

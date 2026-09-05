@@ -39,6 +39,43 @@ class DayAvailability(NamedTuple):
     has_schedule: bool
 
 
+# What a busy interval came from. The distinction exists so a deliberate
+# doctor overbook can pass through an appointment overlap without also
+# steamrolling a time block:
+#   - "appointment": another appointment. Soft — the doctor may overbook it.
+#   - "google": a raw Google freebusy period. Also soft, because our own
+#     appointments are mirrored into that calendar and there is no way to tell
+#     a mirror of the appointment we're overbooking from a separate commitment.
+#     Blocks the doctor synced FROM Google are stored as TimeBlock rows and stay
+#     hard, so nothing the doctor explicitly blocked is lost by this.
+#   - "time_block": vacations, lunch, anything the doctor blocked. Hard.
+BUSY_APPOINTMENT = "appointment"
+BUSY_GOOGLE = "google"
+BUSY_TIME_BLOCK = "time_block"
+
+# Conflict kinds a deliberate overbook (allow_conflict) is allowed to ignore.
+OVERRIDABLE_CONFLICTS = frozenset({BUSY_APPOINTMENT, BUSY_GOOGLE})
+
+
+class BusyRange(NamedTuple):
+    """A tz-aware busy interval and what produced it."""
+
+    start: datetime
+    end: datetime
+    kind: str
+
+
+class SlotConflict(NamedTuple):
+    """Why a slot can't be booked.
+
+    `kind` is one of the BUSY_* constants plus "outside_hours"/"no_schedule";
+    `message` is the Spanish text meant to reach the patient or doctor.
+    """
+
+    kind: str
+    message: str
+
+
 async def _collect_busy_ranges(
     office_id: UUID,
     day_start: datetime,
@@ -46,13 +83,13 @@ async def _collect_busy_ranges(
     db: AsyncSession,
     *,
     google_required: bool,
-) -> List[Tuple[datetime, datetime]]:
+) -> List[BusyRange]:
     """All tz-aware busy intervals for a day: appointments + blocks + Google.
 
     Single source of truth for the naive/aware normalization that previously
     lived (and diverged) in three different places.
     """
-    busy: List[Tuple[datetime, datetime]] = []
+    busy: List[BusyRange] = []
 
     # Existing appointments (scheduled/confirmed)
     appointments = (await db.execute(
@@ -74,7 +111,7 @@ async def _collect_busy_ranges(
             a_end = a_start + timedelta(minutes=a.duration_minutes or 30)
         elif a_end.tzinfo is None:
             a_end = a_end.replace(tzinfo=MX_TIMEZONE)
-        busy.append((a_start, a_end))
+        busy.append(BusyRange(a_start, a_end, BUSY_APPOINTMENT))
 
     # Time blocks overlapping the day (vacations, manual blocks, GCal-synced)
     blocks = (await db.execute(
@@ -93,7 +130,7 @@ async def _collect_busy_ranges(
             b_start = b_start.replace(tzinfo=MX_TIMEZONE)
         if b_end.tzinfo is None:
             b_end = b_end.replace(tzinfo=MX_TIMEZONE)
-        busy.append((b_start, b_end))
+        busy.append(BusyRange(b_start, b_end, BUSY_TIME_BLOCK))
 
     # Google Calendar busy periods
     office = await db.get(Office, office_id)
@@ -104,7 +141,7 @@ async def _collect_busy_ranges(
         for period in busy_periods:
             g_start = datetime.fromisoformat(period["start"].replace("Z", "+00:00")).astimezone(MX_TIMEZONE)
             g_end = datetime.fromisoformat(period["end"].replace("Z", "+00:00")).astimezone(MX_TIMEZONE)
-            busy.append((g_start, g_end))
+            busy.append(BusyRange(g_start, g_end, BUSY_GOOGLE))
         logger.info("google_freebusy_applied", office_id=str(office_id), busy_count=len(busy_periods))
     elif google_required:
         # Dashboard/engine path requires a connected calendar before scheduling.
@@ -196,7 +233,7 @@ async def compute_day_availability(
     for start, end in candidates:
         if only_future and start <= now:
             continue
-        if any(not (end <= b_start or start >= b_end) for b_start, b_end in busy):
+        if any(not (end <= b.start or start >= b.end) for b in busy):
             continue
         available.append(AvailableSlot(start_time=start, end_time=end))
 
@@ -219,15 +256,20 @@ async def check_slot_bookable(
     start_dt: datetime,
     end_dt: datetime,
     db: AsyncSession,
-) -> Optional[str]:
+) -> Optional[SlotConflict]:
     """Validate that a concrete slot can be booked right now.
 
     Checks that the slot falls inside the office's working hours for that
     weekday and that it doesn't overlap existing appointments, time blocks, or
     Google Calendar busy periods. Google Calendar is best-effort (not required).
 
-    Returns None when bookable, or a Spanish reason string when not — meant to
-    be relayed to the user by the LLM or wrapped in SlotNotAvailableError.
+    Returns None when bookable, or a SlotConflict when not. The `kind` lets a
+    caller decide what a deliberate overbook may ignore (see
+    OVERRIDABLE_CONFLICTS); `message` is the Spanish text for the user.
+
+    Appointment overlaps are reported in preference to Google ones: when both
+    match, the appointment is the concrete, actionable conflict and the Google
+    period is usually just its mirror.
     """
     date_ = start_dt.astimezone(MX_TIMEZONE).date()
 
@@ -242,7 +284,9 @@ async def check_slot_bookable(
         )
     )).scalars().all()
     if not schedules:
-        return "No hay horario de atención configurado para ese día."
+        return SlotConflict(
+            "no_schedule", "No hay horario de atención configurado para ese día."
+        )
 
     in_working_hours = False
     for schedule in schedules:
@@ -252,18 +296,39 @@ async def check_slot_bookable(
             in_working_hours = True
             break
     if not in_working_hours:
-        return "El horario está fuera del horario de atención del consultorio."
+        return SlotConflict(
+            "outside_hours",
+            "El horario está fuera del horario de atención del consultorio.",
+        )
 
     day_start = datetime.combine(date_, time.min, tzinfo=MX_TIMEZONE)
     day_end = datetime.combine(date_, time.max, tzinfo=MX_TIMEZONE)
     busy = await _collect_busy_ranges(
         office_id, day_start, day_end, db, google_required=False,
     )
-    for b_start, b_end in busy:
-        if not (end_dt <= b_start or start_dt >= b_end):
-            return "El horario ya está ocupado por otra cita o bloqueo."
 
-    return None
+    overlapping = [
+        b for b in busy if not (end_dt <= b.start or start_dt >= b.end)
+    ]
+    if not overlapping:
+        return None
+
+    # A hard block outranks everything: report it even if an appointment also
+    # overlaps, so a deliberate overbook can't slip past it.
+    for b in overlapping:
+        if b.kind == BUSY_TIME_BLOCK:
+            return SlotConflict(
+                BUSY_TIME_BLOCK,
+                "Ese horario está bloqueado en la agenda del doctor.",
+            )
+    for b in overlapping:
+        if b.kind == BUSY_APPOINTMENT:
+            return SlotConflict(
+                BUSY_APPOINTMENT, "El horario ya está ocupado por otra cita."
+            )
+    return SlotConflict(
+        BUSY_GOOGLE, "Ese horario está ocupado en el calendario del doctor."
+    )
 
 
 async def get_available_slots(

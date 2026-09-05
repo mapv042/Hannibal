@@ -1,11 +1,10 @@
 'use client'
 
 import React from 'react'
-import { format } from 'date-fns'
-import { es } from 'date-fns/locale'
 import { StatusBadge } from '@/components/ui/Badge'
 import { Card, CardBody } from '@/components/ui/Card'
-import { patientLabel } from '@/lib/appointments'
+import { formatDateSafe, patientLabel } from '@/lib/appointments'
+import { getArrival, TONE_BADGE } from '@/lib/status'
 import type { Appointment } from '@/lib/supabase'
 
 interface AppointmentCardProps {
@@ -19,8 +18,12 @@ export const AppointmentCard: React.FC<AppointmentCardProps> = ({
   onClick,
   className = '',
 }) => {
-  const time = format(new Date(appointment.date_time), 'HH:mm', { locale: es })
-  const date = format(new Date(appointment.date_time), "MMMM d", { locale: es })
+  const time = formatDateSafe(appointment.start_datetime, 'HH:mm')
+  const date = formatDateSafe(appointment.start_datetime, 'MMMM d')
+  // Arrival is a separate axis from status — a confirmed cita can still have a
+  // patient stuck in traffic — so it gets its own chip beside the status badge.
+  const arrival = getArrival(appointment.arrival_status, appointment.arrival_eta_minutes)
+  const ArrivalIcon = arrival?.icon
 
   return (
     <Card
@@ -33,18 +36,32 @@ export const AppointmentCard: React.FC<AppointmentCardProps> = ({
             <p className="text-sm font-semibold text-gray-900 truncate">
               {patientLabel(appointment)}
             </p>
-            <p className="text-xs text-gray-600 mt-0.5">{appointment.consultation_type}</p>
+            {appointment.consultation_reason && (
+              <p className="text-xs text-gray-600 mt-0.5 truncate">
+                {appointment.consultation_reason}
+              </p>
+            )}
           </div>
-          <StatusBadge estado={appointment.status} className="flex-shrink-0" />
+          <div className="flex items-center gap-1.5 flex-shrink-0">
+            {arrival && ArrivalIcon && (
+              <span
+                className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium ${TONE_BADGE[arrival.tone]}`}
+              >
+                <ArrivalIcon size={11} aria-hidden="true" />
+                {arrival.label}
+              </span>
+            )}
+            <StatusBadge estado={appointment.status} />
+          </div>
         </div>
 
         <div className="flex items-center justify-between pt-2 border-t border-gray-100">
           <span className="text-xs text-gray-500 tabular-nums">
             {time} · {date} · {appointment.duration_minutes} min
           </span>
-          {appointment.notes && (
+          {appointment.post_consultation_notes && (
             <span className="text-xs text-gray-500 truncate max-w-[40%]">
-              {appointment.notes}
+              {appointment.post_consultation_notes}
             </span>
           )}
         </div>
