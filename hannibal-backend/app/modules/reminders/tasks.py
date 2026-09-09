@@ -494,9 +494,29 @@ async def _post_follow_up_async(appointment_id: str):
     from app.modules.whatsapp.meta_client import MetaCloudClient
 
     async with get_async_session_maker()() as db:
-        appointment = await db.get(Appointment, UUID(appointment_id))
-        if not appointment or appointment.follow_up_sent:
-            _log(f"post_follow_up: skipped appointment_id={appointment_id}")
+        # Lock the row: the Redis broker can redeliver an eta task, so several
+        # copies of this follow-up may run at once (see _send_reminder).
+        result = await db.execute(
+            select(Appointment)
+            .where(Appointment.id == UUID(appointment_id))
+            .with_for_update()
+        )
+        appointment = result.scalar_one_or_none()
+        if not appointment:
+            _log(f"post_follow_up: not found appointment_id={appointment_id}")
+            return
+
+        # Idempotency check (safe under FOR UPDATE lock)
+        if appointment.follow_up_sent:
+            _log(f"post_follow_up: already sent appointment_id={appointment_id}")
+            return
+
+        # A cancelled or missed appointment gets no "gracias por tu visita"
+        if appointment.status not in ("scheduled", "confirmed", "completed"):
+            _log(
+                f"post_follow_up: skipped status={appointment.status} "
+                f"appointment_id={appointment_id}"
+            )
             return
 
         patient = await db.get(Patient, appointment.patient_id)

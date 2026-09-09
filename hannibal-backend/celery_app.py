@@ -18,8 +18,23 @@ celery_app = Celery(
     backend=settings.celery_result_backend,
 )
 
+# Redis re-delivers any message a worker holds without acking for longer than
+# `visibility_timeout` (default 1h). Reminders are `eta` tasks that sit in the
+# worker until the appointment, so with the default every reminder scheduled
+# more than an hour ahead was re-delivered hourly and ran once per copy (the
+# duplicated post-appointment follow-ups). It must exceed the longest eta we
+# enqueue, i.e. the booking horizon. The trade-off is that a hard-killed worker
+# (SIGKILL; a clean shutdown restores its unacked messages) leaves its tasks
+# invisible for this long — `reconcile_reminders` is the safety net that
+# re-schedules unsent reminders for the next two days.
+BROKER_VISIBILITY_TIMEOUT_SECONDS = 60 * 60 * 24 * 60  # 60 days
+
 # Configure Celery
 celery_app.conf.update(
+    broker_transport_options={"visibility_timeout": BROKER_VISIBILITY_TIMEOUT_SECONDS},
+    result_backend_transport_options={
+        "visibility_timeout": BROKER_VISIBILITY_TIMEOUT_SECONDS
+    },
     # Timezone. enable_utc must stay False: with it enabled, beat interprets
     # crontab hours in UTC and the daily tasks fire 6h early (madrugada MX).
     timezone="America/Mexico_City",
