@@ -131,6 +131,15 @@ TOOL_DEFINITIONS = [
                         "esa persona, no el de quien escribe."
                     ),
                 },
+                "intake_notes": {
+                    "type": "string",
+                    "description": (
+                        "Lo que el paciente respondió a las preguntas de la sección ANTES DE "
+                        "AGENDAR, en una o dos líneas (ej: 'Molestia desde hace 3 días. Toma "
+                        "losartán.'). El doctor lo lee antes de la consulta. Omítelo si el "
+                        "consultorio no configuró preguntas o el paciente no quiso contestar."
+                    ),
+                },
                 "confirm_second_same_day": {
                     "type": "boolean",
                     "description": (
@@ -247,7 +256,11 @@ TOOL_DEFINITIONS = [
             "avisa al doctor para que la apruebe, porque una urgencia puede requerir sobreagenda y "
             "solo el doctor puede autorizarla. Úsala solo cuando el paciente realmente indique "
             "urgencia; para una cita normal usa create_appointment. Antes de llamarla pregunta el "
-            "motivo de la urgencia."
+            "motivo de la urgencia. "
+            "Este es también el único canal para llegar al doctor: si el paciente pide hablar con "
+            "él o dice que se siente mal, pregúntale si es una emergencia — si lo es, úsala; si no, "
+            "ofrécele agendar. No existe una forma de comunicarlo en vivo con el doctor, así que no "
+            "se la prometas."
         ),
         "input_schema": {
             "type": "object",
@@ -451,6 +464,7 @@ async def _handle_create_appointment(args: dict, ctx: ToolContext) -> dict:
     time_str = args.get("time", "")
     reason = args.get("reason", "Consulta")
     patient_phone = (args.get("patient_phone") or "").strip()
+    intake_notes = (args.get("intake_notes") or "").strip() or None
 
     if not all([patient_name, patient_phone, date_str, time_str, reason]):
         return {"error": "Faltan datos para crear la cita. Se requiere: nombre, teléfono, fecha, hora y motivo."}
@@ -580,6 +594,7 @@ async def _handle_create_appointment(args: dict, ctx: ToolContext) -> dict:
         ),
         redis_client=ctx.redis_client,
         booked_by_patient_id=ctx.patient_id,
+        intake_notes=intake_notes,
     )
     if outcome.error:
         return _booking_error(outcome.error)
@@ -745,6 +760,9 @@ async def _handle_reschedule_appointment(args: dict, ctx: ToolContext) -> dict:
         # Carry the original booker forward: moving an appointment must not
         # strip the parent who booked it of the right to touch it again.
         booked_by_patient_id=appointment.booked_by_patient_id,
+        # Same for what the patient already told us — moving the slot is no
+        # reason to make the doctor walk in without the brief.
+        intake_notes=appointment.intake_notes,
     )
     if outcome.error:
         return _booking_error(outcome.error)

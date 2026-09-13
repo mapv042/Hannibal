@@ -224,9 +224,9 @@ async def reschedule_appointment(
         appointment.end_datetime = new_start_time + timedelta(minutes=appointment.duration_minutes)
 
         # Reset reminder flags (new datetime ⇒ reminders must be rescheduled)
+        appointment.reminder_week_before_sent = False
         appointment.reminder_day_before_sent = False
-        appointment.reminder_4h_sent = False
-        appointment.reminder_1h_sent = False
+        appointment.reminder_6h_sent = False
         appointment.follow_up_sent = False
         appointment.confirmation_request_sent = False
         appointment.arrival_check_sent = False

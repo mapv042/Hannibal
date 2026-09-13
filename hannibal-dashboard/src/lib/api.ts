@@ -1,5 +1,6 @@
 import { createBrowserSupabaseClient } from './supabase/browser'
 import type { Appointment, Patient, Office, AvailabilitySchedule } from './supabase/types'
+import type { CatalogOption } from './constants/catalogs'
 
 export interface ApiResponse<T> {
   success: boolean
@@ -13,6 +14,28 @@ export interface PaginatedResponse<T> {
   total: number
   page: number
   per_page: number
+}
+
+export type StatsPeriod = 'week' | 'month' | 'quarter'
+
+export interface PeriodStats {
+  total_appointments: number
+  confirmed_appointments: number
+  attended_appointments: number
+  no_show_appointments: number
+  cancelled_appointments: number
+  total_patients: number
+  /** Null when the period had no appointments to rate. */
+  confirmation_rate: number | null
+  no_show_rate: number | null
+}
+
+export interface OfficeStats extends PeriodStats {
+  period: StatsPeriod
+  period_days: number
+  previous: PeriodStats
+  /** Change in volume vs. the previous period; null when it had none. */
+  change_pct: number | null
 }
 
 export interface ReminderRule {
@@ -85,6 +108,9 @@ export class ApiClient {
 
   // Offices
   async createOffice(data: {
+    doctor_first_name?: string
+    doctor_last_name?: string
+    secondary_owner_phone?: string
     name: string
     specialty?: string
     city?: string
@@ -115,6 +141,35 @@ export class ApiClient {
       method: 'PUT',
       body: JSON.stringify(data),
     })
+  }
+
+  // Onboarding catalogues. Served by the backend so the options the doctor
+  // picks from and the labels the assistant says to patients stay identical.
+  async getSpecialties(): Promise<ApiResponse<{ specialties: CatalogOption[] }>> {
+    return this.fetch<{ specialties: CatalogOption[] }>('/api/catalogs/specialties', {
+      method: 'GET',
+    })
+  }
+
+  async getInsurers(): Promise<ApiResponse<{ insurers: CatalogOption[] }>> {
+    return this.fetch<{ insurers: CatalogOption[] }>('/api/catalogs/insurers', {
+      method: 'GET',
+    })
+  }
+
+  async getIntakeQuestions(): Promise<ApiResponse<{ questions: CatalogOption[] }>> {
+    return this.fetch<{ questions: CatalogOption[] }>('/api/catalogs/intake-questions', {
+      method: 'GET',
+    })
+  }
+
+  async getCatalogsBySpecialty(
+    specialty: string
+  ): Promise<ApiResponse<{ services: string[]; emergency_symptoms: string[] }>> {
+    return this.fetch<{ services: string[]; emergency_symptoms: string[] }>(
+      `/api/catalogs/by-specialty?specialty=${encodeURIComponent(specialty)}`,
+      { method: 'GET' }
+    )
   }
 
   // Reminder rules (per office)
@@ -260,20 +315,14 @@ export class ApiClient {
   }
 
   // Analytics
-  async getStats(office_id: string, period?: 'day' | 'week' | 'month'): Promise<ApiResponse<{
-    total_appointments: number
-    confirmed_appointments: number
-    pending_appointments: number
-    no_show_appointments: number
-    total_patients: number
-  }>> {
-    const params = new URLSearchParams()
-    if (period) params.append('period', period)
-
-    const qs = params.toString()
-    return this.fetch(`/api/offices/${office_id}/stats${qs ? `?${qs}` : ''}`, {
-      method: 'GET',
-    })
+  async getStats(
+    office_id: string,
+    period: StatsPeriod = 'month'
+  ): Promise<ApiResponse<OfficeStats>> {
+    return this.fetch<OfficeStats>(
+      `/api/offices/${office_id}/stats?period=${period}`,
+      { method: 'GET' }
+    )
   }
 
   // WhatsApp Integration (Embedded Signup)

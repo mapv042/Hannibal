@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useState } from 'react'
+import React, { useEffect, useState } from 'react'
 import { ProgressBar } from '@/components/onboarding/ProgressBar'
 import { StepWelcome } from '@/components/onboarding/StepWelcome'
 import { StepOfficeInfo, type OfficeInfoData } from '@/components/onboarding/StepOfficeInfo'
@@ -21,6 +21,9 @@ import {
   ConsultationPreview,
   AssistantPreview,
 } from '@/components/onboarding/PreviewPane'
+import { useApi } from '@/lib/api'
+import { STEP_VALIDATORS, type FieldErrors } from '@/lib/validation/onboarding'
+import type { CatalogOption } from '@/lib/constants/catalogs'
 
 export const TOTAL_STEPS = 7 // steps shown with progress bar (welcome = 0, done = 7)
 
@@ -50,7 +53,18 @@ export function buildInitialScheduleDays(): ScheduleDay[] {
 }
 
 const DEFAULTS: OnboardingData = {
-  officeInfo: { officeName: '', specialty: '', city: '', state: '', address: '', ownerPhone: '' },
+  officeInfo: {
+    doctorFirstName: '',
+    doctorLastName: '',
+    officeName: '',
+    specialty: '',
+    specialtyOther: '',
+    city: '',
+    state: '',
+    address: '',
+    ownerPhone: '',
+    secondaryOwnerPhone: '',
+  },
   schedule: {
     days: buildInitialScheduleDays(),
     appointmentDuration: 30,
@@ -59,16 +73,19 @@ const DEFAULTS: OnboardingData = {
     bufferMinutes: 10,
     reminders: { ...DEFAULT_REMINDER_TOGGLES },
   },
-  consultation: { newPatientCost: '', returningPatientCost: '', acceptsInsurance: '', insuranceDetails: '' },
+  consultation: { services: [], acceptsInsurance: '', insurances: [] },
   personalize: {
     assistantName: '',
     assistantTone: 'formal',
-    emergencySymptoms: '',
-    welcomeMessage: '',
+    assistantGender: 'femenino',
+    emergencySymptoms: [],
+    intakeQuestions: [],
+    intakeCustom: '',
     notifyNewAppointment: true,
     notifyCancellation: true,
     notifyNewPatient: true,
     notifyUnconfirmed: true,
+    notifyArrival: true,
   },
 }
 
@@ -123,18 +140,94 @@ export function OnboardingWizard({
     ...initialData?.personalize,
   })
 
-  const advance = () => setCurrentStep((s) => Math.min(s + 1, TOTAL_STEPS))
-  const back = () => setCurrentStep((s) => Math.max(s - 1, 0))
+  const [errors, setErrors] = useState<FieldErrors>({})
+  const [specialties, setSpecialties] = useState<CatalogOption[]>([])
+  const [insurers, setInsurers] = useState<CatalogOption[]>([])
+  const [intakeCatalog, setIntakeCatalog] = useState<CatalogOption[]>([])
+  const [suggestedServices, setSuggestedServices] = useState<string[]>([])
+  const [suggestedSymptoms, setSuggestedSymptoms] = useState<string[]>([])
+  const api = useApi()
 
-  // Calls the (optional) submit handler with the latest data and advances
-  // unless the handler explicitly returns false. Preview mode passes no
-  // handler, so steps just navigate.
+  // The three static catalogues: fetched once, needed from step 1 onwards.
+  useEffect(() => {
+    let cancelled = false
+    void (async () => {
+      const [s, i, q] = await Promise.all([
+        api.getSpecialties(),
+        api.getInsurers(),
+        api.getIntakeQuestions(),
+      ])
+      if (cancelled) return
+      if (s.data) setSpecialties(s.data.specialties)
+      if (i.data) setInsurers(i.data.insurers)
+      if (q.data) setIntakeCatalog(q.data.questions)
+    })()
+    return () => {
+      cancelled = true
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // Suggestions depend on the chosen specialty, so they reload when it changes.
+  // The doctor's own picks are never overwritten — only the list they pick from.
+  useEffect(() => {
+    if (!officeInfo.specialty) {
+      setSuggestedServices([])
+      setSuggestedSymptoms([])
+      return
+    }
+    let cancelled = false
+    void (async () => {
+      const res = await api.getCatalogsBySpecialty(officeInfo.specialty)
+      if (cancelled || !res.data) return
+      setSuggestedServices(res.data.services)
+      setSuggestedSymptoms(res.data.emergency_symptoms)
+    })()
+    return () => {
+      cancelled = true
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [officeInfo.specialty])
+
+  const advance = () => {
+    setErrors({})
+    setCurrentStep((s) => Math.min(s + 1, TOTAL_STEPS))
+  }
+  const back = () => {
+    setErrors({})
+    setCurrentStep((s) => Math.max(s - 1, 0))
+  }
+
+  /** Bring the first invalid field into view so the doctor sees what's missing. */
+  const focusFirstInvalid = (fieldErrors: FieldErrors) => {
+    if (typeof document === 'undefined') return
+    const first = Object.keys(fieldErrors)[0]
+    const el = document.querySelector<HTMLElement>(`[data-field="${first}"]`)
+    if (!el) return
+    el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    el.focus?.()
+  }
+
+  // Validates the current step, then calls the (optional) submit handler with
+  // the latest data and advances unless the handler explicitly returns false.
+  // Validation runs first so an incomplete step never reaches the API — and it
+  // runs in preview mode too (no handler), so the demo behaves like the real
+  // thing.
   const submit = (handler?: SubmitHandler) => async () => {
+    const data = { officeInfo, schedule, consultation, personalize }
+    const fieldErrors = STEP_VALIDATORS[currentStep]?.(data) ?? {}
+    if (Object.keys(fieldErrors).length > 0) {
+      setErrors(fieldErrors)
+      focusFirstInvalid(fieldErrors)
+      return
+    }
+    setErrors({})
+
     if (!handler) {
       advance()
       return
     }
-    const ok = await handler({ officeInfo, schedule, consultation, personalize })
+    const ok = await handler(data)
     if (ok !== false) advance()
   }
 
@@ -177,6 +270,8 @@ export function OnboardingWizard({
           onNext={submit(onSubmitOfficeInfo)}
           onBack={back}
           loading={saving}
+          errors={errors}
+          specialties={specialties}
         />
       )}
 
@@ -188,6 +283,7 @@ export function OnboardingWizard({
             onNext={submit(onSubmitSchedule)}
             onBack={back}
             loading={saving}
+            errors={errors}
           />
           <PreviewPane title="Vista previa">
             <SchedulePreview
@@ -207,13 +303,17 @@ export function OnboardingWizard({
             onUpdate={(d) => setConsultation((prev) => ({ ...prev, ...d }))}
             onNext={submit(onSubmitConsultation)}
             onBack={back}
+            errors={errors}
+            suggestedServices={suggestedServices}
+            insurers={insurers}
           />
           <PreviewPane title="Mensaje del bot">
             <ConsultationPreview
-              first={consultation.newPatientCost}
-              sub={consultation.returningPatientCost}
+              services={consultation.services}
               insurance={consultation.acceptsInsurance}
-              insurances={consultation.insuranceDetails}
+              insurerNames={insurers
+                .filter((i) => consultation.insurances.includes(i.id))
+                .map((i) => i.label)}
             />
           </PreviewPane>
         </div>
@@ -227,12 +327,15 @@ export function OnboardingWizard({
             onNext={submit(onSubmitPersonalize)}
             onBack={back}
             loading={saving}
+            errors={errors}
+            suggestedSymptoms={suggestedSymptoms}
+            intakeCatalog={intakeCatalog}
           />
           <PreviewPane title="Personalidad">
             <AssistantPreview
               name={personalize.assistantName}
               tone={personalize.assistantTone}
-              welcome={personalize.welcomeMessage}
+              officeName={officeInfo.officeName}
             />
           </PreviewPane>
         </div>

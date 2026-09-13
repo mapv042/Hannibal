@@ -2,16 +2,44 @@
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import List, Optional
 from uuid import UUID
 
 from pydantic import BaseModel, Field
+
+from app.core.constants import AssistantGender
+
+
+class ServiceSchema(BaseModel):
+    """One offered service and what it costs."""
+
+    name: str = Field(..., description="Service name", max_length=200)
+    price: Optional[str] = Field(
+        None, description="Price as shown to the patient", max_length=100
+    )
+
+
+class IntakeQuestionsSchema(BaseModel):
+    """What the office wants asked before the visit."""
+
+    preset: List[str] = Field(
+        default_factory=list, description="Ids from the intake catalogue"
+    )
+    custom: Optional[str] = Field(
+        None, description="One extra question specific to this practice", max_length=500
+    )
 
 
 class CreateOfficeRequest(BaseModel):
     """Request to create a new office."""
 
     name: str = Field(..., description="Office name", max_length=255)
+    doctor_first_name: Optional[str] = Field(
+        None, description="Doctor's first name", max_length=100
+    )
+    doctor_last_name: Optional[str] = Field(
+        None, description="Doctor's last name", max_length=100
+    )
     specialty: Optional[str] = Field(
         None, description="Medical specialty", max_length=255
     )
@@ -20,6 +48,11 @@ class CreateOfficeRequest(BaseModel):
     )
     owner_phone: Optional[str] = Field(
         None, description="Doctor's personal WhatsApp number", max_length=20
+    )
+    secondary_owner_phone: Optional[str] = Field(
+        None,
+        description="Optional second doctor-channel number (same permissions)",
+        max_length=20,
     )
     city: Optional[str] = Field(None, description="City", max_length=100)
     state: Optional[str] = Field(None, description="State", max_length=100)
@@ -30,6 +63,12 @@ class UpdateOfficeRequest(BaseModel):
     """Request to update an office."""
 
     name: Optional[str] = Field(None, description="Office name", max_length=255)
+    doctor_first_name: Optional[str] = Field(
+        None, description="Doctor's first name", max_length=100
+    )
+    doctor_last_name: Optional[str] = Field(
+        None, description="Doctor's last name", max_length=100
+    )
     specialty: Optional[str] = Field(
         None, description="Medical specialty", max_length=255
     )
@@ -39,6 +78,11 @@ class UpdateOfficeRequest(BaseModel):
     owner_phone: Optional[str] = Field(
         None, description="Doctor's personal WhatsApp number", max_length=20
     )
+    secondary_owner_phone: Optional[str] = Field(
+        None,
+        description="Optional second doctor-channel number (same permissions)",
+        max_length=20,
+    )
     city: Optional[str] = Field(None, description="City", max_length=100)
     state: Optional[str] = Field(None, description="State", max_length=100)
     address: Optional[str] = Field(None, description="Address", max_length=500)
@@ -46,6 +90,24 @@ class UpdateOfficeRequest(BaseModel):
         None, description="Assistant tone (formal|informal)"
     )
     assistant_name: Optional[str] = Field(None, description="Assistant name")
+    assistant_gender: Optional[str] = Field(
+        None, description="Assistant grammatical gender (femenino|masculino|neutro)"
+    )
+    services: Optional[List[ServiceSchema]] = Field(
+        None, description="Service catalogue with prices"
+    )
+    accepts_insurance: Optional[str] = Field(
+        None, description="Whether the office takes insurance (si|algunos|no)"
+    )
+    insurances: Optional[List[str]] = Field(
+        None, description="Canonical insurer ids the office accepts"
+    )
+    emergency_symptoms: Optional[List[str]] = Field(
+        None, description="Alarm symptoms that must be escalated to the doctor"
+    )
+    intake_questions: Optional[IntakeQuestionsSchema] = Field(
+        None, description="What the assistant asks the patient before the visit"
+    )
     custom_prompt: Optional[str] = Field(
         None, description="Custom AI prompt instructions", max_length=5000
     )
@@ -90,7 +152,9 @@ class ReminderRuleSchema(BaseModel):
 
     reminder_type: str = Field(
         ...,
-        description="Reminder kind: day_before | 4h | 1h | post_appointment",
+        description=(
+            "Reminder kind: week_before | day_before | 6h | at_time | post_appointment"
+        ),
     )
     offset_minutes: int = Field(
         ...,
@@ -117,20 +181,31 @@ class OfficeResponse(BaseModel):
     id: UUID
     user_id: UUID
     name: str
+    doctor_first_name: Optional[str]
+    doctor_last_name: Optional[str]
     specialty: Optional[str]
     whatsapp_phone: Optional[str]
     owner_phone: Optional[str]
+    secondary_owner_phone: Optional[str]
     city: Optional[str]
     state: Optional[str]
     address: Optional[str]
     assistant_tone: str
     assistant_name: str
+    assistant_gender: str
     custom_prompt: Optional[str]
     welcome_message: Optional[str]
     new_patient_duration_min: int
     returning_patient_duration_min: int
     new_patient_cost: Optional[str]
     returning_patient_cost: Optional[str]
+    # Structured onboarding data — returned so the wizard can re-hydrate; before
+    # these existed the doctor lost everything on re-entry.
+    services: Optional[List[ServiceSchema]]
+    accepts_insurance: Optional[str]
+    insurances: Optional[List[str]]
+    emergency_symptoms: Optional[List[str]]
+    intake_questions: Optional[IntakeQuestionsSchema]
     is_active: bool
     onboarding_completed: bool
     notify_new_appointment: bool

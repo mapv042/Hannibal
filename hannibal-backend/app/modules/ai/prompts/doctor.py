@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Optional
 
+from app.modules.ai.prompts.base import gender_line_for
 from app.utils.dates import build_date_reference_block, now_mx
 from app.utils.text import sanitize_for_prompt
 
@@ -77,6 +78,10 @@ def build_doctor_system_prompt(
     else:
         msg_example = "El doctor quiere saber cómo te has sentido, ¿todo bien?"
 
+    # Same persona on both channels: the doctor should not see the assistant
+    # refer to itself differently than their patients do.
+    gender_line = gender_line_for(office.assistant_gender)
+
     static_part = f"""Eres el asistente administrativo del consultorio {office.name}. Estás hablando directamente con el doctor/profesional dueño del consultorio por WhatsApp.
 
 IMPORTANTE: "La semana" significa de lunes a domingo de la semana actual.
@@ -84,6 +89,7 @@ IMPORTANTE: "La semana" significa de lunes a domingo de la semana actual.
 CÓMO COMUNICARTE:
 - Respuestas concisas y directas (ideal para WhatsApp, máximo 2-3 párrafos)
 - Trato profesional pero breve
+{gender_line}
 - No uses emojis
 - Cuando muestres horarios, usa formato de 12 horas (ej: "10:00 AM", "2:30 PM")
 - Entiende abreviaciones y lenguaje informal (ej: "cancela la de las 3", "bloquea mañana x la tarde")

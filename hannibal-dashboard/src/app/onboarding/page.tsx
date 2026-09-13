@@ -11,38 +11,15 @@ import {
   buildInitialScheduleDays,
   type OnboardingData,
 } from '@/components/onboarding/OnboardingWizard'
-import type { ConsultationData } from '@/components/onboarding/StepConsultationDetails'
-import type { PersonalizeData } from '@/components/onboarding/StepPersonalize'
 import {
   reminderTogglesFromRules,
   rulesFromReminderToggles,
 } from '@/components/onboarding/StepSchedule'
-
-function buildCustomPrompt(
-  consultation: ConsultationData,
-  personalize: PersonalizeData
-): string {
-  const parts: string[] = []
-
-  // Insurance info goes in custom_prompt (pricing is now in dedicated columns)
-  if (consultation.acceptsInsurance) {
-    if (consultation.acceptsInsurance === 'Si' || consultation.acceptsInsurance === 'Algunos') {
-      parts.push(`SEGUROS MÉDICOS:`)
-      parts.push(`- Seguros aceptados: ${consultation.insuranceDetails || 'Preguntar al consultorio'}`)
-    } else if (consultation.acceptsInsurance === 'No') {
-      parts.push('SEGUROS MÉDICOS:')
-      parts.push('- No se aceptan seguros médicos')
-    }
-    parts.push('')
-  }
-
-  if (personalize.emergencySymptoms.trim()) {
-    parts.push('SÍNTOMAS DE EMERGENCIA:')
-    parts.push(personalize.emergencySymptoms.trim())
-  }
-
-  return parts.join('\n')
-}
+import {
+  OTHER_SPECIALTY_ID,
+  isCatalogSpecialty,
+  type InsuranceChoice,
+} from '@/lib/constants/catalogs'
 
 export default function OnboardingPage() {
   const [office, setOffice] = useState<Office | null>(null)
@@ -120,14 +97,21 @@ export default function OnboardingPage() {
   // Pre-fill the wizard from the loaded office (computed once loading finishes).
   const initialData = useMemo<Partial<OnboardingData> | undefined>(() => {
     if (!office) return undefined
+    const knownSpecialty = isCatalogSpecialty(office.specialty)
     return {
       officeInfo: {
+        doctorFirstName: office.doctor_first_name || '',
+        doctorLastName: office.doctor_last_name || '',
         officeName: office.name || '',
-        specialty: office.specialty || '',
+        // A specialty outside the catalogue was stored as free text under
+        // "Otra"; put it back in the right two fields.
+        specialty: knownSpecialty ? office.specialty! : office.specialty ? OTHER_SPECIALTY_ID : '',
+        specialtyOther: knownSpecialty ? '' : office.specialty || '',
         city: office.city || '',
         state: office.state || '',
         address: office.address || '',
         ownerPhone: office.owner_phone || '',
+        secondaryOwnerPhone: office.secondary_owner_phone || '',
       },
       schedule: {
         days: buildInitialScheduleDays(),
@@ -141,22 +125,27 @@ export default function OnboardingPage() {
         reminders: reminderTogglesFromRules(reminderRules ?? undefined),
       },
       consultation: {
-        newPatientCost: office.new_patient_cost || '',
-        returningPatientCost: office.returning_patient_cost || '',
-        acceptsInsurance: '',
-        insuranceDetails: '',
+        services: (office.services || []).map((s) => ({
+          name: s.name,
+          price: s.price || '',
+        })),
+        acceptsInsurance: (office.accepts_insurance || '') as InsuranceChoice,
+        insurances: office.insurances || [],
       },
       personalize:
         office.assistant_name && office.assistant_name !== 'Assistant'
           ? {
               assistantName: office.assistant_name,
               assistantTone: office.assistant_tone as 'formal' | 'informal',
-              emergencySymptoms: '',
-              welcomeMessage: office.welcome_message || '',
+              assistantGender: office.assistant_gender || 'femenino',
+              emergencySymptoms: office.emergency_symptoms || [],
+              intakeQuestions: office.intake_questions?.preset || [],
+              intakeCustom: office.intake_questions?.custom || '',
               notifyNewAppointment: office.notify_new_appointment,
               notifyCancellation: office.notify_cancellation,
               notifyNewPatient: office.notify_new_patient,
               notifyUnconfirmed: office.notify_unconfirmed,
+              notifyArrival: office.notify_arrival,
             }
           : undefined,
     }
@@ -167,13 +156,23 @@ export default function OnboardingPage() {
       setSaving(true)
       setError('')
       try {
+        // "Otra" stores what the doctor typed; anything else stores the id.
+        const specialty =
+          officeInfo.specialty === OTHER_SPECIALTY_ID
+            ? officeInfo.specialtyOther.trim()
+            : officeInfo.specialty
+
         const payload = {
           name: officeInfo.officeName,
-          specialty: officeInfo.specialty || undefined,
+          doctor_first_name: officeInfo.doctorFirstName || undefined,
+          doctor_last_name: officeInfo.doctorLastName || undefined,
+          specialty: specialty || undefined,
           city: officeInfo.city || undefined,
           state: officeInfo.state || undefined,
           address: officeInfo.address || undefined,
           owner_phone: officeInfo.ownerPhone || undefined,
+          // Empty string clears a previously saved second number.
+          secondary_owner_phone: officeInfo.secondaryOwnerPhone.trim(),
         }
 
         const res = office
@@ -244,10 +243,19 @@ export default function OnboardingPage() {
       setSaving(true)
       setError('')
       try {
+        const services = consultation.services.filter((s) => s.name.trim())
+        // The two generic consultations keep feeding the prompt's PACIENTE
+        // ACTUAL block, which quotes the price for this patient's visit type.
+        const priceOf = (name: string) =>
+          services.find((s) => s.name === name)?.price || undefined
+
         const res = await api.updateOffice(office.id, {
-          new_patient_cost: consultation.newPatientCost || undefined,
-          returning_patient_cost: consultation.returningPatientCost || undefined,
-        })
+          services,
+          accepts_insurance: consultation.acceptsInsurance || undefined,
+          insurances: consultation.insurances,
+          new_patient_cost: priceOf('Primera consulta'),
+          returning_patient_cost: priceOf('Consulta subsecuente'),
+        } as Partial<Office>)
         if (!res.success) throw new Error(res.error)
         setOffice(res.data!)
         return true
@@ -262,22 +270,26 @@ export default function OnboardingPage() {
   )
 
   const handleSubmitPersonalize = useCallback(
-    async ({ consultation, personalize }: OnboardingData) => {
+    async ({ personalize }: OnboardingData) => {
       if (!office) return false
       setSaving(true)
       setError('')
       try {
-        const customPrompt = buildCustomPrompt(consultation, personalize)
         const res = await api.updateOffice(office.id, {
-          assistant_name: personalize.assistantName || 'Asistente',
+          assistant_name: personalize.assistantName,
           assistant_tone: personalize.assistantTone,
-          custom_prompt: customPrompt || undefined,
-          welcome_message: personalize.welcomeMessage || undefined,
+          assistant_gender: personalize.assistantGender,
+          emergency_symptoms: personalize.emergencySymptoms.filter((s) => s.trim()),
+          intake_questions: {
+            preset: personalize.intakeQuestions,
+            custom: personalize.intakeCustom.trim() || null,
+          },
           notify_new_appointment: personalize.notifyNewAppointment,
           notify_cancellation: personalize.notifyCancellation,
           notify_new_patient: personalize.notifyNewPatient,
           notify_unconfirmed: personalize.notifyUnconfirmed,
-        })
+          notify_arrival: personalize.notifyArrival,
+        } as Partial<Office>)
         if (!res.success) throw new Error(res.error)
         setOffice(res.data!)
         return true
@@ -294,12 +306,23 @@ export default function OnboardingPage() {
   const handleFinish = useCallback(async () => {
     if (!office) return
     setSaving(true)
+    setError('')
     try {
-      await api.updateOffice(office.id, { onboarding_completed: true } as Partial<Office>)
+      const res = await api.updateOffice(office.id, {
+        onboarding_completed: true,
+      } as Partial<Office>)
+      // The backend refuses to finish an under-configured office and names what
+      // is missing. Navigating anyway would bounce the doctor straight back here
+      // from DashboardShell with no explanation.
+      if (!res.success) {
+        setError(res.error || 'No pudimos terminar la configuración.')
+        return
+      }
       router.push('/dashboard')
     } catch (err) {
-      console.error('Error finishing onboarding:', err)
-      router.push('/dashboard')
+      setError(err instanceof Error ? err.message : 'No pudimos terminar la configuración.')
+    } finally {
+      setSaving(false)
     }
   }, [office, api, router])
 

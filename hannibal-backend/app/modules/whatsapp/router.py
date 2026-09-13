@@ -40,6 +40,7 @@ from app.modules.conversation.doctor_manager import DoctorConversationManager
 from app.modules.conversation.session_store import SessionStore
 from app.modules.whatsapp.meta_client import MetaCloudClient
 from app.core.exceptions import WhatsAppError
+from app.modules.whatsapp.doctor_notify import doctor_recipients
 from app.utils.phone import normalize_phone
 
 logger = get_logger(__name__)
@@ -355,13 +356,24 @@ async def _route_message(
     message_id = message.get("id")
     from_id = message.get("from")
 
-    # Check if sender is the doctor (route before pause check so doctor always gets through)
+    # Check if sender is on the doctor channel (routed before the pause check so
+    # the doctor always gets through). An office may register a second number —
+    # a secretary — which has exactly the same access, by design.
     is_doctor = False
-    if office.owner_phone:
-        try:
-            is_doctor = normalize_phone(from_id) == normalize_phone(office.owner_phone)
-        except ValueError:
-            pass
+    try:
+        sender = normalize_phone(from_id)
+    except ValueError:
+        sender = None
+    if sender:
+        for number in doctor_recipients(office):
+            try:
+                # Guarded per number: one malformed stored number must not stop
+                # the other from being recognised as the doctor.
+                if sender == normalize_phone(number):
+                    is_doctor = True
+                    break
+            except ValueError:
+                continue
     if is_doctor:
         logger.info(
             "doctor_message_detected",

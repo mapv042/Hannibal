@@ -69,6 +69,7 @@ async def book_appointment(
     allow_conflict: bool = False,
     gcal_color_id: str = "9",
     booked_by_patient_id: Optional[uuid.UUID] = None,
+    intake_notes: Optional[str] = None,
 ) -> BookingOutcome:
     """Validate, lock and create an appointment (plus GCal event, cache, reminders).
 
@@ -79,6 +80,10 @@ async def book_appointment(
     `booked_by_patient_id` is who asked for the appointment; it defaults to the
     patient it's for. It's what lets a parent later cancel the appointment they
     booked for their child.
+
+    `intake_notes` carries the answers to the office's configured pre-visit
+    questions, so they reach the doctor's brief. Administrative context only —
+    never a diagnosis or a clinical note.
 
     The slot lock is deliberately NOT released on success — its 60s TTL covers
     the window until the caller's transaction commits; releasing earlier would
@@ -128,6 +133,7 @@ async def book_appointment(
         duration_minutes=duration_min,
         type=appt_type,
         consultation_reason=reason,
+        intake_notes=intake_notes,
         status="scheduled",
         google_event_id=google_event_id,
         # Defaults to the patient themselves so every row has an owner; differs

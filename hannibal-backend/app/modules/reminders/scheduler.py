@@ -12,12 +12,56 @@ from typing import Iterable, Tuple
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
+from app.config import settings
 from app.core.constants import ReminderType
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
 MX_TZ = ZoneInfo("America/Mexico_City")
+
+# Sentinel: the reminder cannot be placed inside the sending window at all.
+SKIP = None
+
+
+def clamp_to_sending_window(run_at: datetime, start_local: datetime) -> datetime | None:
+    """Move a reminder's send time into the patient-facing window.
+
+    Rule 15 of the self-validation protocol: the assistant never messages a
+    patient in the middle of the night. Offsets are relative to the appointment,
+    so a 6h-before reminder for a 9:00 AM cita computes to 3:00 AM — correct
+    arithmetic, unacceptable product behavior.
+
+    A reminder that falls before the window opens is pushed forward to the
+    opening; one that falls after it closes is pulled back to the closing. A
+    reminder that can only be delivered after the appointment has already
+    started is dropped (returns None) — the day-before reminder already covers
+    that patient, and a "recordatorio" arriving mid-consultation is noise.
+
+    `at_time` (offset 0) never reaches this function: the waiting-room check-in
+    is defined as happening at the appointment's start time.
+    """
+    opens = run_at.replace(
+        hour=settings.earliest_reminder_hour, minute=0, second=0, microsecond=0
+    )
+    closes = run_at.replace(
+        hour=settings.latest_reminder_hour, minute=0, second=0, microsecond=0
+    )
+
+    if opens <= run_at <= closes:
+        return run_at
+
+    if run_at < opens:
+        adjusted = opens
+    else:
+        # After hours. A reminder still belongs before its appointment, so pull
+        # it back to tonight's closing; a follow-up moves to tomorrow morning.
+        adjusted = closes if run_at < start_local else opens + timedelta(days=1)
+
+    # Never let a "before" reminder slide past the appointment it announces.
+    if run_at < start_local and adjusted >= start_local:
+        return SKIP
+    return adjusted
 
 
 def schedule_reminders(
@@ -37,16 +81,16 @@ def schedule_reminders(
     # Local import to avoid a circular import (tasks imports this module's caller).
     from app.modules.reminders.tasks import (
         send_reminder_day_before,
-        send_reminder_4h,
-        send_reminder_1h,
+        send_reminder_week_before,
+        send_reminder_6h,
         send_arrival_check,
         post_follow_up,
     )
 
     task_map = {
+        ReminderType.WEEK_BEFORE.value: send_reminder_week_before,
         ReminderType.DAY_BEFORE.value: send_reminder_day_before,
-        ReminderType.FOUR_HOURS.value: send_reminder_4h,
-        ReminderType.ONE_HOUR.value: send_reminder_1h,
+        ReminderType.SIX_HOURS.value: send_reminder_6h,
         ReminderType.AT_TIME.value: send_arrival_check,
         ReminderType.POST_APPOINTMENT.value: post_follow_up,
     }
@@ -66,6 +110,29 @@ def schedule_reminders(
                 continue
 
             run_at = start_local + timedelta(minutes=offset_minutes)
+
+            # The waiting-room check-in is defined as happening at the start
+            # time; every other reminder is kept inside the sending window.
+            if offset_minutes != 0:
+                adjusted = clamp_to_sending_window(run_at, start_local)
+                if adjusted is SKIP:
+                    logger.info(
+                        "reminder_skipped_window",
+                        appointment_id=str(appointment_id),
+                        reminder_type=reminder_type,
+                        computed_time=run_at.isoformat(),
+                    )
+                    continue
+                if adjusted != run_at:
+                    logger.info(
+                        "reminder_shifted_into_window",
+                        appointment_id=str(appointment_id),
+                        reminder_type=reminder_type,
+                        computed_time=run_at.isoformat(),
+                        scheduled_time=adjusted.isoformat(),
+                    )
+                run_at = adjusted
+
             if run_at <= now:
                 logger.info(
                     "reminder_skipped_past",

@@ -37,6 +37,7 @@ from app.modules.reminders.wa_templates import (
     build_office_message_params,
     build_urgency_alert_params,
 )
+from app.modules.whatsapp.doctor_notify import doctor_recipients
 from app.modules.urgencies import templates
 from app.utils.logger import get_logger
 from app.utils.phone import display_or_raw
@@ -239,36 +240,52 @@ async def notify_doctor_of_urgency(
     patient = await db.get(Patient, request.patient_id)
     if not office or not patient:
         return "skipped"
-    if not (office.owner_phone and office.whatsapp_phone_id and office.whatsapp_token):
+    recipients = doctor_recipients(office)
+    if not (recipients and office.whatsapp_phone_id and office.whatsapp_token):
         logger.warning("urgency_notify_missing_config", office_id=str(request.office_id))
         return "skipped"
 
     patient_name = patient.name or "Paciente"
-    try:
-        if await doctor_service_window_open(redis_client, office.id):
-            text = templates.doctor_urgency_notification(
-                patient_name, request.reason, templates.format_preferred(request.preferred_time)
+    in_window = await doctor_service_window_open(redis_client, office.id)
+
+    # An urgency is the alert that least tolerates going only to one phone, so
+    # each recipient is attempted independently and one failure is not fatal.
+    delivered = 0
+    for to in recipients:
+        try:
+            if in_window:
+                text = templates.doctor_urgency_notification(
+                    patient_name,
+                    request.reason,
+                    templates.format_preferred(request.preferred_time),
+                )
+                await meta_client.send_text_message(
+                    phone_number_id=office.whatsapp_phone_id,
+                    token=office.whatsapp_token,
+                    to=to,
+                    text=text,
+                )
+            else:
+                await meta_client.send_template_message(
+                    phone_number_id=office.whatsapp_phone_id,
+                    token=office.whatsapp_token,
+                    to=to,
+                    template_name=TEMPLATE_URGENCY_ALERT,
+                    params=build_urgency_alert_params(patient_name),
+                    language_code=TEMPLATE_LANGUAGE,
+                )
+            delivered += 1
+        except Exception as e:
+            logger.error(
+                "urgency_notify_doctor_failed",
+                request_id=str(request_id),
+                error=str(e),
+                exc_info=True,
             )
-            await meta_client.send_text_message(
-                phone_number_id=office.whatsapp_phone_id,
-                token=office.whatsapp_token,
-                to=office.owner_phone,
-                text=text,
-            )
-            request.doctor_notified_via = "text"
-        else:
-            await meta_client.send_template_message(
-                phone_number_id=office.whatsapp_phone_id,
-                token=office.whatsapp_token,
-                to=office.owner_phone,
-                template_name=TEMPLATE_URGENCY_ALERT,
-                params=build_urgency_alert_params(patient_name),
-                language_code=TEMPLATE_LANGUAGE,
-            )
-            request.doctor_notified_via = "template"
-    except Exception as e:
-        logger.error("urgency_notify_doctor_failed", request_id=str(request_id), error=str(e), exc_info=True)
+
+    if not delivered:
         return "skipped"
+    request.doctor_notified_via = "text" if in_window else "template"
 
     await db.flush()
     logger.info(

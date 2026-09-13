@@ -13,8 +13,11 @@ import { ErrorState } from '@/components/ui/states/ErrorState'
 import { SkeletonStats, SkeletonList } from '@/components/ui/states/Skeleton'
 import { getStatus } from '@/lib/status'
 import { byStartTime } from '@/lib/appointments'
+import { NextAppointmentCard } from '@/components/dashboard/NextAppointmentCard'
+import { PracticeHealthCard } from '@/components/dashboard/PracticeHealthCard'
 import { Calendar, CheckCircle, AlertCircle, Users } from 'lucide-react'
-import type { Appointment } from '@/lib/supabase'
+import type { OfficeStats } from '@/lib/api'
+import type { Appointment, Office } from '@/lib/supabase'
 
 export default function DashboardPage() {
   const [appointments, setAppointments] = useState<Appointment[]>([])
@@ -24,6 +27,8 @@ export default function DashboardPage() {
     pending: 0,
     patients: 0,
   })
+  const [office, setOffice] = useState<Office | null>(null)
+  const [health, setHealth] = useState<OfficeStats | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(false)
   const api = useApi()
@@ -38,6 +43,19 @@ export default function DashboardPage() {
       } = await supabase.auth.getUser()
 
       if (!user) return
+
+      // The office carries the doctor's name for the greeting, and its id is
+      // what the stats endpoint is scoped by.
+      const officesResponse = await api.listOffices()
+      const currentOffice = officesResponse.data?.[0] ?? null
+      setOffice(currentOffice)
+
+      if (currentOffice) {
+        // Practice health is secondary: a failure here must not blank the
+        // agenda, so it is not folded into the page's error state.
+        const statsResponse = await api.getStats(currentOffice.id, 'month')
+        setHealth(statsResponse.data ?? null)
+      }
 
       // Load today's appointments
       const appointmentsResponse = await api.getAppointmentsToday(user.id)
@@ -82,9 +100,28 @@ export default function DashboardPage() {
     { label: 'Pacientes hoy', value: stats.patients, icon: Users, tint: 'bg-blue-50', color: 'text-blue-600' },
   ]
 
+  // The next appointment still ahead of us today; past ones are history by now.
+  const now = Date.now()
+  const nextAppointment =
+    appointments
+      .filter(
+        (a) =>
+          new Date(a.start_datetime).getTime() >= now &&
+          a.status !== 'cancelled' &&
+          a.status !== 'no_show'
+      )
+      .sort(byStartTime)[0] ?? null
+
   return (
     <div className="space-y-6">
       <PageHeader title="Hoy" subtitle={capitalizedToday} />
+
+      {!loading && !error && (
+        <NextAppointmentCard
+          appointment={nextAppointment}
+          doctorLastName={office?.doctor_last_name}
+        />
+      )}
 
       {/* Stats */}
       {loading ? (
@@ -106,6 +143,8 @@ export default function DashboardPage() {
           ))}
         </div>
       )}
+
+      {!loading && <PracticeHealthCard stats={health} />}
 
       {/* Appointments */}
       <Card>

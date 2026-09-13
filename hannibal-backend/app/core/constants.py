@@ -21,6 +21,20 @@ class AssistantTone(str, Enum):
     INFORMAL = "informal"
 
 
+class AssistantGender(str, Enum):
+    """Grammatical gender the assistant uses when referring to itself.
+
+    Spanish forces a choice on every adjective the assistant applies to itself
+    ("listo"/"lista"), so renaming the assistant from a feminine default to a
+    masculine or neutral name without telling the model leaves it disagreeing
+    with itself mid-conversation.
+    """
+
+    FEMININE = "femenino"
+    MASCULINE = "masculino"
+    NEUTRAL = "neutro"
+
+
 # Subscription Plans
 class SubscriptionPlan(str, Enum):
     """Available subscription plans."""
@@ -136,9 +150,9 @@ class Intent(str, Enum):
 class ReminderType(str, Enum):
     """Per-office reminder kinds. Timing is configurable via ReminderRule."""
 
+    WEEK_BEFORE = "week_before"  # Week before the appointment
     DAY_BEFORE = "day_before"  # Day before the appointment
-    FOUR_HOURS = "4h"  # 4 hours before
-    ONE_HOUR = "1h"  # 1 hour before
+    SIX_HOURS = "6h"  # 6 hours before
     AT_TIME = "at_time"  # At appointment time: the waiting-room check-in
     POST_APPOINTMENT = "post_appointment"  # After the appointment (follow-up)
 
@@ -146,20 +160,27 @@ class ReminderType(str, Enum):
 # Default reminder rules applied to every office unless overridden.
 # offset_minutes is signed relative to the appointment start:
 #   negative = before the appointment, positive = after.
+# Doctors with a full agenda need more lead time than a same-day nudge, so the
+# "before" reminders are a week, a day and six hours out.
 DEFAULT_REMINDER_RULES: list[tuple[ReminderType, int]] = [
+    (ReminderType.WEEK_BEFORE, -10080),  # 7 days before
     (ReminderType.DAY_BEFORE, -1440),  # 24h before
-    (ReminderType.FOUR_HOURS, -240),  # 4h before
-    (ReminderType.ONE_HOUR, -60),  # 1h before
+    (ReminderType.SIX_HOURS, -360),  # 6h before
     (ReminderType.AT_TIME, 0),  # at the appointment time: "¿ya llegaste?"
     (ReminderType.POST_APPOINTMENT, 120),  # 2h after
 ]
 
+# Bounds for a configurable offset: at most a week before, a day after. The
+# scheduler's sending window (Rule 15) still decides the hour of day.
+MIN_REMINDER_OFFSET = -10080
+MAX_REMINDER_OFFSET = 1440
+
 # Maps each reminder type to the Appointment idempotency flag that records
 # whether it has already been sent.
 SENT_FLAG_BY_REMINDER_TYPE: dict[str, str] = {
+    ReminderType.WEEK_BEFORE.value: "reminder_week_before_sent",
     ReminderType.DAY_BEFORE.value: "reminder_day_before_sent",
-    ReminderType.FOUR_HOURS.value: "reminder_4h_sent",
-    ReminderType.ONE_HOUR.value: "reminder_1h_sent",
+    ReminderType.SIX_HOURS.value: "reminder_6h_sent",
     ReminderType.AT_TIME.value: "arrival_check_sent",
     ReminderType.POST_APPOINTMENT.value: "follow_up_sent",
 }

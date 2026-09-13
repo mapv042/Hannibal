@@ -100,6 +100,28 @@ export default function PatientDetailPage() {
     )
   }
 
+  // Administrative only (Phase 3 keeps anything clinical out of the product).
+  const history = {
+    attended: appointments.filter((a) => a.status === 'completed').length,
+    cancelled: appointments.filter((a) => a.status === 'cancelled').length,
+    noShow: appointments.filter((a) => a.status === 'no_show').length,
+    // Most recent first, deduped — the same reason three times is one fact.
+    reasons: Array.from(
+      new Set(
+        appointments
+          .slice()
+          .sort(byStartTime)
+          .reverse()
+          .map((a) => a.consultation_reason?.trim())
+          .filter((r): r is string => !!r)
+      )
+    ).slice(0, 6),
+  }
+
+  const patientSince = patient.first_appointment_at
+    ? formatDateSafe(patient.first_appointment_at, "MMMM yyyy")
+    : '—'
+
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -150,14 +172,50 @@ export default function PatientDetailPage() {
           <CardBody className="space-y-2">
             <div className="flex items-center gap-2 text-gray-600 mb-2">
               <Calendar size={16} />
-              <p className="text-xs font-medium uppercase">Total de citas</p>
+              <p className="text-xs font-medium uppercase">Paciente desde</p>
             </div>
-            <p className="text-lg font-semibold text-gray-900">
-              {patient.total_appointments}
-            </p>
+            <p className="text-lg font-semibold text-gray-900">{patientSince}</p>
           </CardBody>
         </Card>
       </div>
+
+      {/* Administrative history. Deliberately only counts and dates: no
+          diagnoses, clinical notes or treatments ever reach this screen. */}
+      <Card>
+        <CardHeader>
+          <h3 className="font-semibold text-gray-900">Historial administrativo</h3>
+        </CardHeader>
+        <CardBody>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+            {[
+              { label: 'Citas en total', value: appointments.length },
+              { label: 'Asistió', value: history.attended },
+              { label: 'Canceló', value: history.cancelled },
+              { label: 'No asistió', value: history.noShow },
+            ].map(({ label, value }) => (
+              <div key={label}>
+                <p className="text-2xl font-bold text-gray-900 tabular-nums">{value}</p>
+                <p className="text-sm text-gray-600">{label}</p>
+              </div>
+            ))}
+          </div>
+          {history.reasons.length > 0 && (
+            <div className="mt-5">
+              <p className="text-sm text-gray-600 mb-2">Motivos de consulta anteriores</p>
+              <div className="flex flex-wrap gap-2">
+                {history.reasons.map((reason) => (
+                  <span
+                    key={reason}
+                    className="px-2.5 py-1 rounded-full bg-gray-100 text-gray-700 text-[13px]"
+                  >
+                    {reason}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+        </CardBody>
+      </Card>
 
       {/* Notes */}
       {patient.internal_notes && (

@@ -137,14 +137,18 @@ async def _build_patient_brief(
 ) -> list[str]:
     """Short pre-consultation brief: what the doctor needs before walking in.
 
-    Deliberately narrow — the reason for today's visit, when the patient was
-    last seen, and the doctor's own internal note. Anything longer stops being
-    read, which defeats the point of putting a human at the risk moment.
+    Deliberately narrow — the reason for today's visit, whatever the office
+    asked the patient beforehand, when they were last seen, and the doctor's own
+    internal note. Anything longer stops being read, which defeats the point of
+    putting a human at the risk moment.
     """
     lines: list[str] = []
 
     if appointment.consultation_reason:
         lines.append(f"Motivo: {appointment.consultation_reason}")
+
+    if appointment.intake_notes:
+        lines.append(appointment.intake_notes)
 
     previous = (
         await db.execute(

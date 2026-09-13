@@ -21,11 +21,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.constants import DAYS_ES, MX_TIMEZONE
 from app.db.models import Appointment, Office, Patient
 from app.modules.reminders.wa_templates import (
-    TEMPLATE_LANGUAGE,
     TEMPLATE_RESCHEDULE_NOTICE,
     build_reschedule_notice_params,
 )
-from app.modules.whatsapp.window import doctor_service_window_open
+from app.modules.whatsapp.doctor_notify import send_doctor_alert
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -158,48 +157,19 @@ async def notify_doctor_of_reschedule(
     )
     if not office or not patient or not old_appointment:
         return "skipped"
-    if not (office.owner_phone and office.whatsapp_phone_id and office.whatsapp_token):
-        logger.warning("reschedule_notify_missing_config", office_id=str(office.id))
-        return "skipped"
-
     patient_name = patient.name or "El paciente"
     old_slot = _format_slot(old_appointment.start_datetime)
     new_slot = _format_slot(new_appointment.start_datetime)
 
-    try:
-        if await doctor_service_window_open(redis_client, office.id):
-            await meta_client.send_text_message(
-                phone_number_id=office.whatsapp_phone_id,
-                token=office.whatsapp_token,
-                to=office.owner_phone,
-                text=_doctor_reschedule_text(patient_name, old_slot, new_slot),
-            )
-            via = "text"
-        else:
-            await meta_client.send_template_message(
-                phone_number_id=office.whatsapp_phone_id,
-                token=office.whatsapp_token,
-                to=office.owner_phone,
-                template_name=TEMPLATE_RESCHEDULE_NOTICE,
-                params=build_reschedule_notice_params(patient_name, new_slot),
-                language_code=TEMPLATE_LANGUAGE,
-            )
-            via = "template"
-    except Exception as e:
-        logger.error(
-            "reschedule_notify_doctor_failed",
-            new_appointment_id=str(new_appointment_id),
-            error=str(e),
-            exc_info=True,
-        )
-        return "skipped"
-
-    logger.info(
-        "reschedule_doctor_notified",
-        new_appointment_id=str(new_appointment_id),
-        via=via,
+    return await send_doctor_alert(
+        redis_client,
+        meta_client,
+        office,
+        text=_doctor_reschedule_text(patient_name, old_slot, new_slot),
+        template_name=TEMPLATE_RESCHEDULE_NOTICE,
+        template_params=build_reschedule_notice_params(patient_name, new_slot),
+        log_event="reschedule_notify_doctor",
     )
-    return "notified"
 
 
 async def notify_doctor_of_abandoned_reschedule(
@@ -225,48 +195,19 @@ async def notify_doctor_of_abandoned_reschedule(
     )
     if not office or not patient:
         return "skipped"
-    if not (office.owner_phone and office.whatsapp_phone_id and office.whatsapp_token):
-        logger.warning("abandoned_reschedule_missing_config", office_id=str(office.id))
-        return "skipped"
-
     patient_name = patient.name or "El paciente"
     old_slot = _format_slot(cancelled.start_datetime)
 
-    try:
-        if await doctor_service_window_open(redis_client, office.id):
-            await meta_client.send_text_message(
-                phone_number_id=office.whatsapp_phone_id,
-                token=office.whatsapp_token,
-                to=office.owner_phone,
-                text=_doctor_gave_up_text(patient_name, old_slot),
-            )
-            via = "text"
-        else:
-            # Reuses the reschedule_notice template: same shape (patient + slot),
-            # and the free-text path carries the nuance when the window is open.
-            await meta_client.send_template_message(
-                phone_number_id=office.whatsapp_phone_id,
-                token=office.whatsapp_token,
-                to=office.owner_phone,
-                template_name=TEMPLATE_RESCHEDULE_NOTICE,
-                params=build_reschedule_notice_params(
-                    patient_name, f"canceló en definitiva ({old_slot})"
-                ),
-                language_code=TEMPLATE_LANGUAGE,
-            )
-            via = "template"
-    except Exception as e:
-        logger.error(
-            "abandoned_reschedule_notify_failed",
-            cancelled_appointment_id=str(cancelled_appointment_id),
-            error=str(e),
-            exc_info=True,
-        )
-        return "skipped"
-
-    logger.info(
-        "abandoned_reschedule_doctor_notified",
-        cancelled_appointment_id=str(cancelled_appointment_id),
-        via=via,
+    return await send_doctor_alert(
+        redis_client,
+        meta_client,
+        office,
+        text=_doctor_gave_up_text(patient_name, old_slot),
+        # Reuses the reschedule_notice template: same shape (patient + slot),
+        # and the free-text path carries the nuance when the window is open.
+        template_name=TEMPLATE_RESCHEDULE_NOTICE,
+        template_params=build_reschedule_notice_params(
+            patient_name, f"canceló en definitiva ({old_slot})"
+        ),
+        log_event="abandoned_reschedule_notify_doctor",
     )
-    return "notified"

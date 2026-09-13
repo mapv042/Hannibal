@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from uuid import UUID, uuid4
 from datetime import datetime, timedelta, date
+from math import ceil
 import asyncio
 
 from sqlalchemy import select, and_
@@ -16,8 +17,8 @@ from app.db.base import get_async_session_maker
 from app.db.models import Appointment, Office, Patient, Conversation, Message
 from app.modules.reminders.templates import (
     reminder_day_before,
-    reminder_4h,
-    reminder_1h,
+    reminder_week_before,
+    reminder_6h,
     arrival_check,
     post_appointment_followup,
     confirmation_request,
@@ -52,16 +53,16 @@ CONFIRMATION_WINDOW_END_HOUR = 20
 # here: the arrival check needs interactive buttons and its own session priming,
 # so it has a dedicated task (see _send_arrival_check).
 FLAG_MAP = {
+    "week_before": "reminder_week_before_sent",
     "day_before": "reminder_day_before_sent",
-    "4h": "reminder_4h_sent",
-    "1h": "reminder_1h_sent",
+    "6h": "reminder_6h_sent",
 }
 
 # Free-text builders used while the 24h window is open (one per reminder type).
 FREETEXT_REMINDER_MAP = {
+    "week_before": reminder_week_before,
     "day_before": reminder_day_before,
-    "4h": reminder_4h,
-    "1h": reminder_1h,
+    "6h": reminder_6h,
 }
 
 
@@ -336,26 +337,26 @@ def send_reminder_day_before(self, appointment_id: str):
 
 
 @shared_task(bind=True)
-def send_reminder_4h(self, appointment_id: str):
-    """Send 4-hour-before reminder."""
-    _log(f"send_reminder_4h: START appointment_id={appointment_id}")
+def send_reminder_week_before(self, appointment_id: str):
+    """Send week-before reminder."""
+    _log(f"send_reminder_week_before: START appointment_id={appointment_id}")
     try:
-        asyncio.run(_send_reminder(appointment_id, "4h"))
-        _log(f"send_reminder_4h: DONE appointment_id={appointment_id}")
+        asyncio.run(_send_reminder(appointment_id, "week_before"))
+        _log(f"send_reminder_week_before: DONE appointment_id={appointment_id}")
     except Exception as e:
-        _log_exception("send_reminder_4h", e)
+        _log_exception("send_reminder_week_before", e)
         raise
 
 
 @shared_task(bind=True)
-def send_reminder_1h(self, appointment_id: str):
-    """Send 1-hour-before reminder."""
-    _log(f"send_reminder_1h: START appointment_id={appointment_id}")
+def send_reminder_6h(self, appointment_id: str):
+    """Send same-day reminder, scheduled 6 hours before the appointment."""
+    _log(f"send_reminder_6h: START appointment_id={appointment_id}")
     try:
-        asyncio.run(_send_reminder(appointment_id, "1h"))
-        _log(f"send_reminder_1h: DONE appointment_id={appointment_id}")
+        asyncio.run(_send_reminder(appointment_id, "6h"))
+        _log(f"send_reminder_6h: DONE appointment_id={appointment_id}")
     except Exception as e:
-        _log_exception("send_reminder_1h", e)
+        _log_exception("send_reminder_6h", e)
         raise
 
 
@@ -757,11 +758,13 @@ async def _reconcile_reminders_async():
     """
     from app.modules.reminders.scheduler import schedule_reminders
     from app.modules.reminders.rules import get_active_reminder_rules
-    from app.core.constants import SENT_FLAG_BY_REMINDER_TYPE
+    from app.core.constants import MIN_REMINDER_OFFSET, SENT_FLAG_BY_REMINDER_TYPE
 
-    # How far ahead to look. Must cover the earliest reminder offset
-    # (day_before = 24h before) plus margin.
-    LOOKAHEAD_DAYS = 2
+    # How far ahead to look. Must cover the earliest reminder offset an office
+    # can configure (week_before = 7 days out) plus a day of margin, so it is
+    # derived from the bound rather than hardcoded — a wider offset silently
+    # outrunning this window is exactly what the safety net exists to catch.
+    LOOKAHEAD_DAYS = ceil(abs(MIN_REMINDER_OFFSET) / (60 * 24)) + 1
 
     async with get_async_session_maker()() as db:
         try:

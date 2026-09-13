@@ -55,11 +55,19 @@ class Office(Base):
 
     # Basic Information
     name: Mapped[str] = mapped_column(String(255), nullable=False)
+    doctor_first_name: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    doctor_last_name: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     specialty: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     whatsapp_phone: Mapped[Optional[str]] = mapped_column(
         String(20), unique=True, nullable=True
     )
     owner_phone: Mapped[Optional[str]] = mapped_column(
+        String(20), nullable=True
+    )
+    # Optional second doctor-channel number (a secretary, say). It receives the
+    # same alerts and talks to the doctor assistant with the same permissions —
+    # there is deliberately no reduced role.
+    secondary_owner_phone: Mapped[Optional[str]] = mapped_column(
         String(20), nullable=True
     )
     city: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
@@ -94,11 +102,27 @@ class Office(Base):
     assistant_name: Mapped[str] = mapped_column(
         String(100), default="Assistant", nullable=False
     )
+    # Grammatical gender the assistant uses about itself ("listo"/"lista").
+    # femenino | masculino | neutro — see AssistantGender.
+    assistant_gender: Mapped[str] = mapped_column(
+        String(20), default="femenino", nullable=False
+    )
     custom_prompt: Mapped[Optional[str]] = mapped_column(
         String(5000), nullable=True
     )
     welcome_message: Mapped[Optional[str]] = mapped_column(
         String(2000), nullable=True
+    )
+    # Alarm symptoms that must reach the doctor immediately. Seeded from a
+    # curated per-specialty catalogue during onboarding, then edited by the
+    # doctor. List of strings.
+    emergency_symptoms: Mapped[Optional[list]] = mapped_column(
+        JSONB, nullable=True
+    )
+    # What the assistant should ask the patient before the visit.
+    # {"preset": [str], "custom": str} — feeds the pre-consultation brief.
+    intake_questions: Mapped[Optional[dict]] = mapped_column(
+        JSONB, nullable=True
     )
 
     # Appointment Duration & Pricing
@@ -114,6 +138,16 @@ class Office(Base):
     returning_patient_cost: Mapped[Optional[str]] = mapped_column(
         String(100), nullable=True
     )
+    # Service catalogue: [{"name": str, "price": str}]. Seeded per specialty in
+    # onboarding; the first two entries mirror new/returning consultation cost.
+    services: Mapped[Optional[list]] = mapped_column(JSONB, nullable=True)
+    # si | algunos | no
+    accepts_insurance: Mapped[Optional[str]] = mapped_column(
+        String(20), nullable=True
+    )
+    # Canonical insurer ids (see app/core/catalogs.py), not free text — writing
+    # them by hand is what produced "BBVA" vs "Bancomer" in the same office.
+    insurances: Mapped[Optional[list]] = mapped_column(JSONB, nullable=True)
 
     # Google Calendar Integration
     google_calendar_token: Mapped[Optional[dict]] = mapped_column(
@@ -430,6 +464,12 @@ class Appointment(Base):
     consultation_reason: Mapped[Optional[str]] = mapped_column(
         String(500), nullable=True
     )
+    # Answers to the office's configured intake questions, gathered by the
+    # assistant while booking. Administrative context for the doctor's brief —
+    # never a diagnosis or a clinical note (that stays out of scope, Phase 3).
+    intake_notes: Mapped[Optional[str]] = mapped_column(
+        String(2000), nullable=True
+    )
 
     # Status & Notes
     status: Mapped[str] = mapped_column(
@@ -463,7 +503,11 @@ class Appointment(Base):
     )
 
     # Reminders & Follow-ups (idempotency flags, one per active ReminderType)
+    reminder_week_before_sent: Mapped[bool] = mapped_column(Boolean, default=False)
     reminder_day_before_sent: Mapped[bool] = mapped_column(Boolean, default=False)
+    reminder_6h_sent: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Retired reminder kinds (4h/1h). Kept because they record what was already
+    # sent to patients before the switch to week/day/6h; never written now.
     reminder_4h_sent: Mapped[bool] = mapped_column(Boolean, default=False)
     reminder_1h_sent: Mapped[bool] = mapped_column(Boolean, default=False)
     follow_up_sent: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -618,7 +662,7 @@ class ReminderRule(Base):
         index=True,
     )
 
-    # Reminder kind, e.g. "day_before", "4h", "1h", "post_appointment"
+    # Reminder kind, e.g. "week_before", "day_before", "6h", "post_appointment"
     reminder_type: Mapped[str] = mapped_column(String(50), nullable=False)
 
     # Signed offset from the appointment start, in minutes.

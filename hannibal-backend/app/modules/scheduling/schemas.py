@@ -70,9 +70,9 @@ class AppointmentResponse(BaseModel):
     instructions: Optional[str]
     cancelled_by: Optional[str]
     cancellation_reason: Optional[str]
+    reminder_week_before_sent: bool
     reminder_day_before_sent: bool
-    reminder_4h_sent: bool
-    reminder_1h_sent: bool
+    reminder_6h_sent: bool
     follow_up_sent: bool
     # Waiting room: on_the_way | arrived | no_answer (None = not asked / no reply)
     arrival_status: Optional[str]

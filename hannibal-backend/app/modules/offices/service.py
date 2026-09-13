@@ -9,7 +9,11 @@ from fastapi import HTTPException
 from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.constants import ReminderType
+from app.core.constants import (
+    MAX_REMINDER_OFFSET,
+    MIN_REMINDER_OFFSET,
+    ReminderType,
+)
 from app.db.models import Office, ReminderRule
 from app.modules.offices.schemas import (
     CreateOfficeRequest,
@@ -43,9 +47,12 @@ async def create_office(
     office = Office(
         user_id=user_id,
         name=data.name,
+        doctor_first_name=data.doctor_first_name,
+        doctor_last_name=data.doctor_last_name,
         specialty=data.specialty,
         whatsapp_phone=data.whatsapp_phone,
         owner_phone=data.owner_phone,
+        secondary_owner_phone=data.secondary_owner_phone,
         city=data.city,
         state=data.state,
         address=data.address,
@@ -152,12 +159,19 @@ async def update_office(
     # Update fields
     if data.name is not None:
         office.name = data.name
+    if data.doctor_first_name is not None:
+        office.doctor_first_name = data.doctor_first_name
+    if data.doctor_last_name is not None:
+        office.doctor_last_name = data.doctor_last_name
     if data.specialty is not None:
         office.specialty = data.specialty
     if data.whatsapp_phone is not None:
         office.whatsapp_phone = data.whatsapp_phone
     if data.owner_phone is not None:
         office.owner_phone = data.owner_phone
+    if data.secondary_owner_phone is not None:
+        # Empty string clears the second number; None means "not submitted".
+        office.secondary_owner_phone = data.secondary_owner_phone or None
     if data.city is not None:
         office.city = data.city
     if data.address is not None:
@@ -166,11 +180,28 @@ async def update_office(
         office.assistant_tone = data.assistant_tone
     if data.assistant_name is not None:
         office.assistant_name = data.assistant_name
+    if data.assistant_gender is not None:
+        office.assistant_gender = data.assistant_gender
+    if data.services is not None:
+        office.services = [s.model_dump() for s in data.services]
+    if data.accepts_insurance is not None:
+        office.accepts_insurance = data.accepts_insurance
+    if data.insurances is not None:
+        office.insurances = data.insurances
+    if data.emergency_symptoms is not None:
+        office.emergency_symptoms = data.emergency_symptoms
+    if data.intake_questions is not None:
+        office.intake_questions = data.intake_questions.model_dump()
     if data.custom_prompt is not None:
         office.custom_prompt = data.custom_prompt
     if data.is_active is not None:
         office.is_active = data.is_active
     if data.onboarding_completed is not None:
+        # The wizard's client-side validation is a courtesy, not the gate: the
+        # API is reachable without it, and an office that goes live half
+        # configured is an assistant answering patients with holes in it.
+        if data.onboarding_completed:
+            _assert_office_complete(office)
         office.onboarding_completed = data.onboarding_completed
     if data.state is not None:
         office.state = data.state
@@ -259,6 +290,61 @@ async def get_reminder_rules(
     return default_reminder_rules()
 
 
+def _assert_office_complete(office: Office) -> None:
+    """Refuse to mark onboarding done while the assistant would be under-configured.
+
+    Each field here is something the assistant is asked about by real patients
+    ("¿dónde están?", "¿cuánto cuesta?", "¿aceptan mi seguro?") or something the
+    doctor depends on (which number the alerts go to, what counts as an alarm).
+    Missing any of them produces a bot that answers "no tengo esa información"
+    on day one, which is worse than an onboarding that takes two more minutes.
+
+    WhatsApp and Google Calendar are deliberately NOT required: they are
+    third-party connections the doctor can complete later, and the wizard
+    already offers to skip them.
+    """
+    missing: List[str] = []
+
+    if not office.name:
+        missing.append("nombre del consultorio")
+    if not office.doctor_first_name:
+        missing.append("nombre del doctor")
+    if not office.doctor_last_name:
+        missing.append("apellido del doctor")
+    if not office.specialty:
+        missing.append("especialidad")
+    if not office.city:
+        missing.append("ciudad")
+    if not office.state:
+        missing.append("estado")
+    if not office.address:
+        missing.append("dirección")
+    if not office.owner_phone:
+        missing.append("WhatsApp personal del doctor")
+    if not office.services:
+        missing.append("servicios y precios")
+    if not office.accepts_insurance:
+        missing.append("si acepta seguros")
+    elif office.accepts_insurance in ("si", "algunos") and not office.insurances:
+        missing.append("aseguradoras aceptadas")
+    if not office.assistant_name:
+        missing.append("nombre del asistente")
+    if not office.emergency_symptoms:
+        missing.append("síntomas de alarma")
+
+    intake = office.intake_questions or {}
+    if not (intake.get("preset") or (intake.get("custom") or "").strip()):
+        missing.append("qué debe preguntar el asistente antes de la cita")
+
+    if missing:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Faltan datos para terminar la configuración: " + ", ".join(missing)
+            ),
+        )
+
+
 async def replace_reminder_rules(
     office_id: UUID,
     user_id: UUID,
@@ -288,6 +374,18 @@ async def replace_reminder_rules(
                 detail=(
                     f"Invalid reminder_type '{rule.reminder_type}'. "
                     f"Allowed: {', '.join(sorted(valid_types))}"
+                ),
+            )
+        # An offset is minutes relative to the appointment start. Bound it so a
+        # bad value can't schedule a send a month out; the scheduler's sending
+        # window (Rule 15) still decides the hour of day.
+        if not MIN_REMINDER_OFFSET <= rule.offset_minutes <= MAX_REMINDER_OFFSET:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Invalid offset_minutes {rule.offset_minutes} for "
+                    f"'{rule.reminder_type}'. Allowed range: "
+                    f"{MIN_REMINDER_OFFSET}..{MAX_REMINDER_OFFSET}"
                 ),
             )
 

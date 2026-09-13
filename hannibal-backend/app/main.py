@@ -36,6 +36,7 @@ from app.modules.whatsapp.router import (
 )
 from app.modules.scheduling.router import router as scheduling_router
 from app.modules.offices.router import router as offices_router
+from app.modules.offices.catalogs_router import router as catalogs_router
 from app.modules.patients.router import router as patients_router
 from app.modules.google_calendar.router import router as google_calendar_router
 
@@ -272,6 +273,7 @@ app.include_router(whatsapp_router, prefix="/api/whatsapp", tags=["whatsapp"])
 app.include_router(whatsapp_auth_router, prefix="/api")
 app.include_router(scheduling_router, prefix="/api/scheduling", tags=["scheduling"])
 app.include_router(offices_router, prefix="/api/offices", tags=["offices"])
+app.include_router(catalogs_router, prefix="/api/catalogs", tags=["catalogs"])
 app.include_router(patients_router, prefix="/api/patients", tags=["patients"])
 app.include_router(
     google_calendar_router,

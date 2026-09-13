@@ -4,6 +4,7 @@ import React, { useState, useEffect } from 'react'
 import { useSearchParams } from 'next/navigation'
 import { useApi, type ReminderRule } from '@/lib/api'
 import { createBrowserSupabaseClient } from '@/lib/supabase'
+import { ASSISTANT_GENDERS } from '@/lib/constants/catalogs'
 import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
 import { PageHeader } from '@/components/ui/PageHeader'
@@ -46,6 +47,11 @@ const NOTIFICATION_DEFS: { key: NotifKey; label: string; description: string }[]
     description: 'Te avisamos en cuanto el paciente responde que ya llegó o que viene en camino.',
   },
 ]
+
+/** Idea 12: the doctor decides which of these go out, never what they say. */
+const META_FIXED_TEXT_NOTE =
+  'El texto de estos avisos está aprobado por WhatsApp y no se puede editar. ' +
+  'Aquí decides cuáles se mandan, no qué dicen.' 
 import {
   REMINDER_DEFS,
   DEFAULT_REMINDER_TOGGLES,
@@ -96,6 +102,7 @@ export default function SettingsPage() {
   const [formData, setFormData] = useState({
     assistant_name: '',
     tone: 'formal' as 'formal' | 'informal',
+    assistant_gender: 'femenino',
     custom_prompt: '',
   })
   const [loading, setLoading] = useState(true)
@@ -136,6 +143,7 @@ export default function SettingsPage() {
           setFormData({
             assistant_name: officeData.assistant_name,
             tone: officeData.assistant_tone as 'formal' | 'informal',
+            assistant_gender: officeData.assistant_gender || 'femenino',
             custom_prompt: officeData.custom_prompt || '',
           })
 
@@ -176,7 +184,15 @@ export default function SettingsPage() {
 
     setSaving(true)
     try {
-      const response = await api.updateOffice(office.id, formData)
+      // Mapped field by field on purpose: the form calls it `tone` while the
+      // API field is `assistant_tone`, and posting the raw form meant Pydantic
+      // silently dropped it — the tone selector never saved anything.
+      const response = await api.updateOffice(office.id, {
+        assistant_name: formData.assistant_name,
+        assistant_tone: formData.tone,
+        assistant_gender: formData.assistant_gender,
+        custom_prompt: formData.custom_prompt,
+      })
       if (response.success) {
         setSaved(true)
         setTimeout(() => setSaved(false), 3000)
@@ -292,6 +308,27 @@ export default function SettingsPage() {
 
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1.5">
+              Cómo habla de sí mismo
+            </label>
+            <select
+              name="assistant_gender"
+              value={formData.assistant_gender}
+              onChange={handleChange}
+              className="input-field"
+            >
+              {ASSISTANT_GENDERS.map((g) => (
+                <option key={g.id} value={g.id}>
+                  {g.label} · {g.description}
+                </option>
+              ))}
+            </select>
+            <p className="text-xs text-gray-500 mt-1">
+              Para que concuerde bien al referirse a sí mismo, según el nombre que le pusiste
+            </p>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1.5">
               Instrucciones personalizadas
             </label>
             <textarea
@@ -324,7 +361,7 @@ export default function SettingsPage() {
           <SectionHeader
             icon={Bell}
             title="Recordatorios automáticos"
-            subtitle="Elige qué recordatorios envía el asistente por WhatsApp"
+            subtitle="Elige cuáles envía el asistente. El texto lo aprueba WhatsApp y no se edita."
           />
         </CardHeader>
         <CardBody className="space-y-4">
@@ -381,7 +418,7 @@ export default function SettingsPage() {
           <SectionHeader
             icon={BellRing}
             title="Notificaciones al doctor"
-            subtitle="Elige de qué eventos quieres que el asistente te avise por WhatsApp"
+            subtitle={`Elige de qué eventos quieres que te avise. ${META_FIXED_TEXT_NOTE}`}
           />
         </CardHeader>
         <CardBody className="space-y-4">

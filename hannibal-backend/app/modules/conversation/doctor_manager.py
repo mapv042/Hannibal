@@ -36,7 +36,9 @@ class DoctorConversationManager(BaseToolConversationManager):
     Handles doctor commands via WhatsApp using LLM + tools.
 
     The doctor messages the bot's WhatsApp number from their personal phone.
-    Messages are detected by matching `from` with `office.owner_phone`.
+    Messages are detected by matching `from` against the office's doctor-channel
+    numbers (`owner_phone` plus the optional `secondary_owner_phone`, which has
+    the same permissions — see whatsapp.doctor_notify.doctor_recipients).
     Persisted history contains only plain text turns (see
     BaseToolConversationManager.sanitize_history).
     """

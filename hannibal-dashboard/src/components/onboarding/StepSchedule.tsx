@@ -2,7 +2,9 @@ import React from 'react'
 import { Card, CardBody } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
 import { StepHeader } from '@/components/onboarding/StepHeader'
+import { FieldError } from '@/components/ui/FieldError'
 import { Plus, X } from 'lucide-react'
+import type { FieldErrors } from '@/lib/validation/onboarding'
 
 export interface TimeBlock {
   startTime: string
@@ -15,7 +17,12 @@ export interface ScheduleDay {
   blocks: TimeBlock[]
 }
 
-export type ReminderType = 'day_before' | '4h' | '1h' | 'at_time' | 'post_appointment'
+export type ReminderType =
+  | 'week_before'
+  | 'day_before'
+  | '6h'
+  | 'at_time'
+  | 'post_appointment'
 
 /**
  * Reminder catalog shown in onboarding. The offset (minutes relative to the
@@ -29,9 +36,9 @@ export const REMINDER_DEFS: {
   description: string
   offsetMinutes: number
 }[] = [
+  { type: 'week_before', label: 'Una semana antes', description: 'Para que el paciente pueda moverla mientras hay tiempo de llenar el espacio', offsetMinutes: -10080 },
   { type: 'day_before', label: 'Un día antes', description: 'Recordatorio el día previo a la cita', offsetMinutes: -1440 },
-  { type: '4h', label: '4 horas antes', description: 'Recordatorio 4 horas antes de la cita', offsetMinutes: -240 },
-  { type: '1h', label: '1 hora antes', description: 'Recordatorio 1 hora antes de la cita', offsetMinutes: -60 },
+  { type: '6h', label: '6 horas antes', description: 'Recordatorio el mismo día de la cita', offsetMinutes: -360 },
   { type: 'at_time', label: 'Aviso de llegada', description: 'A la hora de la cita le preguntamos al paciente si ya llegó y te avisamos', offsetMinutes: 0 },
   { type: 'post_appointment', label: 'Seguimiento post-consulta', description: 'Mensaje de seguimiento después de la cita', offsetMinutes: 120 },
 ]
@@ -39,9 +46,9 @@ export const REMINDER_DEFS: {
 export type ReminderToggles = Record<ReminderType, boolean>
 
 export const DEFAULT_REMINDER_TOGGLES: ReminderToggles = {
+  week_before: true,
   day_before: true,
-  '4h': true,
-  '1h': true,
+  '6h': true,
   at_time: true,
   post_appointment: true,
 }
@@ -86,6 +93,7 @@ interface StepScheduleProps {
   onNext: () => void
   onBack: () => void
   loading?: boolean
+  errors?: FieldErrors
 }
 
 const DAY_NAMES = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado']
@@ -96,6 +104,7 @@ export const StepSchedule: React.FC<StepScheduleProps> = ({
   onNext,
   onBack,
   loading,
+  errors = {},
 }) => {
   const toggleDay = (dayOfWeek: number) => {
     const newDays = data.days.map((d) =>
@@ -148,7 +157,6 @@ export const StepSchedule: React.FC<StepScheduleProps> = ({
     onUpdate({ reminders: { ...data.reminders, [type]: !data.reminders[type] } })
   }
 
-  const hasAtLeastOneDay = data.days.some((d) => d.enabled && d.blocks.length > 0)
 
   return (
     <Card>
@@ -309,6 +317,8 @@ export const StepSchedule: React.FC<StepScheduleProps> = ({
             <p className="text-sm font-semibold text-navy">Recordatorios automáticos</p>
             <p className="text-xs text-slate-light mt-0.5">
               Elige qué recordatorios enviará el asistente por WhatsApp a tus pacientes.
+              El texto de cada uno está aprobado por WhatsApp y no se puede editar: aquí
+              decides cuáles se mandan, no qué dicen.
             </p>
           </div>
           <div className="space-y-2">
@@ -346,16 +356,13 @@ export const StepSchedule: React.FC<StepScheduleProps> = ({
           </div>
         </div>
 
+        <FieldError message={errors.days} />
+
         <div className="flex gap-3 pt-2">
           <Button variant="secondary" onClick={onBack}>
             Atrás
           </Button>
-          <Button
-            onClick={onNext}
-            disabled={!hasAtLeastOneDay}
-            isLoading={loading}
-            className="flex-1"
-          >
+          <Button onClick={onNext} isLoading={loading} className="flex-1">
             Continuar
           </Button>
         </div>

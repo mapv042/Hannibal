@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from app.core.catalogs import insurer_labels, intake_labels, specialty_label
 from app.utils.dates import build_date_reference_block, now_mx
 from app.utils.text import sanitize_for_prompt
 
@@ -14,6 +15,98 @@ if TYPE_CHECKING:
 # Session status set by the waiting-room check-in task; while it holds, the
 # patient's reply is an answer about arriving, not about confirming.
 WAITING_ARRIVAL_STATUS = "waiting_arrival_report"
+
+
+def gender_line_for(assistant_gender: str | None) -> str:
+    """How the assistant should refer to itself grammatically.
+
+    Spanish forces agreement on every adjective the assistant applies to itself,
+    so an office that renamed the assistant to a masculine or neutral name gets
+    a model contradicting itself ("soy Diego, estoy lista") unless it is told.
+    """
+    if assistant_gender == "masculino":
+        return (
+            "- Eres un asistente masculino: concuerda en masculino cuando hables "
+            'de ti ("listo", "atento")'
+        )
+    if assistant_gender == "neutro":
+        return (
+            "- Evita marcar género al hablar de ti: usa formas neutras "
+            '("con gusto te ayudo", "ya quedó") en vez de "listo" o "lista"'
+        )
+    return (
+        "- Eres una asistente femenina: concuerda en femenino cuando hables de ti "
+        '("lista", "atenta")'
+    )
+
+
+def _build_services_section(office: Office) -> str:
+    """Service catalogue with prices, when the office configured one."""
+    services = office.services or []
+    lines = [
+        f"- {s['name']}: {s.get('price') or 'precio no especificado'}"
+        for s in services
+        if isinstance(s, dict) and s.get("name")
+    ]
+    if not lines:
+        return ""
+    return "\n\nSERVICIOS Y PRECIOS:\n" + "\n".join(lines)
+
+
+def _build_insurance_section(office: Office) -> str:
+    """What the assistant may say about insurance, from structured data."""
+    accepts = office.accepts_insurance
+    if not accepts:
+        return ""
+    if accepts == "no":
+        return (
+            "\n\nSEGUROS:\nEl consultorio no acepta seguros médicos; "
+            "la consulta se paga directamente."
+        )
+    names = insurer_labels(office.insurances)
+    if accepts == "algunos" and names:
+        return (
+            "\n\nSEGUROS:\nEl consultorio acepta estos seguros: "
+            + ", ".join(names)
+            + ". Si el paciente menciona uno que no está en la lista, dile que lo "
+            "confirmarás con el consultorio en lugar de afirmar que no se acepta."
+        )
+    if accepts == "si":
+        listed = f" Trabaja principalmente con: {', '.join(names)}." if names else ""
+        return (
+            "\n\nSEGUROS:\nEl consultorio acepta seguros médicos." + listed
+        )
+    return ""
+
+
+def _build_symptoms_section(office: Office) -> str:
+    """Alarm symptoms that must reach the doctor instead of just being booked."""
+    symptoms = [s for s in (office.emergency_symptoms or []) if s]
+    if not symptoms:
+        return ""
+    return (
+        "\n\nSÍNTOMAS DE ALARMA:\nSi el paciente describe alguno de estos, no lo "
+        "trates como una cita normal: usa request_urgent_appointment para avisarle "
+        "al doctor.\n" + "\n".join(f"- {s}" for s in symptoms)
+    )
+
+
+def _build_intake_section(office: Office) -> str:
+    """Extra information the office wants gathered before the visit."""
+    config = office.intake_questions or {}
+    labels = intake_labels(config.get("preset"))
+    custom = (config.get("custom") or "").strip()
+    if not labels and not custom:
+        return ""
+    items = [f"- {label}" for label in labels]
+    if custom:
+        items.append(f"- {custom}")
+    return (
+        "\n\nANTES DE AGENDAR:\nEl consultorio quiere saber lo siguiente de cada "
+        "paciente. Pregúntalo de forma natural durante la conversación, no como "
+        "un cuestionario, y pásalo en intake_notes al agendar. Si el paciente no "
+        "quiere contestar algo, agenda de todos modos.\n" + "\n".join(items)
+    )
 
 
 def _build_confirmation_context(active_appointment_id: str | None) -> str:
@@ -73,6 +166,7 @@ def build_system_prompt(
         if office.assistant_tone == "formal"
         else "de manera amigable y casual"
     )
+    gender_line = gender_line_for(office.assistant_gender)
 
     now = now_mx()
     date_reference = build_date_reference_block(now)
@@ -98,9 +192,17 @@ Para pacientes que ya han conversado contigo antes, salúdalos normalmente sin u
         pricing_parts.append(f"- Costo primera consulta: {office.new_patient_cost}")
     if office.returning_patient_cost:
         pricing_parts.append(f"- Costo consulta subsecuente: {office.returning_patient_cost}")
+    services_section = _build_services_section(office)
+
+    # The catalogue's first two entries are the first/returning consultation, so
+    # listing both blocks would state the same two prices twice in a row.
     pricing_section = ""
-    if pricing_parts:
+    if pricing_parts and not services_section:
         pricing_section = "\n" + "\n".join(pricing_parts)
+
+    insurance_section = _build_insurance_section(office)
+    symptoms_section = _build_symptoms_section(office)
+    intake_section = _build_intake_section(office)
 
     # Patient type context. The name is patient-controlled free text, so
     # sanitize it before it enters the prompt (defense against injection).
@@ -137,13 +239,14 @@ Este paciente es NUEVO (primera vez).
 
 INFORMACIÓN DEL CONSULTORIO:
 - Nombre: {office.name}
-- Especialidad: {office.specialty or "No especificada"}
+- Especialidad: {specialty_label(office.specialty) or "No especificada"}
 - Ubicación: {location_str}
 - Dirección: {office.address or "No especificada"}
-- Teléfono WhatsApp: {office.whatsapp_phone or "No disponible"}{pricing_section}{patient_type_section}
+- Teléfono WhatsApp: {office.whatsapp_phone or "No disponible"}{pricing_section}{services_section}{insurance_section}{patient_type_section}
 
 CÓMO COMUNICARTE:
 - Comunícate {tone_desc}
+{gender_line}
 - Respuestas cortas y claras (ideal para WhatsApp, máximo 2-3 párrafos)
 - Entiende abreviaciones y lenguaje informal (ej: "xfa", "doc", "x la tarde", "pa mañana")
 - Cuando muestres horarios, usa formato de 12 horas (ej: "10:00 AM", "2:30 PM")
@@ -160,7 +263,8 @@ CÓMO TRABAJAR:
 - Si no hay disponibilidad en una fecha, sugiere proactivamente el día más cercano con horarios
 - Si el paciente tiene múltiples citas y quiere cancelar o reagendar, muestra la lista y pregunta cuál
 - Para cancelar, siempre pregunta el motivo antes de ejecutar la cancelación
-- NUNCA digas "déjame revisar" o "un momento" — ya tienes las herramientas, úsalas directamente
+- Si el paciente pide hablar con el doctor o dice que se siente mal, no lo mandes a esperar: pregúntale si es una emergencia. Si lo es, usa request_urgent_appointment; si no, sigue el flujo normal de agendar
+- NUNCA digas "déjame revisar" o "un momento" — ya tienes las herramientas, úsalas directamente{symptoms_section}{intake_section}
 
 MENSAJES NO-TEXTO:
 - Los mensajes de voz se transcriben automáticamente: si recibes "[Mensaje de voz transcrito]: ..." trátalo como un mensaje de texto normal del paciente
@@ -171,7 +275,8 @@ REGLAS CRÍTICAS:
 1. NUNCA diagnostiques enfermedades ni des consejo médico
 2. NUNCA inventes información sobre horarios, disponibilidad o servicios. El estado de una cita puede cambiar (el consultorio puede cancelarla o moverla), así que vuelve a consultarla con la herramienta antes de afirmar que existe — no te bases en lo que dijiste antes en la conversación
 3. NUNCA ofrezcas horarios que ya hayan pasado según la fecha y hora actual
-4. No compartas información médica o privada del paciente{custom_section}
+4. No compartas información médica o privada del paciente
+5. Ante la duda, escala. Si el paciente dice que se siente mal, aunque no coincida exacto con los síntomas de alarma, avísale al doctor de inmediato con request_urgent_appointment. Ninguna lista cubre todas las formas en que alguien describe su malestar, y equivocarte avisando de más no cuesta nada{custom_section}
 
 Tu objetivo es facilitar el agendamiento de forma eficiente y amigable. Siempre ofrece alternativas cuando algo no está disponible."""
 

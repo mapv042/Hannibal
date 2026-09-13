@@ -23,6 +23,23 @@ from app.utils.logger import get_logger
 logger = get_logger(__name__)
 
 
+def doctor_recipients(office: Office) -> List[str]:
+    """Every number that stands in for the doctor on this office's channel.
+
+    An office may register a second number (a secretary) that receives exactly
+    the same alerts, with no reduced permissions — so every doctor-facing send
+    must fan out through here rather than reading `owner_phone` directly.
+    Duplicates are dropped: the same number in both fields should not produce
+    two copies of every alert.
+    """
+    numbers = [office.owner_phone, office.secondary_owner_phone]
+    seen: List[str] = []
+    for number in numbers:
+        if number and number not in seen:
+            seen.append(number)
+    return seen
+
+
 async def send_doctor_alert(
     redis_client: aioredis.Redis,
     meta_client,
@@ -39,32 +56,51 @@ async def send_doctor_alert(
     missing WhatsApp config or the send fails. Loading the entity and deciding
     whether the notification is enabled is the caller's responsibility.
     """
-    if not (office.owner_phone and office.whatsapp_phone_id and office.whatsapp_token):
+    recipients = doctor_recipients(office)
+    if not (recipients and office.whatsapp_phone_id and office.whatsapp_token):
         logger.warning(f"{log_event}_missing_config", office_id=str(office.id))
         return "skipped"
 
-    try:
-        if await doctor_service_window_open(redis_client, office.id):
-            await meta_client.send_text_message(
-                phone_number_id=office.whatsapp_phone_id,
-                token=office.whatsapp_token,
-                to=office.owner_phone,
-                text=text,
+    in_window = await doctor_service_window_open(redis_client, office.id)
+    via = "text" if in_window else "template"
+
+    # One recipient failing must not silence the others, so each send is
+    # isolated; the alert counts as delivered if any number received it.
+    delivered = 0
+    for to in recipients:
+        try:
+            if in_window:
+                await meta_client.send_text_message(
+                    phone_number_id=office.whatsapp_phone_id,
+                    token=office.whatsapp_token,
+                    to=to,
+                    text=text,
+                )
+            else:
+                await meta_client.send_template_message(
+                    phone_number_id=office.whatsapp_phone_id,
+                    token=office.whatsapp_token,
+                    to=to,
+                    template_name=template_name,
+                    params=template_params,
+                    language_code=TEMPLATE_LANGUAGE,
+                )
+            delivered += 1
+        except Exception as e:
+            logger.error(
+                f"{log_event}_failed",
+                office_id=str(office.id),
+                error=str(e),
+                exc_info=True,
             )
-            via = "text"
-        else:
-            await meta_client.send_template_message(
-                phone_number_id=office.whatsapp_phone_id,
-                token=office.whatsapp_token,
-                to=office.owner_phone,
-                template_name=template_name,
-                params=template_params,
-                language_code=TEMPLATE_LANGUAGE,
-            )
-            via = "template"
-    except Exception as e:
-        logger.error(f"{log_event}_failed", office_id=str(office.id), error=str(e), exc_info=True)
+
+    if not delivered:
         return "skipped"
 
-    logger.info(f"{log_event}_notified", office_id=str(office.id), via=via)
+    logger.info(
+        f"{log_event}_notified",
+        office_id=str(office.id),
+        via=via,
+        recipients=delivered,
+    )
     return "notified"

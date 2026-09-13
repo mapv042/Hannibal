@@ -5,7 +5,7 @@ from __future__ import annotations
 from uuid import UUID
 from typing import List
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.dependencies import get_db, get_current_user
@@ -25,6 +25,7 @@ from app.modules.offices.service import (
     get_reminder_rules,
     replace_reminder_rules,
 )
+from app.modules.offices.stats import get_office_stats
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -193,3 +194,16 @@ async def update_reminder_rules_endpoint(
         db=db,
     )
     return rules
+
+
+@router.get("/{office_id}/stats")
+async def get_office_stats_endpoint(
+    office_id: UUID,
+    period: str = Query("month", pattern="^(week|month|quarter)$"),
+    current_user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Practice health metrics for the dashboard, with period-over-period change."""
+    # Authorization: resolves the office from the JWT and 404s if not owned.
+    await get_office(office_id, UUID(current_user.get("sub")), db)
+    return await get_office_stats(db, office_id, period)  # type: ignore[arg-type]

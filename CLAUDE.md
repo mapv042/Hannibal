@@ -72,7 +72,7 @@ Every table has `office_id`. All queries must filter by office. **Isolation is e
 - Owner-scoped endpoints resolve the office from the JWT `sub` (or verify `office.user_id == sub` when an id is in the path) and return 404 — not 403 — for a non-owned office, so ids can't be enumerated.
 
 ### Database models (app/db/models.py) — 10 models (Office, AvailabilitySchedule, TimeBlock, Patient, Appointment, UrgencyRequest, ReminderRule, Conversation, Message, GoogleCalendarEvent)
-- `Office` — the practice/consultorio (tenant)
+- `Office` — the practice/consultorio (tenant). Onboarding writes structured fields here (`services`, `insurances`, `emergency_symptoms`, `intake_questions`, `assistant_gender`, `secondary_owner_phone`), seeded from the curated catalogues in `app/core/catalogs.py`; `custom_prompt` remains only as the free-text Settings field
 - `AvailabilitySchedule` — weekly schedule (day_of_week, start_time, end_time, duration, buffer)
 - `TimeBlock` — unavailable periods (vacations, etc.)
 - `Patient` — identified by whatsapp_id
@@ -90,11 +90,18 @@ All enums use string values in English:
 - `AppointmentStatus`: scheduled, confirmed, cancelled, completed, no_show
 - `WhatsAppMode`: coexistence, dedicated, new
 - `ConversationStatus`: active, waiting_confirmation, paused_by_doctor, completed, abandoned
-- `ReminderType`: day_before, 4h, 1h, at_time, post_appointment (timing via `ReminderRule` / `DEFAULT_REMINDER_RULES`). `at_time` (offset 0) is the waiting-room check-in
+- `ReminderType`: week_before, day_before, 6h, at_time, post_appointment (timing via `ReminderRule` / `DEFAULT_REMINDER_RULES`). `at_time` (offset 0) is the waiting-room check-in. Every other reminder is clamped into the patient-facing sending window (Rule 15, `reminders/scheduler.clamp_to_sending_window`) so a 6h offset on a 9am cita goes out at 8am, never at 3am
 - `ArrivalStatus`: on_the_way, arrived, no_answer (waiting room; stored on `Appointment.arrival_status`)
 - `BlockOrigin`: manual, google_calendar, holiday (statutory MX holidays seeded as full-day `TimeBlock`s at office creation)
 
 > **Vestigial enums** (defined but unused — safe to ignore/remove): `Intent`, `SubscriptionPlan`, `AppointmentType`. `Intent` predates the tool-use rewrite; the manager no longer does intent detection.
+
+### Doctor channel
+An office has one or two doctor-channel numbers: `owner_phone` and the optional
+`secondary_owner_phone` (a secretary). They have **identical** permissions — both receive every
+alert and both can instruct the doctor assistant. Never read `owner_phone` directly: use
+`whatsapp.doctor_notify.doctor_recipients(office)`, which is what `send_doctor_alert`, the urgency
+notification and the webhook's `is_doctor` check all go through.
 
 ### WhatsApp coexistence
 The doctor can use WhatsApp on their phone simultaneously with the bot. The pause is office-wide via the doctor `pause_bot`/`resume_bot` tools (Redis key `whatsapp:bot_paused:{office_id}`; default 60 min). While paused, incoming patient messages are still persisted to the conversation history (the bot just stays silent). ⚠️ Automatic echo detection (`is_doctor_echo`) is a stub — it always returns False; pausing on doctor echoes is not implemented yet (requires subscribing to Meta's `message_echoes` webhook field).

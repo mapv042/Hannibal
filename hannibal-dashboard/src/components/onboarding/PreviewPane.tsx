@@ -167,18 +167,19 @@ function PatientBubble({ children, time }: { children: React.ReactNode; time: st
 
 // ─── Pricing preview ────────────────────────────────────────────────────
 interface ConsultationPreviewProps {
-  first: string
-  sub: string
+  services: { name: string; price: string }[]
   insurance: string
-  insurances: string
+  /** Official insurer names, already resolved from the stored ids. */
+  insurerNames: string[]
 }
 
 export const ConsultationPreview: React.FC<ConsultationPreviewProps> = ({
-  first,
-  sub,
+  services,
   insurance,
-  insurances,
+  insurerNames,
 }) => {
+  const listed = services.filter((s) => s.name.trim())
+  const insurerList = insurerNames.join(', ')
   return (
     <div>
       <h3 className="display text-[22px] mb-1">
@@ -193,16 +194,23 @@ export const ConsultationPreview: React.FC<ConsultationPreviewProps> = ({
           Claro, te comparto la información:
           <br />
           <br />
-          <b>Primera consulta:</b> {first || '$—'}
+          {listed.length === 0 && (
+            <>
+              <b>Primera consulta:</b> $—
+            </>
+          )}
+          {listed.map((service) => (
+            <React.Fragment key={service.name}>
+              <b>{service.name}:</b> {service.price || '$—'}
+              <br />
+            </React.Fragment>
+          ))}
           <br />
-          <b>Consulta subsecuente:</b> {sub || '$—'}
-          <br />
-          <br />
-          {insurance === 'No' && 'No aceptamos seguros médicos. El pago es directo.'}
-          {insurance === 'Si' &&
-            `Aceptamos seguros médicos.${insurances ? ` Trabajamos con: ${insurances}` : ''}`}
-          {insurance === 'Algunos' &&
-            `Aceptamos algunos seguros.${insurances ? ` Específicamente: ${insurances}` : ''}`}
+          {insurance === 'no' && 'No aceptamos seguros médicos. El pago es directo.'}
+          {insurance === 'si' &&
+            `Aceptamos seguros médicos.${insurerList ? ` Trabajamos con: ${insurerList}` : ''}`}
+          {insurance === 'algunos' &&
+            `Aceptamos algunos seguros.${insurerList ? ` Específicamente: ${insurerList}` : ''}`}
           {!insurance && '¿Tienes alguna duda sobre el costo?'}
         </BotBubble>
       </div>
@@ -225,19 +233,23 @@ export const ConsultationPreview: React.FC<ConsultationPreviewProps> = ({
 interface AssistantPreviewProps {
   name: string
   tone: 'formal' | 'informal'
-  welcome: string
+  officeName?: string
 }
 
 export const AssistantPreview: React.FC<AssistantPreviewProps> = ({
   name,
   tone,
-  welcome,
+  officeName,
 }) => {
   const displayName = name || 'Sofía'
   const isCasual = tone === 'informal'
+  // The greeting is generated from the office name and the chosen tone — the
+  // doctor doesn't write it, so this shows what the assistant will say, not a
+  // field waiting to be filled in.
+  const practice = officeName?.trim() || 'tu consultorio'
   const greeting = isCasual
-    ? `Hola, soy ${displayName}, te ayudo con tu cita.`
-    : `Hola, le saluda ${displayName}. ¿En qué le puedo ayudar?`
+    ? `Hola, soy ${displayName} de ${practice}. ¿En qué te ayudo?`
+    : `Buen día, le saluda ${displayName} de ${practice}. ¿En qué le puedo ayudar?`
 
   return (
     <div>
@@ -247,7 +259,7 @@ export const AssistantPreview: React.FC<AssistantPreviewProps> = ({
       <p className="text-sm text-slate mb-5">Así sonará en las conversaciones reales.</p>
 
       <div className="bg-[#ECE5DD] rounded-lg p-3.5 space-y-2">
-        <BotBubble time="9:00">{welcome || greeting}</BotBubble>
+        <BotBubble time="9:00">{greeting}</BotBubble>
         <PatientBubble time="9:01">
           {isCasual ? 'Hola, ¿tienes algo el viernes?' : 'Buen día, ¿tiene espacio el viernes?'}
         </PatientBubble>

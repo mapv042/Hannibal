@@ -29,8 +29,42 @@ def reminder_day_before(appointment_data: dict, tone: str = "formal") -> str:
         )
 
 
-def reminder_4h(appointment_data: dict, tone: str = "formal") -> str:
-    """Generate 4-hour-before reminder."""
+def reminder_week_before(appointment_data: dict, tone: str = "formal") -> str:
+    """Generate week-before reminder.
+
+    The earliest touch, for agendas booked far out: it names the date so the
+    patient can still move the appointment while there is room to refill it.
+    """
+    patient_name = appointment_data.get("patient_name", "estimado cliente")
+    time = appointment_data.get("time", "la hora programada")
+    date = appointment_data.get("date", "la próxima semana")
+    office_name = appointment_data.get("office_name", "nuestro consultorio")
+    assistant_name = appointment_data.get("assistant_name", "Asistente")
+
+    if tone == "informal":
+        return (
+            f"Hola {patient_name}.\n\n"
+            f"Te recordamos que tienes cita el {date} a las {time} en {office_name}.\n\n"
+            f"Falta una semana. Si necesitas moverla, avísanos con tiempo.\n\n"
+            f"— {assistant_name}"
+        )
+    else:
+        return (
+            f"Estimado(a) {patient_name},\n\n"
+            f"Le recordamos que tiene cita el {date} a las {time} en {office_name}.\n\n"
+            f"Falta una semana. Si necesita reagendarla, le pedimos avisarnos con "
+            f"anticipación.\n\n"
+            f"Atentamente,\n{assistant_name}"
+        )
+
+
+def reminder_6h(appointment_data: dict, tone: str = "formal") -> str:
+    """Generate same-day reminder, scheduled 6 hours before the appointment.
+
+    Deliberately says "hoy a las {time}" and not "en 6 horas": the scheduler
+    may shift the send time to stay inside the patient-facing window (Rule 15),
+    so a countdown phrased in hours would be wrong.
+    """
     patient_name = appointment_data.get("patient_name", "estimado cliente")
     time = appointment_data.get("time", "la hora programada")
     office_name = appointment_data.get("office_name", "nuestro consultorio")
@@ -39,38 +73,15 @@ def reminder_4h(appointment_data: dict, tone: str = "formal") -> str:
     if tone == "informal":
         return (
             f"Hola {patient_name}.\n\n"
-            f"Tu cita es en 4 horas, a las {time} en {office_name}.\n\n"
+            f"Tu cita es hoy a las {time} en {office_name}.\n\n"
             f"Si no puedes asistir, avísanos para liberar el horario.\n\n"
             f"— {assistant_name}"
         )
     else:
         return (
             f"Estimado(a) {patient_name},\n\n"
-            f"Le recordamos que su cita es en 4 horas, a las {time} en {office_name}.\n\n"
+            f"Le recordamos que su cita es hoy a las {time} en {office_name}.\n\n"
             f"Si no puede asistir, le pedimos nos avise para liberar el horario.\n\n"
-            f"Atentamente,\n{assistant_name}"
-        )
-
-
-def reminder_1h(appointment_data: dict, tone: str = "formal") -> str:
-    """Generate 1-hour-before reminder."""
-    patient_name = appointment_data.get("patient_name", "estimado cliente")
-    time = appointment_data.get("time", "la hora programada")
-    office_name = appointment_data.get("office_name", "nuestro consultorio")
-    assistant_name = appointment_data.get("assistant_name", "Asistente")
-
-    if tone == "informal":
-        return (
-            f"Hola {patient_name}.\n\n"
-            f"Tu cita es en 1 hora, a las {time} en {office_name}.\n\n"
-            f"¿Vas en camino? Si no puedes venir, avísanos.\n\n"
-            f"— {assistant_name}"
-        )
-    else:
-        return (
-            f"Estimado(a) {patient_name},\n\n"
-            f"Su cita es en 1 hora, a las {time} en {office_name}.\n\n"
-            f"Si no puede asistir, comuníquelo a la brevedad.\n\n"
             f"Atentamente,\n{assistant_name}"
         )
 

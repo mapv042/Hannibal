@@ -1,21 +1,41 @@
+export type OfficeService = {
+  name: string
+  price: string | null
+}
+
+export type IntakeQuestions = {
+  preset: string[]
+  custom: string | null
+}
+
 export type Office = {
   id: string
   user_id: string
   name: string
+  doctor_first_name: string | null
+  doctor_last_name: string | null
   specialty: string | null
   whatsapp_phone: string | null
   owner_phone: string | null
+  /** Optional second doctor-channel number, same permissions as owner_phone. */
+  secondary_owner_phone: string | null
   city: string | null
   state: string | null
   address: string | null
   assistant_tone: string
   assistant_name: string
+  assistant_gender: string
   custom_prompt: string | null
   welcome_message: string | null
   new_patient_duration_min: number
   returning_patient_duration_min: number
   new_patient_cost: string | null
   returning_patient_cost: string | null
+  services: OfficeService[] | null
+  accepts_insurance: string | null
+  insurances: string[] | null
+  emergency_symptoms: string[] | null
+  intake_questions: IntakeQuestions | null
   is_active: boolean
   onboarding_completed: boolean
   notify_new_appointment: boolean
