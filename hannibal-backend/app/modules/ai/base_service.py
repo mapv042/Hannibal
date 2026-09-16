@@ -7,6 +7,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Optional, Union
 
+from app.config import settings
 from app.utils.logger import get_logger
 from app.core.exceptions import AIServiceError
 
@@ -145,14 +146,15 @@ class BaseAIService(ABC):
         system_prompt: SystemPrompt,
         messages: list[dict],
         tools: list[dict],
-        max_tokens: int = 4096,
+        max_tokens: Optional[int] = None,
         temperature: float = 0.5,
         tool_choice: Optional[str] = None,
     ) -> ChatResponse:
         """Send a conversation with tool definitions and get a response that may include tool calls."""
+        budget = max_tokens or settings.ai_max_output_tokens
         return await self._with_retries(
             lambda: self._raw_chat_with_tools(
-                system_prompt, messages, tools, max_tokens, temperature, tool_choice
+                system_prompt, messages, tools, budget, temperature, tool_choice
             ),
             "llm_chat_with_tools",
         )

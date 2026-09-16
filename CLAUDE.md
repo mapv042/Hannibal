@@ -53,7 +53,7 @@ hannibal/
 - **Backend**: Python 3.11+, FastAPI, SQLAlchemy 2.0 (async), Alembic, Pydantic v2
 - **Database**: Supabase (PostgreSQL) with Row Level Security
 - **Cache/Broker**: Redis (sessions, Celery broker, availability cache, slot locking)
-- **AI**: Pluggable provider via `AI_PROVIDER` (`openai` | `anthropic`). **Default is `openai`.** Both `anthropic_service.py` and `openai_service.py` implement the same tool-use interface. The conversation flow is **tool-use based** (the LLM calls tools), not intent-detection/state-machine.
+- **AI**: Pluggable provider via `AI_PROVIDER` (`openai` | `anthropic`). **Default is `openai`.** `anthropic_service.py`, `openai_service.py` (/v1/chat/completions) and `openai_responses_service.py` (/v1/responses) all implement the same tool-use interface. The factory routes reasoning-first models (gpt-5.6+, o-series) to the Responses service, because OpenAI rejects function tools + reasoning on chat/completions — see the header comments in both OpenAI services for the parameter matrix. The conversation flow is **tool-use based** (the LLM calls tools), not intent-detection/state-machine.
 - **WhatsApp**: Meta Cloud API direct. A Twilio number-purchase path (`provisioning.buy_twilio_number`) also exists for dedicated numbers.
 - **Task Queue**: Celery + Redis for reminders, reconciliation, Google Calendar watch renewal
 - **Frontend**: Next.js 14 (App Router), TypeScript, Tailwind CSS, FullCalendar

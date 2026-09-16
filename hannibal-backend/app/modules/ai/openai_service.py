@@ -19,12 +19,31 @@ from app.modules.ai.base_service import (
 
 logger = get_logger(__name__)
 
+# OpenAI's per-model parameter support is not discoverable at runtime, so the
+# matrix lives here. Reasoning-first models (gpt-5.6+, o-series) take
+# `reasoning_effort` and reject `temperature`/`top_p` outright — the presence of
+# the parameter is the error, not its value. Older models (gpt-5.4-mini,
+# gpt-4.1-mini) are the exact reverse: they take `temperature` and 400 on
+# `reasoning_effort`. Sending the wrong one is a hard 400, so this drives both.
+#
+# On /v1/chat/completions the reasoning-first models also reject function tools
+# unless `reasoning_effort` is "none" — OpenAI confirmed (2026-09-07) that this
+# is a deliberate limitation, not a bug, to push tool users to /v1/responses.
+# Since the whole conversation flow is tool-use, "none" is the only value that
+# works here.
+REASONING_FIRST_PREFIXES = ("gpt-5.6", "gpt-6", "o1", "o3", "o4")
+
+
+def is_reasoning_first_model(model: str) -> bool:
+    """True if the model takes `reasoning_effort` and refuses `temperature`."""
+    return model.startswith(REASONING_FIRST_PREFIXES)
+
 
 class OpenAIService(BaseAIService):
     """
     Service for LLM interactions via OpenAI async SDK.
 
-    Uses GPT-4.1-mini as the underlying model.
+    The model comes from OPEN_AI_MODEL.
     """
 
     def __init__(self, timeout: int = 30, max_retries: int = 2):
@@ -34,6 +53,15 @@ class OpenAIService(BaseAIService):
         )
         self.max_retries = max_retries
         self.model = settings.open_ai_model
+        self.is_reasoning_first = is_reasoning_first_model(self.model)
+
+    def _apply_sampling_params(self, request_kwargs: dict, temperature: float) -> None:
+        """Set the sampling parameters this model actually accepts."""
+        if self.is_reasoning_first:
+            if settings.open_ai_reasoning_effort:
+                request_kwargs["reasoning_effort"] = settings.open_ai_reasoning_effort
+        else:
+            request_kwargs["temperature"] = temperature
 
     async def _raw_chat(
         self,
@@ -52,11 +80,14 @@ class OpenAIService(BaseAIService):
             max_tokens=max_tokens,
         )
 
-        response = await self.client.chat.completions.create(
-            model=self.model,
-            messages=openai_messages,
-            max_completion_tokens=max_tokens,
-        )
+        request_kwargs: dict[str, Any] = {
+            "model": self.model,
+            "messages": openai_messages,
+            "max_completion_tokens": max_tokens,
+        }
+        self._apply_sampling_params(request_kwargs, temperature)
+
+        response = await self.client.chat.completions.create(**request_kwargs)
 
         content = response.choices[0].message.content or ""
 
@@ -105,13 +136,13 @@ class OpenAIService(BaseAIService):
             max_tokens=max_tokens,
         )
 
-        request_kwargs = {
+        request_kwargs: dict[str, Any] = {
             "model": self.model,
             "messages": openai_messages,
             "tools": openai_tools,
             "max_completion_tokens": max_tokens,
-            "temperature": temperature,
         }
+        self._apply_sampling_params(request_kwargs, temperature)
         if tool_choice is not None:
             request_kwargs["tool_choice"] = tool_choice
 

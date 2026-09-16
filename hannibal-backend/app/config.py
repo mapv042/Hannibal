@@ -19,6 +19,10 @@ class Settings(BaseSettings):
 
     # AI provider: "openai" or "anthropic"
     ai_provider: str = "openai"
+    # Token ceiling for one assistant turn, across providers. With reasoning on,
+    # the model's thinking is billed and counted against this too, so a turn can
+    # be truncated well before the reply itself gets long.
+    ai_max_output_tokens: int = 4096
 
     # Anthropic
     anthropic_api_key: str = ""
@@ -27,6 +31,11 @@ class Settings(BaseSettings):
     # OpenAI
     open_ai_key: str = ""
     open_ai_model: str = ""
+    # Sent only to reasoning-first models (gpt-5.6+, o-series); empty = never
+    # send. On /v1/chat/completions "none" is the only value those models accept
+    # alongside function tools, and the whole conversation flow is tool-use —
+    # real reasoning + tools would require migrating to /v1/responses.
+    open_ai_reasoning_effort: str = "none"
 
     # Meta/WhatsApp
     meta_verify_token: str = ""
