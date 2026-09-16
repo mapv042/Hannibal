@@ -14,6 +14,7 @@ from app.core.exceptions import ConversationError
 from app.db.models import Office
 from app.modules.ai.prompts.doctor import build_doctor_system_prompt
 from app.modules.ai.doctor_tools import (
+    DOCTOR_MUTATING_TOOLS,
     DOCTOR_TOOL_DEFINITIONS,
     DoctorToolContext,
     execute_doctor_tool,
@@ -110,6 +111,7 @@ class DoctorConversationManager(BaseToolConversationManager):
                 execute_doctor_tool,
                 tool_ctx,
                 log_prefix="doctor",
+                mutating_tools=DOCTOR_MUTATING_TOOLS,
             )
 
             if not response_text or not response_text.strip():

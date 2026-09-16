@@ -17,23 +17,25 @@ from app.modules.ai.tool_helpers import (
     format_appointment_dt,
     localize_mx,
     parse_requested_dates,
+    resolve_active_appointment,
     resolve_appointment_duration,
 )
 from app.modules.google_calendar.service import update_event_color
 from app.modules.google_calendar.sync import cancel_appointment_in_calendar
-from app.modules.scheduling.availability import invalidate_availability_cache
+from app.modules.scheduling.availability import (
+    invalidate_availability_cache,
+    release_slot_lock,
+)
 from app.modules.scheduling.booking import book_appointment
 from app.modules.scheduling.reschedule_notify import (
     find_pending_doctor_cancellation,
     link_pending_doctor_cancellation,
 )
-from app.modules.scheduling.tasks import (
-    enqueue_abandoned_reschedule_notification,
-    enqueue_reschedule_notification,
-)
+from app.modules.scheduling.tasks import enqueue_abandoned_reschedule_notification
 from app.modules.notifications.tasks import (
     enqueue_appointment_notification,
     enqueue_cancellation_notification,
+    enqueue_reschedule_notification,
 )
 from app.modules.audit.tasks import enqueue_write_audit
 from app.utils.logger import get_logger
@@ -333,6 +335,23 @@ async def _invalidate_avail(ctx, *dates) -> None:
             logger.warning("tool_avail_cache_invalidate_failed", error=str(e))
 
 
+async def _release_slot(ctx, start_dt: datetime) -> None:
+    """Free the anti-collision lock on a slot the office just gave back.
+
+    `book_appointment` holds the lock for 60s so a concurrent booker can't slip
+    past the overlap check before the row is visible. When we cancel or move the
+    appointment ourselves, that reasoning no longer applies and the lock is pure
+    obstruction: the slot reads as free everywhere else, so the patient is
+    offered it and then told "se está agendando por otra persona".
+    """
+    if ctx.redis_client is None:
+        return
+    try:
+        await release_slot_lock(ctx.office.id, start_dt, ctx.redis_client)
+    except Exception as e:
+        logger.warning("tool_slot_lock_release_failed", error=str(e))
+
+
 async def _find_same_day_appointment(
     ctx, patient_id: uuid.UUID, start_dt: datetime
 ) -> Optional[Appointment]:
@@ -364,6 +383,20 @@ async def _find_same_day_appointment(
 # Tool executor (dispatcher)
 # ---------------------------------------------------------------------------
 
+# Tools that change state. The conversation manager will not run the same one
+# twice with the same arguments inside a single turn: the model can emit
+# parallel tool calls, and two identical `create_appointment` calls used to book
+# once and then hit the "ya tienes una cita ese día" guard on the second — which
+# the model relayed as if the patient already had the appointment.
+MUTATING_TOOLS = frozenset({
+    "create_appointment",
+    "cancel_appointment",
+    "reschedule_appointment",
+    "confirm_appointment",
+    "report_arrival",
+    "request_urgent_appointment",
+})
+
 _HANDLERS: dict[str, Any] = {}
 
 
@@ -383,15 +416,24 @@ async def execute_tool(
     """
     Execute a tool by name and return a JSON-serializable result dict.
 
-    Returns an error dict if the tool fails, so the LLM can communicate
-    the issue to the patient naturally.
+    Each call runs inside its own SAVEPOINT. A handler that raises half-way
+    through leaves nothing behind: without this, its partial writes stayed in
+    the turn's transaction and were committed at the end of the turn anyway, so
+    the patient was told "ocurrió un error" about an appointment that existed.
+    The savepoint also keeps the session usable — a failed flush used to put it
+    in pending-rollback, which made every later tool call in the same turn fail
+    too ("no pude cancelar", then a retry that worked).
+
+    Returns an error dict if the tool fails, so the LLM can communicate the
+    issue to the patient naturally.
     """
     handler = _HANDLERS.get(tool_name)
     if not handler:
         return {"error": f"Herramienta desconocida: {tool_name}"}
 
     try:
-        return await handler(arguments, ctx)
+        async with ctx.db.begin_nested():
+            return await handler(arguments, ctx)
     except Exception as e:
         # Log the detail for developers; return a generic message so internal
         # errors (DB/driver text, etc.) never reach the patient via the LLM.
@@ -637,26 +679,54 @@ async def _handle_create_appointment(args: dict, ctx: ToolContext) -> dict:
     }
 
 
-@_handler("cancel_appointment")
-async def _handle_cancel_appointment(args: dict, ctx: ToolContext) -> dict:
-    appt_id_str = args.get("appointment_id", "")
-    reason = args.get("reason", "")
+async def _load_actionable_appointment(
+    appt_id_str: str, ctx: ToolContext
+) -> tuple[Optional[Appointment], Optional[dict]]:
+    """Resolve an appointment id the patient flow is about to act on.
 
+    Returns (appointment, None) when the caller may proceed, or (None, error)
+    when it may not. Handles the three ways an id goes wrong: malformed, not
+    this office's or not this patient's, and — the common one — stale because
+    the appointment was rescheduled during the same conversation, in which case
+    the chain is followed forward to whatever is live now.
+    """
     try:
         appt_id = uuid.UUID(appt_id_str)
     except ValueError:
-        return {"error": f"ID de cita inválido: {appt_id_str}"}
+        return None, {"error": f"ID de cita inválido: {appt_id_str}"}
 
     appointment = await ctx.db.get(Appointment, appt_id)
     if not appointment or appointment.office_id != ctx.office.id:
-        return {"error": "No se encontró la cita."}
+        return None, {"error": "No se encontró la cita."}
 
-    access_error = appointment_access_error(appointment, ctx)
+    live = await resolve_active_appointment(ctx.db, appointment)
+    if live is None:
+        return None, {
+            "error": "Esa cita ya fue cancelada y no hay una que la reemplace.",
+            "next_step": (
+                "Consulta get_patient_appointments para ver qué citas tiene "
+                "realmente el paciente antes de responderle."
+            ),
+        }
+
+    access_error = appointment_access_error(live, ctx)
     if access_error:
-        return {"error": access_error}
+        return None, {"error": access_error}
 
-    if appointment.status == "cancelled":
-        return {"error": "La cita ya fue cancelada previamente."}
+    return live, None
+
+
+@_handler("cancel_appointment")
+async def _handle_cancel_appointment(args: dict, ctx: ToolContext) -> dict:
+    reason = args.get("reason", "")
+
+    appointment, error = await _load_actionable_appointment(
+        args.get("appointment_id", ""), ctx
+    )
+    if error:
+        return error
+    appt_id = appointment.id
+    appt_id_str = str(appt_id)
 
     # Format before cancelling
     dt = localize_mx(appointment.start_datetime)
@@ -668,6 +738,7 @@ async def _handle_cancel_appointment(args: dict, ctx: ToolContext) -> dict:
     appointment.cancellation_reason = reason
 
     await _invalidate_avail(ctx, dt.date())
+    await _release_slot(ctx, appointment.start_datetime)
 
     # Notify the doctor of the patient cancellation (configurable per office).
     enqueue_cancellation_notification(appointment.id)
@@ -707,25 +778,16 @@ async def _handle_cancel_appointment(args: dict, ctx: ToolContext) -> dict:
 
 @_handler("reschedule_appointment")
 async def _handle_reschedule_appointment(args: dict, ctx: ToolContext) -> dict:
-    appt_id_str = args.get("appointment_id", "")
     new_date = args.get("new_date", "")
     new_time = args.get("new_time", "")
 
-    try:
-        appt_id = uuid.UUID(appt_id_str)
-    except ValueError:
-        return {"error": f"ID de cita inválido: {appt_id_str}"}
-
-    appointment = await ctx.db.get(Appointment, appt_id)
-    if not appointment or appointment.office_id != ctx.office.id:
-        return {"error": "No se encontró la cita."}
-
-    access_error = appointment_access_error(appointment, ctx)
-    if access_error:
-        return {"error": access_error}
-
-    if appointment.status == "cancelled":
-        return {"error": "La cita ya fue cancelada y no puede reagendarse. Ofrece agendar una nueva."}
+    appointment, error = await _load_actionable_appointment(
+        args.get("appointment_id", ""), ctx
+    )
+    if error:
+        return error
+    appt_id = appointment.id
+    appt_id_str = str(appt_id)
 
     try:
         new_start = datetime.strptime(f"{new_date} {new_time}", "%Y-%m-%d %H:%M").replace(tzinfo=MX_TIMEZONE)
@@ -763,6 +825,7 @@ async def _handle_reschedule_appointment(args: dict, ctx: ToolContext) -> dict:
         # Same for what the patient already told us — moving the slot is no
         # reason to make the doctor walk in without the brief.
         intake_notes=appointment.intake_notes,
+        rescheduled_from=appointment.id,
     )
     if outcome.error:
         return _booking_error(outcome.error)
@@ -779,10 +842,12 @@ async def _handle_reschedule_appointment(args: dict, ctx: ToolContext) -> dict:
         logger.warning("tool_reschedule_cancel_gcal_failed", error=str(e))
 
     await _invalidate_avail(ctx, old_date)
+    await _release_slot(ctx, appointment.start_datetime)
 
-    # If this booking answers a slot the doctor cancelled, report back to the doctor.
-    if await link_pending_doctor_cancellation(ctx.db, new_appointment):
-        enqueue_reschedule_notification(new_appointment.id)
+    # The doctor hears about every move, not only the ones that answer a slot
+    # they cancelled themselves — notify_reschedule reads `rescheduled_from`
+    # (set above) to tell the two apart and word the message accordingly.
+    enqueue_reschedule_notification(new_appointment.id)
 
     # Rule 12: audit both halves — the new appointment must exist on the
     # calendar and the old one must have stopped occupying its slot.
@@ -814,23 +879,12 @@ async def _handle_reschedule_appointment(args: dict, ctx: ToolContext) -> dict:
 
 @_handler("confirm_appointment")
 async def _handle_confirm_appointment(args: dict, ctx: ToolContext) -> dict:
-    appt_id_str = args.get("appointment_id", "")
-
-    try:
-        appt_id = uuid.UUID(appt_id_str)
-    except ValueError:
-        return {"error": f"ID de cita inválido: {appt_id_str}"}
-
-    appointment = await ctx.db.get(Appointment, appt_id)
-    if not appointment or appointment.office_id != ctx.office.id:
-        return {"error": "No se encontró la cita."}
-
-    access_error = appointment_access_error(appointment, ctx)
-    if access_error:
-        return {"error": access_error}
-
-    if appointment.status == "cancelled":
-        return {"error": "La cita fue cancelada y no puede confirmarse."}
+    appointment, error = await _load_actionable_appointment(
+        args.get("appointment_id", ""), ctx
+    )
+    if error:
+        return error
+    appt_id_str = str(appointment.id)
 
     appointment.status = "confirmed"
 
@@ -857,27 +911,17 @@ async def _handle_report_arrival(args: dict, ctx: ToolContext) -> dict:
     # Local import keeps Celery out of this module's import graph.
     from app.modules.notifications.tasks import enqueue_arrival_notification
 
-    appt_id_str = args.get("appointment_id", "")
     status = args.get("status", "")
 
     if status not in (ArrivalStatus.ARRIVED.value, ArrivalStatus.ON_THE_WAY.value):
         return {"error": f"Estado de llegada inválido: {status}"}
 
-    try:
-        appt_id = uuid.UUID(appt_id_str)
-    except ValueError:
-        return {"error": f"ID de cita inválido: {appt_id_str}"}
-
-    appointment = await ctx.db.get(Appointment, appt_id)
-    if not appointment or appointment.office_id != ctx.office.id:
-        return {"error": "No se encontró la cita."}
-
-    access_error = appointment_access_error(appointment, ctx)
-    if access_error:
-        return {"error": access_error}
-
-    if appointment.status == "cancelled":
-        return {"error": "La cita fue cancelada."}
+    appointment, error = await _load_actionable_appointment(
+        args.get("appointment_id", ""), ctx
+    )
+    if error:
+        return error
+    appt_id_str = str(appointment.id)
 
     eta_minutes = args.get("eta_minutes")
     if eta_minutes is not None:

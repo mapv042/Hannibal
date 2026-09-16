@@ -185,6 +185,9 @@ class Office(Base):
     notify_arrival: Mapped[bool] = mapped_column(
         Boolean, default=True, nullable=False
     )
+    notify_reschedule: Mapped[bool] = mapped_column(
+        Boolean, default=True, nullable=False
+    )
 
     # Status & Plan
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
@@ -502,16 +505,14 @@ class Appointment(Base):
         nullable=True,
     )
 
-    # Reminders & Follow-ups (idempotency flags, one per active ReminderType)
+    # Reminders & follow-ups: one idempotency flag per ReminderType (see
+    # SENT_FLAG_BY_REMINDER_TYPE). The periodic sweep reads these to decide what
+    # still has to go out, and each send task sets its own under a row lock.
     reminder_week_before_sent: Mapped[bool] = mapped_column(Boolean, default=False)
     reminder_day_before_sent: Mapped[bool] = mapped_column(Boolean, default=False)
     reminder_6h_sent: Mapped[bool] = mapped_column(Boolean, default=False)
-    # Retired reminder kinds (4h/1h). Kept because they record what was already
-    # sent to patients before the switch to week/day/6h; never written now.
-    reminder_4h_sent: Mapped[bool] = mapped_column(Boolean, default=False)
-    reminder_1h_sent: Mapped[bool] = mapped_column(Boolean, default=False)
+    doctor_brief_sent: Mapped[bool] = mapped_column(Boolean, default=False)
     follow_up_sent: Mapped[bool] = mapped_column(Boolean, default=False)
-    confirmation_request_sent: Mapped[bool] = mapped_column(Boolean, default=False)
     arrival_check_sent: Mapped[bool] = mapped_column(Boolean, default=False)
 
     # Waiting room: how the patient answered the check-in sent at appointment
@@ -803,7 +804,6 @@ class Message(Base):
     )  # incoming|outgoing
 
     # Message Attributes
-    is_doctor_echo: Mapped[bool] = mapped_column(Boolean, default=False)
     whatsapp_message_id: Mapped[Optional[str]] = mapped_column(
         String(255), nullable=True
     )

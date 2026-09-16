@@ -35,25 +35,6 @@ class AssistantGender(str, Enum):
     NEUTRAL = "neutro"
 
 
-# Subscription Plans
-class SubscriptionPlan(str, Enum):
-    """Available subscription plans."""
-
-    TRIAL = "trial"
-    STARTER = "starter"
-    PRO = "pro"
-
-
-# Appointment Types
-class AppointmentType(str, Enum):
-    """Type of medical appointment."""
-
-    FIRST_VISIT = "first_visit"  # First-time visit
-    FOLLOW_UP = "follow_up"  # Follow-up visit
-    URGENT = "urgent"  # Emergency
-    VIRTUAL = "virtual"  # Virtual consultation
-
-
 # Appointment Status
 class AppointmentStatus(str, Enum):
     """Status of a scheduled appointment."""
@@ -132,27 +113,14 @@ class TimePreference(str, Enum):
     ANY = "any"  # Any time
 
 
-# Intent Recognition
-class Intent(str, Enum):
-    """Patient intent extracted from message."""
-
-    SCHEDULE = "SCHEDULE"  # Schedule appointment
-    CANCEL = "CANCEL"  # Cancel appointment
-    RESCHEDULE = "RESCHEDULE"  # Reschedule appointment
-    CONFIRM = "CONFIRM"  # Confirm appointment
-    QUESTION = "QUESTION"  # General question
-    URGENT = "URGENT"  # Emergency
-    GREETING = "GREETING"  # Greeting
-    OTHER = "OTHER"  # Other
-
-
 # Reminder Configuration
 class ReminderType(str, Enum):
     """Per-office reminder kinds. Timing is configurable via ReminderRule."""
 
     WEEK_BEFORE = "week_before"  # Week before the appointment
-    DAY_BEFORE = "day_before"  # Day before the appointment
+    DAY_BEFORE = "day_before"  # Day before: reminder + confirm/cancel buttons
     SIX_HOURS = "6h"  # 6 hours before
+    DOCTOR_BRIEF = "doctor_brief"  # Pre-consultation brief, to the DOCTOR
     AT_TIME = "at_time"  # At appointment time: the waiting-room check-in
     POST_APPOINTMENT = "post_appointment"  # After the appointment (follow-up)
 
@@ -166,6 +134,7 @@ DEFAULT_REMINDER_RULES: list[tuple[ReminderType, int]] = [
     (ReminderType.WEEK_BEFORE, -10080),  # 7 days before
     (ReminderType.DAY_BEFORE, -1440),  # 24h before
     (ReminderType.SIX_HOURS, -360),  # 6h before
+    (ReminderType.DOCTOR_BRIEF, -15),  # 15 min before: the doctor's brief
     (ReminderType.AT_TIME, 0),  # at the appointment time: "¿ya llegaste?"
     (ReminderType.POST_APPOINTMENT, 120),  # 2h after
 ]
@@ -181,6 +150,7 @@ SENT_FLAG_BY_REMINDER_TYPE: dict[str, str] = {
     ReminderType.WEEK_BEFORE.value: "reminder_week_before_sent",
     ReminderType.DAY_BEFORE.value: "reminder_day_before_sent",
     ReminderType.SIX_HOURS.value: "reminder_6h_sent",
+    ReminderType.DOCTOR_BRIEF.value: "doctor_brief_sent",
     ReminderType.AT_TIME.value: "arrival_check_sent",
     ReminderType.POST_APPOINTMENT.value: "follow_up_sent",
 }

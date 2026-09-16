@@ -24,9 +24,11 @@ from app.modules.ai.tool_helpers import (
 from app.modules.scheduling.availability import (
     OVERRIDABLE_CONFLICTS,
     invalidate_availability_cache,
+    release_slot_lock,
 )
 from app.modules.scheduling.booking import book_appointment
 from app.modules.audit.tasks import enqueue_write_audit
+from app.modules.notifications.tasks import enqueue_reschedule_notification
 from app.modules.google_calendar.sync import cancel_appointment_in_calendar, sync_time_block
 from app.modules.whatsapp.coexistence import pause_bot, resume_bot, check_pause
 from app.modules.whatsapp.meta_client import MetaCloudClient
@@ -155,6 +157,46 @@ DOCTOR_TOOL_DEFINITIONS = [
                 },
             },
             "required": ["start_date", "reason"],
+        },
+    },
+    {
+        "name": "list_time_blocks",
+        "description": (
+            "Lista los bloqueos de agenda vigentes del consultorio (vacaciones, juntas, "
+            "días cerrados). Úsala antes de quitar un bloqueo para saber cuál es, y "
+            "cuando el doctor pregunte qué tiene bloqueado."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "start_date": {
+                    "type": "string",
+                    "description": "Desde qué fecha listar (YYYY-MM-DD). Por defecto hoy.",
+                },
+                "end_date": {
+                    "type": "string",
+                    "description": "Hasta qué fecha listar (YYYY-MM-DD). Por defecto 90 días después.",
+                },
+            },
+        },
+    },
+    {
+        "name": "unblock_time",
+        "description": (
+            "Quita un bloqueo de agenda para que el consultorio vuelva a recibir citas "
+            "en ese horario. Obtén el block_id con list_time_blocks. Solo se pueden "
+            "quitar los bloqueos que puso el doctor: los que vienen de Google Calendar "
+            "se quitan borrando el evento en su calendario, y los días festivos son fijos."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "block_id": {
+                    "type": "string",
+                    "description": "ID del bloqueo a quitar (obtenido de list_time_blocks).",
+                },
+            },
+            "required": ["block_id"],
         },
     },
     {
@@ -434,6 +476,25 @@ class DoctorToolContext:
 # Tool executor
 # ---------------------------------------------------------------------------
 
+# Tools that change state: never run twice with identical arguments in one turn
+# (see BaseToolConversationManager.run_tool_loop). `confirm_send_messages` is
+# deliberately here — sending the same approved drafts twice is a double message
+# to the patient.
+DOCTOR_MUTATING_TOOLS = frozenset({
+    "cancel_appointment",
+    "reschedule_appointment",
+    "create_appointment",
+    "block_time",
+    "unblock_time",
+    "mark_appointment_status",
+    "add_appointment_note",
+    "send_message_to_patient",
+    "confirm_send_messages",
+    "resolve_urgent_request",
+    "pause_bot",
+    "resume_bot",
+})
+
 _HANDLERS: dict[str, Any] = {}
 
 
@@ -484,18 +545,50 @@ async def _invalidate_avail(ctx: DoctorToolContext, *dates) -> None:
             logger.warning("doctor_tool_avail_cache_invalidate_failed", error=str(e))
 
 
+def _format_block(block: TimeBlock) -> str:
+    """Spanish description of a time block's range, as the doctor would say it."""
+    start = localize_mx(block.start_date)
+    end = localize_mx(block.end_date)
+    if start.date() != end.date():
+        return f"Del {start.strftime('%d/%m/%Y')} al {end.strftime('%d/%m/%Y')}"
+    day = f"{DAYS_ES[start.date().weekday()]} {start.strftime('%d/%m/%Y')}"
+    if block.is_all_day:
+        return f"{day} (todo el día)"
+    return f"{day} de {start.strftime('%H:%M')} a {end.strftime('%H:%M')}"
+
+
+async def _release_slot(ctx: DoctorToolContext, start_dt: datetime) -> None:
+    """Free the anti-collision lock on a slot the office just gave back.
+
+    Mirrors app.modules.ai.tools._release_slot: the 60s lock `book_appointment`
+    holds only makes sense while the appointment stands. Once we cancel or move
+    it, leaving the lock means the slot reads as free everywhere but refuses to
+    be booked for another minute.
+    """
+    try:
+        await release_slot_lock(ctx.office.id, start_dt, ctx.redis_client)
+    except Exception as e:
+        logger.warning("doctor_tool_slot_lock_release_failed", error=str(e))
+
+
 async def execute_doctor_tool(
     tool_name: str,
     arguments: dict,
     ctx: DoctorToolContext,
 ) -> dict:
-    """Execute a doctor tool by name."""
+    """Execute a doctor tool by name.
+
+    Each call runs in its own SAVEPOINT, so a handler that raises leaves no
+    half-written state behind and the session stays usable for the rest of the
+    turn — see the matching note in app.modules.ai.tools.execute_tool.
+    """
     handler = _HANDLERS.get(tool_name)
     if not handler:
         return {"error": f"Herramienta desconocida: {tool_name}"}
 
     try:
-        return await handler(arguments, ctx)
+        async with ctx.db.begin_nested():
+            return await handler(arguments, ctx)
     except Exception as e:
         # Log the detail; return a generic message (internal errors must not
         # leak into the doctor-facing reply the LLM composes).
@@ -627,6 +720,7 @@ async def _handle_cancel_appointment(args: dict, ctx: DoctorToolContext) -> dict
     appointment.cancellation_reason = reason
 
     await _invalidate_avail(ctx, dt.date())
+    await _release_slot(ctx, appointment.start_datetime)
 
     # Rule 12: confirm the slot really came free on both systems of record.
     enqueue_write_audit(appointment.id, "cancel", status="cancelled")
@@ -817,6 +911,121 @@ async def _handle_block_time(args: dict, ctx: DoctorToolContext) -> dict:
         "block_id": str(block.id),
         "formatted": formatted,
         "reason": reason,
+    }
+
+
+
+
+@_handler("list_time_blocks")
+async def _handle_list_time_blocks(args: dict, ctx: DoctorToolContext) -> dict:
+    today = datetime.now(tz=MX_TIMEZONE).date()
+    try:
+        start_date = (
+            date_cls.fromisoformat(args["start_date"]) if args.get("start_date") else today
+        )
+        end_date = (
+            date_cls.fromisoformat(args["end_date"])
+            if args.get("end_date")
+            else start_date + timedelta(days=90)
+        )
+    except ValueError:
+        return {"error": "Fecha invalida. Usa formato YYYY-MM-DD."}
+
+    range_start = datetime.combine(start_date, time_type(0, 0)).replace(tzinfo=MX_TIMEZONE)
+    range_end = datetime.combine(end_date, time_type(23, 59)).replace(tzinfo=MX_TIMEZONE)
+
+    blocks = (
+        await ctx.db.execute(
+            select(TimeBlock)
+            .where(
+                (TimeBlock.office_id == ctx.office.id)
+                & (TimeBlock.start_date <= range_end)
+                & (TimeBlock.end_date >= range_start)
+            )
+            .order_by(TimeBlock.start_date)
+        )
+    ).scalars().all()
+
+    if not blocks:
+        return {"blocks": [], "message": "No hay bloqueos en ese rango."}
+
+    return {
+        "blocks": [
+            {
+                "block_id": str(b.id),
+                "formatted": _format_block(b),
+                "reason": b.reason or "Sin motivo",
+                "origin": b.origin,
+                "removable": b.origin == "manual",
+            }
+            for b in blocks
+        ],
+    }
+
+
+@_handler("unblock_time")
+async def _handle_unblock_time(args: dict, ctx: DoctorToolContext) -> dict:
+    try:
+        block_id = uuid.UUID(args.get("block_id", ""))
+    except ValueError:
+        return {"error": f"ID de bloqueo invalido: {args.get('block_id', '')}"}
+
+    block = await ctx.db.get(TimeBlock, block_id)
+    if not block or block.office_id != ctx.office.id:
+        return {"error": "No se encontro ese bloqueo."}
+
+    if block.origin != "manual":
+        source = (
+            "Google Calendar" if block.origin == "google_calendar" else "un día festivo"
+        )
+        return {
+            "error": f"Ese bloqueo viene de {source} y no se puede quitar desde aquí.",
+            "next_step": (
+                "Si viene de Google Calendar, dile al doctor que borre el evento en su "
+                "calendario y el bloqueo desaparece solo."
+            ),
+        }
+
+    formatted = _format_block(block)
+    reason = block.reason or "Sin motivo"
+    start_date = localize_mx(block.start_date).date()
+    end_date = localize_mx(block.end_date).date()
+
+    # Remove the mirrored Google Calendar event first: a block that is gone for
+    # us but still on the doctor's calendar keeps the slot looking busy.
+    if block.google_event_id and ctx.office.google_calendar_token:
+        from app.modules.google_calendar.service import delete_calendar_event
+
+        try:
+            await delete_calendar_event(ctx.office.id, block.google_event_id, ctx.db)
+        except Exception as e:
+            logger.error("doctor_unblock_gcal_failed", error=str(e))
+            return {
+                "error": (
+                    "No se pudo quitar el bloqueo en Google Calendar. "
+                    "La agenda no fue modificada. Intenta de nuevo."
+                )
+            }
+
+    await ctx.db.delete(block)
+    await ctx.db.flush()
+
+    unblocked_dates = [
+        start_date + timedelta(days=i)
+        for i in range(min((end_date - start_date).days + 1, 60))
+    ]
+    await _invalidate_avail(ctx, *unblocked_dates)
+
+    logger.info("doctor_unblocked_time", block_id=str(block_id), office_id=str(ctx.office.id))
+
+    return {
+        "success": True,
+        "formatted": formatted,
+        "reason": reason,
+        "next_step": (
+            "El horario volvió a quedar disponible y el bot ya puede ofrecerlo. "
+            "Confírmaselo al doctor diciéndole exactamente qué rango se liberó."
+        ),
     }
 
 
@@ -1400,6 +1609,9 @@ async def _handle_reschedule_appointment(args: dict, ctx: DoctorToolContext) -> 
         gcal_description=f"Motivo: {reason}\n{phone_line}Reagendada por el doctor",
         redis_client=ctx.redis_client,
         allow_conflict=bool(args.get("allow_conflict", False)),
+        booked_by_patient_id=appointment.booked_by_patient_id,
+        intake_notes=appointment.intake_notes,
+        rescheduled_from=appointment.id,
     )
     if outcome.error:
         return _doctor_booking_error(outcome)
@@ -1417,6 +1629,8 @@ async def _handle_reschedule_appointment(args: dict, ctx: DoctorToolContext) -> 
     appointment.cancellation_reason = "Reagendada por el doctor"
 
     await _invalidate_avail(ctx, old_date)
+    await _release_slot(ctx, appointment.start_datetime)
+    enqueue_reschedule_notification(new_appointment.id)
 
     # Rule 12: verify both halves landed — new slot present, old slot released.
     enqueue_write_audit(

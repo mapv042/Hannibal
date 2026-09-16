@@ -71,8 +71,6 @@ class Settings(BaseSettings):
     # Celery
     celery_broker_url: str = "redis://localhost:6379/0"
     celery_result_backend: str = "redis://localhost:6379/1"
-    confirmation_request_hour: int = 8  # Hour (0-23) to send confirmation requests (Mexico City TZ)
-    confirmation_request_minute: int = 0  # Minute (0-59) to send confirmation requests
     # Patient-facing sending window (Mexico City TZ). A reminder whose offset
     # lands outside it is moved to the edge of the window, never sent at night.
     earliest_reminder_hour: int = 8  # Don't send reminders before this hour

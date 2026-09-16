@@ -1,10 +1,21 @@
-"""Celery tasks for reminder sending and follow-up operations."""
+"""Reminder sending, driven by a periodic sweep over due reminders.
+
+Every few minutes `dispatch_due_reminders` asks the database which reminders are
+due — from each office's ReminderRule rows and each appointment's start time and
+sent flags — and dispatches the matching task. Nothing is scheduled at booking
+time, so there is no far-future Celery `eta` to lose on a restart, redeliver
+twice, or reconcile nightly.
+
+Each send task is independently idempotent: it re-reads its appointment under
+`SELECT FOR UPDATE`, re-checks the sent flag and the status, and only then
+sends. A duplicate dispatch is therefore a no-op rather than a duplicate
+message.
+"""
 
 from __future__ import annotations
 
 from uuid import UUID, uuid4
-from datetime import datetime, timedelta, date
-from math import ceil
+from datetime import datetime, timedelta
 import asyncio
 
 from sqlalchemy import select, and_
@@ -13,15 +24,23 @@ from zoneinfo import ZoneInfo
 
 from celery import shared_task
 
+from app.core.celery_dispatch import dispatch
+from app.core.constants import (
+    MAX_REMINDER_OFFSET,
+    MIN_REMINDER_OFFSET,
+    SENT_FLAG_BY_REMINDER_TYPE,
+    ReminderType,
+)
 from app.db.base import get_async_session_maker
 from app.db.models import Appointment, Office, Patient, Conversation, Message
+from app.modules.reminders.scheduler import due_at, is_still_worth_sending
 from app.modules.reminders.templates import (
-    reminder_day_before,
     reminder_week_before,
     reminder_6h,
     arrival_check,
     post_appointment_followup,
     confirmation_request,
+    reminder_day_before,
 )
 from app.modules.reminders.wa_templates import (
     TEMPLATE_LANGUAGE,
@@ -44,25 +63,21 @@ logger = get_logger(__name__)
 
 MX_TZ = ZoneInfo("America/Mexico_City")
 
-# Patient-facing confirmation requests may only go out between these MX-local
-# hours (inclusive start, exclusive end); outside it the task defers itself.
-CONFIRMATION_WINDOW_START_HOUR = 8
-CONFIRMATION_WINDOW_END_HOUR = 20
+# Statuses whose reminders are still relevant. "completed" is included for the
+# post-appointment follow-up; each task applies its own narrower guard.
+SWEEPABLE_STATUSES = ("scheduled", "confirmed", "completed")
 
-# Reminder types handled by the generic _send_reminder path. `at_time` is not
-# here: the arrival check needs interactive buttons and its own session priming,
-# so it has a dedicated task (see _send_arrival_check).
+# Reminder types handled by the generic `_send_reminder` path: a plain nudge,
+# no buttons, no session priming.
 FLAG_MAP = {
-    "week_before": "reminder_week_before_sent",
-    "day_before": "reminder_day_before_sent",
-    "6h": "reminder_6h_sent",
+    ReminderType.WEEK_BEFORE.value: "reminder_week_before_sent",
+    ReminderType.SIX_HOURS.value: "reminder_6h_sent",
 }
 
 # Free-text builders used while the 24h window is open (one per reminder type).
 FREETEXT_REMINDER_MAP = {
-    "week_before": reminder_week_before,
-    "day_before": reminder_day_before,
-    "6h": reminder_6h,
+    ReminderType.WEEK_BEFORE.value: reminder_week_before,
+    ReminderType.SIX_HOURS.value: reminder_6h,
 }
 
 
@@ -117,29 +132,31 @@ async def _prime_session_for_appointment(
     dropped on the way in — so the appointment being asked about has to travel
     in the session instead. `status` gates which context block the prompt
     builder emits (confirmation vs. arrival).
+
+    The previous thread is closed rather than appended to. The office is opening
+    a new topic about a specific appointment, and a half-finished exchange left
+    over from before ("¿confirmas estos datos?") competes with it for the
+    patient's next word: answering "confirmar" would resume the old booking
+    instead of confirming the cita we just asked about. The model can re-read
+    anything it needs through its tools; it cannot un-close the wrong cita.
     """
     from app.modules.conversation.schemas import SessionContext
 
-    session = await session_store.get_session(patient.whatsapp_id, str(office.id))
-    if not session:
-        conversation = await _get_or_create_conversation(
-            db, office.id, patient.whatsapp_id, patient.id
-        )
-        session = SessionContext(
-            conversation_id=conversation.id,
-            office_id=office.id,
-            whatsapp_id=patient.whatsapp_id,
-            patient_id=patient.id,
-            status="active",
-            claude_history=[],
-            collected_data={},
-        )
-
-    # The question itself goes into the history, so the reply ("sí", "ya casi")
-    # has something to attach to.
-    session.claude_history.append({"role": "assistant", "content": outgoing_text})
-    session.status = status
-    session.active_appointment_id = appointment.id
+    conversation = await _get_or_create_conversation(
+        db, office.id, patient.whatsapp_id, patient.id
+    )
+    session = SessionContext(
+        conversation_id=conversation.id,
+        office_id=office.id,
+        whatsapp_id=patient.whatsapp_id,
+        patient_id=patient.id,
+        status=status,
+        # The question itself is the whole history, so the reply ("sí", "ya
+        # casi") has exactly one thing to attach to.
+        claude_history=[{"role": "assistant", "content": outgoing_text}],
+        collected_data={},
+        active_appointment_id=appointment.id,
+    )
 
     await session_store.save_session(patient.whatsapp_id, str(office.id), session)
 
@@ -229,58 +246,63 @@ async def _send_free_or_template(
     return via
 
 
+async def _load_sendable(
+    db: AsyncSession, appointment_id: str, flag_attr: str, task_name: str
+) -> tuple[Appointment, Patient, Office] | None:
+    """Lock the appointment and check everything needed before sending.
+
+    Returns (appointment, patient, office) when the send should proceed, or None
+    when it must be skipped (already sent, cancelled, missing config). The row
+    lock makes the flag check safe against a duplicate dispatch.
+    """
+    result = await db.execute(
+        select(Appointment).where(Appointment.id == UUID(appointment_id)).with_for_update()
+    )
+    appointment = result.scalar_one_or_none()
+    if not appointment:
+        _log(f"{task_name}: not found appointment_id={appointment_id}")
+        return None
+
+    if getattr(appointment, flag_attr):
+        _log(f"{task_name}: already sent appointment_id={appointment_id}")
+        return None
+
+    if appointment.status not in ("scheduled", "confirmed"):
+        _log(f"{task_name}: skipped status={appointment.status} appointment_id={appointment_id}")
+        return None
+
+    patient = await db.get(Patient, appointment.patient_id)
+    office = await db.get(Office, appointment.office_id)
+    if not patient or not office:
+        _log(f"{task_name}: missing patient/office appointment_id={appointment_id}")
+        return None
+    if not office.whatsapp_phone_id or not office.whatsapp_token:
+        _log(f"{task_name}: office missing whatsapp config office_id={office.id}")
+        return None
+    if not patient.whatsapp_id:
+        _log(f"{task_name}: patient missing whatsapp_id patient_id={patient.id}")
+        return None
+
+    return appointment, patient, office
+
+
+# --------------------------------------------------------------------------- #
+# Send paths
+# --------------------------------------------------------------------------- #
+
 async def _send_reminder(appointment_id: str, reminder_type: str) -> None:
-    """
-    Shared async logic for all reminder types.
-
-    Loads appointment/patient/office, checks idempotency,
-    builds message from template, sends via WhatsApp, marks as sent.
-
-    Uses SELECT FOR UPDATE to prevent race conditions when multiple
-    Celery tasks for the same reminder fire simultaneously.
-    """
+    """Plain patient reminder (week before, 6h before): text or template."""
     from app.modules.whatsapp.meta_client import MetaCloudClient
 
     flag_attr = FLAG_MAP[reminder_type]
+    task_name = f"send_reminder_{reminder_type}"
 
     async with get_async_session_maker()() as db:
-        # Lock the row to prevent race conditions with duplicate tasks
-        result = await db.execute(
-            select(Appointment)
-            .where(Appointment.id == UUID(appointment_id))
-            .with_for_update()
-        )
-        appointment = result.scalar_one_or_none()
-        if not appointment:
-            _log(f"send_reminder_{reminder_type}: not found appointment_id={appointment_id}")
+        loaded = await _load_sendable(db, appointment_id, flag_attr, task_name)
+        if loaded is None:
             return
+        appointment, patient, office = loaded
 
-        # Idempotency check (safe under FOR UPDATE lock)
-        if getattr(appointment, flag_attr):
-            _log(f"send_reminder_{reminder_type}: already sent appointment_id={appointment_id}")
-            return
-
-        # Only send for active appointments
-        if appointment.status not in ("scheduled", "confirmed"):
-            _log(f"send_reminder_{reminder_type}: skipped status={appointment.status} appointment_id={appointment_id}")
-            return
-
-        patient = await db.get(Patient, appointment.patient_id)
-        office = await db.get(Office, appointment.office_id)
-
-        if not patient or not office:
-            _log(f"send_reminder_{reminder_type}: missing patient/office appointment_id={appointment_id}")
-            return
-
-        if not office.whatsapp_phone_id or not office.whatsapp_token:
-            _log(f"send_reminder_{reminder_type}: office missing whatsapp config office_id={office.id}")
-            return
-
-        if not patient.whatsapp_id:
-            _log(f"send_reminder_{reminder_type}: patient missing whatsapp_id patient_id={patient.id}")
-            return
-
-        # Build both variants: free text (in-window) and template (out-of-window)
         start_local = appointment.start_datetime.astimezone(MX_TZ)
         now_local = datetime.now(MX_TZ)
         appointment_date = format_appointment_date(start_local, now_local)
@@ -303,9 +325,8 @@ async def _send_reminder(appointment_id: str, reminder_type: str) -> None:
             location=office.name,
         )
 
-        meta_client = MetaCloudClient()
         via = await _send_free_or_template(
-            meta_client,
+            MetaCloudClient(),
             db,
             office,
             patient,
@@ -314,107 +335,140 @@ async def _send_reminder(appointment_id: str, reminder_type: str) -> None:
             params=params,
         )
 
-        # Mark as sent
         setattr(appointment, flag_attr, True)
         await db.commit()
 
-        _log(f"send_reminder_{reminder_type}: sent via {via} to patient_id={patient.id} appointment_id={appointment_id}")
+        _log(f"{task_name}: sent via {via} to patient_id={patient.id} appointment_id={appointment_id}")
 
 
-# --- Celery tasks (thin wrappers) ---
+async def _send_day_before(appointment_id: str) -> None:
+    """Day-before touchpoint: one message that reminds and asks to confirm.
 
+    This used to be two independent mechanisms — the `day_before` reminder rule
+    and a separate daily "confirmation requests" beat job — which both fired the
+    day before with near-identical text, each with its own sent flag, neither
+    aware of the other. The patient got the same thing twice. Now it is one
+    message: confirm/cancel buttons for a cita still awaiting confirmation, a
+    plain reminder for one the patient already confirmed.
+    """
+    from app.modules.whatsapp.meta_client import MetaCloudClient
 
-@shared_task(bind=True)
-def send_reminder_day_before(self, appointment_id: str):
-    """Send day-before reminder."""
-    _log(f"send_reminder_day_before: START appointment_id={appointment_id}")
-    try:
-        asyncio.run(_send_reminder(appointment_id, "day_before"))
-        _log(f"send_reminder_day_before: DONE appointment_id={appointment_id}")
-    except Exception as e:
-        _log_exception("send_reminder_day_before", e)
-        raise
+    async with get_async_session_maker()() as db:
+        loaded = await _load_sendable(
+            db, appointment_id, "reminder_day_before_sent", "send_day_before"
+        )
+        if loaded is None:
+            return
+        appointment, patient, office = loaded
 
+        start_local = appointment.start_datetime.astimezone(MX_TZ)
+        appointment_time = start_local.strftime("%H:%M")
+        patient_name = patient.name or "paciente"
+        needs_confirmation = appointment.status == "scheduled"
 
-@shared_task(bind=True)
-def send_reminder_week_before(self, appointment_id: str):
-    """Send week-before reminder."""
-    _log(f"send_reminder_week_before: START appointment_id={appointment_id}")
-    try:
-        asyncio.run(_send_reminder(appointment_id, "week_before"))
-        _log(f"send_reminder_week_before: DONE appointment_id={appointment_id}")
-    except Exception as e:
-        _log_exception("send_reminder_week_before", e)
-        raise
+        appointment_data = {
+            "patient_name": patient_name,
+            "time": appointment_time,
+            "date": format_explicit_date(start_local),
+            "office_name": office.name,
+            "assistant_name": office.assistant_name,
+        }
 
+        meta_client = MetaCloudClient()
+        session_store = SessionStore()
+        try:
+            if not needs_confirmation:
+                # Already confirmed: remind, don't ask again.
+                free_text = reminder_day_before(
+                    appointment_data, tone=office.assistant_tone
+                )
+                via = await _send_free_or_template(
+                    meta_client,
+                    db,
+                    office,
+                    patient,
+                    free_text=free_text,
+                    template_name=TEMPLATE_REMINDER,
+                    params=build_reminder_params(
+                        patient_name=patient_name,
+                        appointment_date=appointment_data["date"],
+                        appointment_time=appointment_time,
+                        location=office.name,
+                    ),
+                )
+            else:
+                free_text = confirmation_request(
+                    appointment_data, tone=office.assistant_tone
+                )
+                if await service_window_open(db, office.id, patient.whatsapp_id):
+                    message_id = await meta_client.send_interactive_buttons(
+                        phone_number_id=office.whatsapp_phone_id,
+                        token=office.whatsapp_token,
+                        to=patient.whatsapp_id,
+                        body_text=free_text,
+                        buttons=[
+                            {"id": f"confirm_{appointment.id}", "title": "Sí, confirmo"},
+                            {"id": f"cancel_{appointment.id}", "title": "No podré asistir"},
+                        ],
+                    )
+                    await _record_outgoing_message(
+                        db,
+                        office,
+                        patient,
+                        content=free_text,
+                        via="interactive",
+                        template_name=TEMPLATE_CONFIRMATION_DAY_BEFORE,
+                        whatsapp_message_id=message_id,
+                    )
+                    via = "interactive"
+                else:
+                    via = await _send_free_or_template(
+                        meta_client,
+                        db,
+                        office,
+                        patient,
+                        free_text=free_text,
+                        template_name=TEMPLATE_CONFIRMATION_DAY_BEFORE,
+                        params=build_confirmation_params(
+                            patient_name=patient_name,
+                            location=office.name,
+                            appointment_date=appointment_data["date"],
+                            appointment_time=appointment_time,
+                        ),
+                    )
 
-@shared_task(bind=True)
-def send_reminder_6h(self, appointment_id: str):
-    """Send same-day reminder, scheduled 6 hours before the appointment."""
-    _log(f"send_reminder_6h: START appointment_id={appointment_id}")
-    try:
-        asyncio.run(_send_reminder(appointment_id, "6h"))
-        _log(f"send_reminder_6h: DONE appointment_id={appointment_id}")
-    except Exception as e:
-        _log_exception("send_reminder_6h", e)
-        raise
+                await _prime_session_for_appointment(
+                    session_store, db, office, patient, appointment, free_text,
+                    status="waiting_appointment_confirmation",
+                )
+        finally:
+            await session_store.close()
 
+        appointment.reminder_day_before_sent = True
+        await db.commit()
 
-@shared_task(bind=True)
-def send_arrival_check(self, appointment_id: str):
-    """Ask the patient whether they've arrived, at the appointment's start time."""
-    _log(f"send_arrival_check: START appointment_id={appointment_id}")
-    try:
-        asyncio.run(_send_arrival_check(appointment_id))
-        _log(f"send_arrival_check: DONE appointment_id={appointment_id}")
-    except Exception as e:
-        _log_exception("send_arrival_check", e)
-        raise
+        _log(
+            f"send_day_before: sent via {via} (confirmation={needs_confirmation}) "
+            f"patient_id={patient.id} appointment_id={appointment_id}"
+        )
 
 
 async def _send_arrival_check(appointment_id: str) -> None:
     """Waiting-room check-in: "¿ya llegaste?" at the appointment's start time.
 
-    Follows the same shape as _send_reminder (FOR UPDATE, idempotency flag,
-    status guard) but sends interactive buttons in-window, and primes the
-    patient's session so their reply is read as an arrival report rather than a
-    new scheduling request.
+    Sends interactive buttons in-window and primes the patient's session so
+    their reply is read as an arrival report rather than a new scheduling
+    request.
     """
     from app.modules.whatsapp.meta_client import MetaCloudClient
 
     async with get_async_session_maker()() as db:
-        result = await db.execute(
-            select(Appointment)
-            .where(Appointment.id == UUID(appointment_id))
-            .with_for_update()
+        loaded = await _load_sendable(
+            db, appointment_id, "arrival_check_sent", "send_arrival_check"
         )
-        appointment = result.scalar_one_or_none()
-        if not appointment:
-            _log(f"send_arrival_check: not found appointment_id={appointment_id}")
+        if loaded is None:
             return
-
-        if appointment.arrival_check_sent:
-            _log(f"send_arrival_check: already sent appointment_id={appointment_id}")
-            return
-
-        if appointment.status not in ("scheduled", "confirmed"):
-            _log(
-                f"send_arrival_check: skipped status={appointment.status} "
-                f"appointment_id={appointment_id}"
-            )
-            return
-
-        patient = await db.get(Patient, appointment.patient_id)
-        office = await db.get(Office, appointment.office_id)
-        if not patient or not office:
-            _log(f"send_arrival_check: missing patient/office appointment_id={appointment_id}")
-            return
-        if not office.whatsapp_phone_id or not office.whatsapp_token:
-            _log(f"send_arrival_check: office missing whatsapp config office_id={office.id}")
-            return
-        if not patient.whatsapp_id:
-            _log(f"send_arrival_check: patient missing whatsapp_id patient_id={patient.id}")
-            return
+        appointment, patient, office = loaded
 
         patient_name = patient.name or "paciente"
         free_text = arrival_check(
@@ -475,28 +529,53 @@ async def _send_arrival_check(appointment_id: str) -> None:
         )
 
 
-# --- Existing tasks (kept) ---
+async def _send_doctor_brief(appointment_id: str) -> None:
+    """Pre-consultation brief to the doctor, shortly before the appointment.
 
+    Doctor-facing, so it goes through the notifications service (which knows the
+    doctor's own 24h window and both doctor-channel numbers) rather than the
+    patient send helpers above.
+    """
+    import redis.asyncio as aioredis
 
-@shared_task(bind=True)
-def post_follow_up(self, appointment_id: str):
-    """Send follow-up message 2 hours after appointment."""
-    _log(f"post_follow_up: START appointment_id={appointment_id}")
+    from app.config import settings
+    from app.modules.notifications.service import notify_appointment_brief
+    from app.modules.whatsapp.meta_client import MetaCloudClient
+
+    redis_client = aioredis.from_url(settings.redis_url, decode_responses=True)
     try:
-        asyncio.run(_post_follow_up_async(appointment_id))
-        _log(f"post_follow_up: DONE appointment_id={appointment_id}")
-    except Exception as e:
-        _log_exception("post_follow_up", e)
-        raise
+        async with get_async_session_maker()() as db:
+            result = await db.execute(
+                select(Appointment)
+                .where(Appointment.id == UUID(appointment_id))
+                .with_for_update()
+            )
+            appointment = result.scalar_one_or_none()
+            if not appointment:
+                _log(f"send_doctor_brief: not found appointment_id={appointment_id}")
+                return
+            if appointment.doctor_brief_sent:
+                _log(f"send_doctor_brief: already sent appointment_id={appointment_id}")
+                return
+
+            status = await notify_appointment_brief(
+                db, redis_client, MetaCloudClient(), appointment.id
+            )
+            if status == "notified":
+                appointment.doctor_brief_sent = True
+            await db.commit()
+            _log(f"send_doctor_brief: {status} appointment_id={appointment_id}")
+    finally:
+        await redis_client.close()
 
 
-async def _post_follow_up_async(appointment_id: str):
-    """Async implementation of post-appointment follow-up."""
+async def _post_follow_up_async(appointment_id: str) -> None:
+    """Post-appointment follow-up, sent after the visit."""
     from app.modules.whatsapp.meta_client import MetaCloudClient
 
     async with get_async_session_maker()() as db:
-        # Lock the row: the Redis broker can redeliver an eta task, so several
-        # copies of this follow-up may run at once (see _send_reminder).
+        # Not _load_sendable: the follow-up is the one reminder that is still
+        # valid for a completed appointment.
         result = await db.execute(
             select(Appointment)
             .where(Appointment.id == UUID(appointment_id))
@@ -506,12 +585,9 @@ async def _post_follow_up_async(appointment_id: str):
         if not appointment:
             _log(f"post_follow_up: not found appointment_id={appointment_id}")
             return
-
-        # Idempotency check (safe under FOR UPDATE lock)
         if appointment.follow_up_sent:
             _log(f"post_follow_up: already sent appointment_id={appointment_id}")
             return
-
         # A cancelled or missed appointment gets no "gracias por tu visita"
         if appointment.status not in ("scheduled", "confirmed", "completed"):
             _log(
@@ -522,11 +598,9 @@ async def _post_follow_up_async(appointment_id: str):
 
         patient = await db.get(Patient, appointment.patient_id)
         office = await db.get(Office, appointment.office_id)
-
         if not patient or not office:
             _log(f"post_follow_up: missing patient/office for appointment_id={appointment_id}")
             return
-
         if not office.whatsapp_phone_id or not office.whatsapp_token or not patient.whatsapp_id:
             _log(f"post_follow_up: missing whatsapp config appointment_id={appointment_id}")
             return
@@ -546,9 +620,8 @@ async def _post_follow_up_async(appointment_id: str):
             location=office.name,
         )
 
-        meta_client = MetaCloudClient()
         await _send_free_or_template(
-            meta_client,
+            MetaCloudClient(),
             db,
             office,
             patient,
@@ -563,261 +636,164 @@ async def _post_follow_up_async(appointment_id: str):
         _log(f"post_follow_up: sent to patient_id={patient.id}")
 
 
-@shared_task(bind=True)
-def send_confirmation_requests(self):
-    """
-    Daily task to send confirmation requests for tomorrow's appointments.
+# --------------------------------------------------------------------------- #
+# Celery tasks (thin wrappers)
+# --------------------------------------------------------------------------- #
 
-    Queries all "scheduled" appointments for the next day that haven't had
-    a confirmation request sent. For each:
-    1. Sends WhatsApp confirmation request message
-    2. Sets patient's session status to "waiting_appointment_confirmation"
-    3. Marks confirmation_request_sent = True
-    """
-    _log("send_confirmation_requests: TASK STARTED")
+@shared_task(bind=True)
+def send_reminder_week_before(self, appointment_id: str):
+    """Send week-before reminder."""
     try:
-        asyncio.run(_send_confirmation_requests_async())
-        _log("send_confirmation_requests: TASK FINISHED")
+        asyncio.run(_send_reminder(appointment_id, ReminderType.WEEK_BEFORE.value))
     except Exception as e:
-        _log_exception("send_confirmation_requests", e)
+        _log_exception("send_reminder_week_before", e)
         raise
 
 
-async def _send_confirmation_requests_async():
-    """Async implementation of day-before confirmation requests."""
-    from app.modules.whatsapp.meta_client import MetaCloudClient
-
-    # Safety net: if the task fires outside the allowed window (e.g. a beat
-    # schedule misconfigured to UTC), defer to the next 8:00 AM MX instead of
-    # messaging patients in the middle of the night.
-    now_mx = datetime.now(MX_TZ)
-    if not (CONFIRMATION_WINDOW_START_HOUR <= now_mx.hour < CONFIRMATION_WINDOW_END_HOUR):
-        next_run = now_mx.replace(
-            hour=CONFIRMATION_WINDOW_START_HOUR, minute=0, second=0, microsecond=0
-        )
-        if next_run <= now_mx:
-            next_run += timedelta(days=1)
-        send_confirmation_requests.apply_async(eta=next_run)
-        logger.warning(
-            "confirmation_requests_outside_window",
-            fired_at=now_mx.isoformat(),
-            deferred_to=next_run.isoformat(),
-        )
-        return
-
-    async with get_async_session_maker()() as db:
-        # Use Mexico City timezone to determine "tomorrow"
-        tomorrow = (now_mx + timedelta(days=1)).date()
-
-        start_of_tomorrow = datetime.combine(tomorrow, datetime.min.time(), tzinfo=MX_TZ)
-        end_of_tomorrow = datetime.combine(tomorrow, datetime.max.time(), tzinfo=MX_TZ)
-
-        # Get all scheduled appointments for tomorrow without confirmation request
-        result = await db.execute(
-            select(Appointment).where(
-                and_(
-                    Appointment.start_datetime >= start_of_tomorrow,
-                    Appointment.start_datetime <= end_of_tomorrow,
-                    Appointment.status == "scheduled",
-                    Appointment.confirmation_request_sent == False,
-                )
-            )
-        )
-        appointments = result.scalars().all()
-
-        if not appointments:
-            _log(f"send_confirmation_requests: no appointments for {tomorrow}")
-            return
-
-        _log(f"send_confirmation_requests: {len(appointments)} appointments for {tomorrow}")
-
-        meta_client = MetaCloudClient()
-        session_store = SessionStore()
-
-        try:
-            for appointment in appointments:
-                try:
-                    patient = await db.get(Patient, appointment.patient_id)
-                    office = await db.get(Office, appointment.office_id)
-
-                    if not patient or not office:
-                        _log(f"missing patient/office for appointment_id={appointment.id}")
-                        continue
-
-                    if not office.whatsapp_phone_id or not office.whatsapp_token:
-                        _log(f"office missing whatsapp config office_id={office.id}")
-                        continue
-
-                    if not patient.whatsapp_id:
-                        _log(f"patient missing whatsapp_id patient_id={patient.id}")
-                        continue
-
-                    start_local = appointment.start_datetime.astimezone(MX_TZ)
-                    appointment_date = format_explicit_date(start_local)
-                    appointment_time = start_local.strftime("%H:%M")
-
-                    appointment_data = {
-                        "patient_name": patient.name or "paciente",
-                        "time": appointment_time,
-                        "date": appointment_date,
-                        "office_name": office.name,
-                        "assistant_name": office.assistant_name,
-                    }
-                    free_text = confirmation_request(
-                        appointment_data, tone=office.assistant_tone
-                    )
-                    params = build_confirmation_params(
-                        patient_name=patient.name or "paciente",
-                        location=office.name,
-                        appointment_date=appointment_date,
-                        appointment_time=appointment_time,
-                    )
-
-                    # Inside the 24h window: interactive buttons (one tap to
-                    # confirm/cancel; the tapped title reaches the LLM as text).
-                    # Outside the window: the approved template, as before.
-                    if await service_window_open(db, office.id, patient.whatsapp_id):
-                        message_id = await meta_client.send_interactive_buttons(
-                            phone_number_id=office.whatsapp_phone_id,
-                            token=office.whatsapp_token,
-                            to=patient.whatsapp_id,
-                            body_text=free_text,
-                            buttons=[
-                                {"id": f"confirm_{appointment.id}", "title": "Sí, confirmo"},
-                                {"id": f"cancel_{appointment.id}", "title": "No podré asistir"},
-                            ],
-                        )
-                        await _record_outgoing_message(
-                            db,
-                            office,
-                            patient,
-                            content=free_text,
-                            via="interactive",
-                            template_name=TEMPLATE_CONFIRMATION_DAY_BEFORE,
-                            whatsapp_message_id=message_id,
-                        )
-                    else:
-                        await _send_free_or_template(
-                            meta_client,
-                            db,
-                            office,
-                            patient,
-                            free_text=free_text,
-                            template_name=TEMPLATE_CONFIRMATION_DAY_BEFORE,
-                            params=params,
-                        )
-
-                    # Point the session at this appointment so the reply is
-                    # read as an answer to the confirmation request.
-                    await _prime_session_for_appointment(
-                        session_store, db, office, patient, appointment, free_text,
-                        status="waiting_appointment_confirmation",
-                    )
-
-                    # Mark as sent
-                    appointment.confirmation_request_sent = True
-                    await db.commit()
-
-                    _log(f"confirmation_request DONE for appointment={appointment.id} patient={patient.id}")
-
-                except Exception as e:
-                    _log_exception(f"error processing appointment={appointment.id}", e)
-                    await db.rollback()
-                    continue
-
-        finally:
-            await session_store.close()
-
-        _log(f"all confirmation requests completed, total={len(appointments)}")
-
-
 @shared_task(bind=True)
-def reconcile_reminders(self):
-    """
-    Daily safety net task (runs at 7 AM).
-
-    Finds today's appointments with missing reminders and re-schedules them.
-    """
-    _log("reconcile_reminders: TASK STARTED")
+def send_reminder_6h(self, appointment_id: str):
+    """Send same-day reminder, scheduled 6 hours before the appointment."""
     try:
-        asyncio.run(_reconcile_reminders_async())
-        _log("reconcile_reminders: TASK FINISHED")
+        asyncio.run(_send_reminder(appointment_id, ReminderType.SIX_HOURS.value))
     except Exception as e:
-        _log_exception("reconcile_reminders", e)
+        _log_exception("send_reminder_6h", e)
         raise
 
 
-async def _reconcile_reminders_async():
-    """Async implementation of reminder reconciliation.
+@shared_task(bind=True)
+def send_day_before(self, appointment_id: str):
+    """Send the day-before reminder / confirmation request."""
+    try:
+        asyncio.run(_send_day_before(appointment_id))
+    except Exception as e:
+        _log_exception("send_day_before", e)
+        raise
 
-    Per-office reminders are configurable (see ReminderRule). The day-before
-    reminder must be scheduled before the appointment day, so we look at a
-    multi-day window and (re)schedule any reminder that hasn't been sent yet.
-    The Celery tasks are idempotent (guarded by the per-type sent flag), so
-    rescheduling an already-pending reminder is harmless.
-    """
-    from app.modules.reminders.scheduler import schedule_reminders
+
+@shared_task(bind=True)
+def send_arrival_check(self, appointment_id: str):
+    """Ask the patient whether they've arrived, at the appointment's start time."""
+    try:
+        asyncio.run(_send_arrival_check(appointment_id))
+    except Exception as e:
+        _log_exception("send_arrival_check", e)
+        raise
+
+
+@shared_task(bind=True)
+def send_doctor_brief(self, appointment_id: str):
+    """Send the doctor their pre-consultation brief."""
+    try:
+        asyncio.run(_send_doctor_brief(appointment_id))
+    except Exception as e:
+        _log_exception("send_doctor_brief", e)
+        raise
+
+
+@shared_task(bind=True)
+def post_follow_up(self, appointment_id: str):
+    """Send the post-appointment follow-up."""
+    try:
+        asyncio.run(_post_follow_up_async(appointment_id))
+    except Exception as e:
+        _log_exception("post_follow_up", e)
+        raise
+
+
+TASK_BY_REMINDER_TYPE = {
+    ReminderType.WEEK_BEFORE.value: send_reminder_week_before,
+    ReminderType.DAY_BEFORE.value: send_day_before,
+    ReminderType.SIX_HOURS.value: send_reminder_6h,
+    ReminderType.DOCTOR_BRIEF.value: send_doctor_brief,
+    ReminderType.AT_TIME.value: send_arrival_check,
+    ReminderType.POST_APPOINTMENT.value: post_follow_up,
+}
+
+
+# --------------------------------------------------------------------------- #
+# The sweep (Celery Beat)
+# --------------------------------------------------------------------------- #
+
+async def _dispatch_due_reminders_async() -> None:
+    """Dispatch every reminder whose due time has passed and that hasn't been sent."""
     from app.modules.reminders.rules import get_active_reminder_rules
-    from app.core.constants import MIN_REMINDER_OFFSET, SENT_FLAG_BY_REMINDER_TYPE
 
-    # How far ahead to look. Must cover the earliest reminder offset an office
-    # can configure (week_before = 7 days out) plus a day of margin, so it is
-    # derived from the bound rather than hardcoded — a wider offset silently
-    # outrunning this window is exactly what the safety net exists to catch.
-    LOOKAHEAD_DAYS = ceil(abs(MIN_REMINDER_OFFSET) / (60 * 24)) + 1
+    now = datetime.now(MX_TZ)
+    # An appointment is in scope if any of its reminders could be due right now:
+    # the earliest fires |MIN_REMINDER_OFFSET| before the start, the latest
+    # MAX_REMINDER_OFFSET after it. A day of slack on each side absorbs the
+    # sending-window clamp.
+    window_start = now - timedelta(minutes=MAX_REMINDER_OFFSET) - timedelta(days=1)
+    window_end = now + timedelta(minutes=abs(MIN_REMINDER_OFFSET)) + timedelta(days=1)
 
     async with get_async_session_maker()() as db:
-        try:
-            now_mx = datetime.now(MX_TZ)
-            today = now_mx.date()
-            window_end_date = today + timedelta(days=LOOKAHEAD_DAYS)
-
-            start_of_window = datetime.combine(today, datetime.min.time(), tzinfo=MX_TZ)
-            end_of_window = datetime.combine(window_end_date, datetime.max.time(), tzinfo=MX_TZ)
-
-            result = await db.execute(
+        appointments = (
+            await db.execute(
                 select(Appointment).where(
                     and_(
-                        Appointment.start_datetime >= start_of_window,
-                        Appointment.start_datetime <= end_of_window,
-                        Appointment.status.in_(["scheduled", "confirmed"]),
+                        Appointment.start_datetime >= window_start,
+                        Appointment.start_datetime <= window_end,
+                        Appointment.status.in_(SWEEPABLE_STATUSES),
                     )
                 )
             )
-            appointments = result.scalars().all()
+        ).scalars().all()
 
-            _log(
-                f"reconcile_reminders: {len(appointments)} appointments in "
-                f"[{today} .. {window_end_date}]"
-            )
+        rules_cache: dict = {}
+        dispatched = 0
 
-            # Cache rules per office to avoid repeated lookups within the run.
-            rules_cache: dict = {}
+        for appointment in appointments:
+            if appointment.office_id not in rules_cache:
+                rules_cache[appointment.office_id] = await get_active_reminder_rules(
+                    db, appointment.office_id
+                )
 
-            for appointment in appointments:
-                if appointment.office_id not in rules_cache:
-                    rules_cache[appointment.office_id] = await get_active_reminder_rules(
-                        db, appointment.office_id
+            start_local = appointment.start_datetime.astimezone(MX_TZ)
+
+            for reminder_type, offset_minutes in rules_cache[appointment.office_id]:
+                task = TASK_BY_REMINDER_TYPE.get(reminder_type)
+                flag = SENT_FLAG_BY_REMINDER_TYPE.get(reminder_type)
+                if task is None or flag is None:
+                    logger.warning(
+                        "reminder_unknown_type",
+                        appointment_id=str(appointment.id),
+                        reminder_type=reminder_type,
                     )
-                office_rules = rules_cache[appointment.office_id]
+                    continue
 
-                # Only (re)schedule reminders that haven't been sent yet.
-                pending_rules = [
-                    (rtype, offset)
-                    for rtype, offset in office_rules
-                    if not getattr(
-                        appointment,
-                        SENT_FLAG_BY_REMINDER_TYPE.get(rtype, ""),
-                        False,
-                    )
-                ]
+                if getattr(appointment, flag, False):
+                    continue
 
-                if pending_rules:
-                    schedule_reminders(
-                        appointment.id, appointment.start_datetime, pending_rules
-                    )
+                due = due_at(reminder_type, offset_minutes, start_local)
+                if due is None or due > now:
+                    continue
 
-            _log(f"reconcile_reminders: processed {len(appointments)} appointments")
+                if not is_still_worth_sending(
+                    reminder_type, offset_minutes, start_local, now
+                ):
+                    continue
 
-        except Exception as e:
-            _log_exception("reconcile_reminders", e)
+                if dispatch(
+                    task,
+                    [str(appointment.id)],
+                    event="reminder_dispatched",
+                    appointment_id=str(appointment.id),
+                    reminder_type=reminder_type,
+                    due_at=due.isoformat(),
+                ):
+                    dispatched += 1
+
+        _log(
+            f"dispatch_due_reminders: {dispatched} dispatched from "
+            f"{len(appointments)} appointments in scope"
+        )
+
+
+@shared_task(bind=True)
+def dispatch_due_reminders(self):
+    """Beat task: find and dispatch every reminder that has come due."""
+    try:
+        asyncio.run(_dispatch_due_reminders_async())
+    except Exception as e:
+        _log_exception("dispatch_due_reminders", e)
+        raise

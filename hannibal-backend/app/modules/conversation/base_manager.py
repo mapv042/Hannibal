@@ -8,6 +8,7 @@ prompts, tools, session storage and side effects.
 
 from __future__ import annotations
 
+import json
 from typing import Any, Optional
 
 from app.core.exceptions import ConversationError
@@ -117,6 +118,7 @@ class BaseToolConversationManager:
         execute,
         ctx,
         log_prefix: str,
+        mutating_tools: frozenset[str] = frozenset(),
     ) -> str:
         """Run the tool-use loop on `working_messages` until the LLM answers.
 
@@ -125,7 +127,16 @@ class BaseToolConversationManager:
         turn. If the iteration budget runs out, one final call with
         tool_choice="none" lets the model compose a reply from what it
         already gathered instead of returning a canned apology.
+
+        A mutating tool called twice with identical arguments in the same turn
+        runs once; the second call gets the first one's result. The model is
+        free to emit parallel tool calls, and a repeated write is never what it
+        means: booking the same slot twice had the second call collide with the
+        first ("ya tienes una cita ese día") and the model relayed that as the
+        truth about the patient's agenda.
         """
+        write_results: dict[str, dict] = {}
+
         for iteration in range(MAX_TOOL_ITERATIONS):
             response = await self.ai_service.chat_with_tools(
                 system_prompt=system_prompt,
@@ -144,7 +155,21 @@ class BaseToolConversationManager:
 
             tool_results = []
             for tc in response.tool_calls:
-                result = await execute(tc.name, tc.arguments, ctx)
+                memo_key = None
+                if tc.name in mutating_tools:
+                    memo_key = f"{tc.name}:{json.dumps(tc.arguments, sort_keys=True, default=str)}"
+
+                if memo_key is not None and memo_key in write_results:
+                    logger.info(
+                        f"{log_prefix}_duplicate_write_suppressed",
+                        tool=tc.name,
+                    )
+                    result = write_results[memo_key]
+                else:
+                    result = await execute(tc.name, tc.arguments, ctx)
+                    if memo_key is not None:
+                        write_results[memo_key] = result
+
                 tool_results.append({
                     "tool_call_id": tc.id,
                     "result": result,

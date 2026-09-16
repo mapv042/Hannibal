@@ -21,6 +21,7 @@ from celery import shared_task
 from sqlalchemy import select
 
 from app.config import settings
+from app.core.celery_dispatch import dispatch
 from app.core.constants import MX_TIMEZONE
 from app.db.base import get_async_session_maker
 from app.db.models import AvailabilitySchedule, Office
@@ -28,6 +29,7 @@ from app.modules.notifications.service import (
     notify_appointment,
     notify_arrival,
     notify_cancellation,
+    notify_reschedule,
     notify_unconfirmed_summary,
 )
 from app.utils.logger import get_logger
@@ -65,18 +67,35 @@ def _log_exception(task_name: str, e: Exception) -> None:
 
 def enqueue_appointment_notification(appointment_id: UUID, is_new_patient: bool) -> None:
     """Schedule the new-appointment (and/or new-patient) doctor notification."""
-    notify_appointment_task.apply_async(
-        args=[str(appointment_id), is_new_patient], countdown=NOTIFY_COUNTDOWN_SECONDS
+    dispatch(
+        notify_appointment_task,
+        [str(appointment_id), is_new_patient],
+        countdown=NOTIFY_COUNTDOWN_SECONDS,
+        event="appointment_notification_enqueued",
+        appointment_id=str(appointment_id),
     )
-    logger.info("appointment_notification_enqueued", appointment_id=str(appointment_id))
 
 
 def enqueue_cancellation_notification(appointment_id: UUID) -> None:
     """Schedule the cancellation doctor notification."""
-    notify_cancellation_task.apply_async(
-        args=[str(appointment_id)], countdown=NOTIFY_COUNTDOWN_SECONDS
+    dispatch(
+        notify_cancellation_task,
+        [str(appointment_id)],
+        countdown=NOTIFY_COUNTDOWN_SECONDS,
+        event="cancellation_notification_enqueued",
+        appointment_id=str(appointment_id),
     )
-    logger.info("cancellation_notification_enqueued", appointment_id=str(appointment_id))
+
+
+def enqueue_reschedule_notification(new_appointment_id: UUID) -> None:
+    """Schedule the doctor notification for an appointment that moved."""
+    dispatch(
+        notify_reschedule_task,
+        [str(new_appointment_id)],
+        countdown=NOTIFY_COUNTDOWN_SECONDS,
+        event="reschedule_notification_enqueued",
+        appointment_id=str(new_appointment_id),
+    )
 
 
 def enqueue_arrival_notification(appointment_id: UUID) -> None:
@@ -86,10 +105,13 @@ def enqueue_arrival_notification(appointment_id: UUID) -> None:
     on this one right now, and the retry-on-not_found still covers a turn that
     takes longer than expected to commit.
     """
-    notify_arrival_task.apply_async(
-        args=[str(appointment_id)], countdown=ARRIVAL_COUNTDOWN_SECONDS
+    dispatch(
+        notify_arrival_task,
+        [str(appointment_id)],
+        countdown=ARRIVAL_COUNTDOWN_SECONDS,
+        event="arrival_notification_enqueued",
+        appointment_id=str(appointment_id),
     )
-    logger.info("arrival_notification_enqueued", appointment_id=str(appointment_id))
 
 
 async def _notify_appointment_async(appointment_id: str, is_new_patient: bool) -> str:
@@ -130,6 +152,21 @@ async def _notify_cancellation_async(appointment_id: str) -> str:
         async with get_async_session_maker()() as db:
             status = await notify_cancellation(
                 db, redis_client, MetaCloudClient(), UUID(appointment_id)
+            )
+            await db.commit()
+            return status
+    finally:
+        await redis_client.close()
+
+
+async def _notify_reschedule_async(new_appointment_id: str) -> str:
+    from app.modules.whatsapp.meta_client import MetaCloudClient
+
+    redis_client = aioredis.from_url(settings.redis_url, decode_responses=True)
+    try:
+        async with get_async_session_maker()() as db:
+            status = await notify_reschedule(
+                db, redis_client, MetaCloudClient(), UUID(new_appointment_id)
             )
             await db.commit()
             return status
@@ -198,6 +235,27 @@ def notify_arrival_task(self, appointment_id: str):
         return
 
     _log(f"notify_arrival: DONE ({status}) appointment_id={appointment_id}")
+
+
+@shared_task(bind=True, max_retries=NOTIFY_MAX_RETRIES)
+def notify_reschedule_task(self, new_appointment_id: str):
+    """Notify the doctor that an appointment moved. Retries on 'not_found'."""
+    _log(f"notify_reschedule: START appointment_id={new_appointment_id}")
+    try:
+        status = asyncio.run(_notify_reschedule_async(new_appointment_id))
+    except Exception as e:
+        _log_exception("notify_reschedule", e)
+        raise
+
+    if status == "not_found":
+        _log(f"notify_reschedule: appointment not visible yet, retrying id={new_appointment_id}")
+        try:
+            self.retry(countdown=NOTIFY_RETRY_DELAY_SECONDS)
+        except self.MaxRetriesExceededError:
+            _log(f"notify_reschedule: gave up (appointment never appeared) id={new_appointment_id}")
+        return
+
+    _log(f"notify_reschedule: DONE ({status}) appointment_id={new_appointment_id}")
 
 
 # --------------------------------------------------------------------------- #

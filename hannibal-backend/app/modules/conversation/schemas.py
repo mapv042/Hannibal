@@ -30,10 +30,6 @@ class SessionContext(BaseModel):
         default="active",
         description="Current state: active, waiting_date, waiting_time, waiting_confirmation, etc.",
     )
-    current_intent: Optional[str] = Field(
-        None, description="Last detected intent: SCHEDULE, CANCEL, RESCHEDULE, CONFIRM, etc."
-    )
-
     # Collected data for appointment booking
     collected_data: dict[str, Any] = Field(
         default_factory=dict,
@@ -73,7 +69,6 @@ class SessionContext(BaseModel):
                 "patient_id": None,
                 "whatsapp_id": "5215551234567",
                 "status": "active",
-                "current_intent": "SCHEDULE",
                 "collected_data": {
                     "name": "Juan Pérez",
                     "reason": "Revisión general",

@@ -145,6 +145,9 @@ class UpdateOfficeRequest(BaseModel):
     notify_arrival: Optional[bool] = Field(
         None, description="Notify the doctor when a patient reports arriving"
     )
+    notify_reschedule: Optional[bool] = Field(
+        None, description="Notify the doctor when a patient moves their appointment"
+    )
 
 
 class ReminderRuleSchema(BaseModel):
@@ -213,6 +216,7 @@ class OfficeResponse(BaseModel):
     notify_new_patient: bool
     notify_unconfirmed: bool
     notify_arrival: bool
+    notify_reschedule: bool
     plan: str
 
     class Config:

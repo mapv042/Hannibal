@@ -24,61 +24,6 @@ LAST_DOCTOR_MESSAGE_KEY_TEMPLATE = "whatsapp:last_doctor_message:{office_id}:{wh
 DEFAULT_DOCTOR_TAKEOVER_PAUSE_MINUTES = 60
 
 
-def is_doctor_echo(payload: dict) -> bool:
-    """
-    Detect if an incoming message is an echo of a doctor's outbound message.
-
-    In coexistence mode, the doctor might send messages directly from their
-    WhatsApp client. We need to detect these echoes to avoid processing them
-    through the bot.
-
-    The detection logic checks if:
-    1. The message is from the office's WhatsApp number (sent by doctor)
-    2. Recent context indicates doctor interaction
-
-    Args:
-        payload: Webhook payload from Meta
-
-    Returns:
-        True if this appears to be a doctor's message echo, False otherwise
-    """
-    # This is a simplified check. In real scenarios, you might check:
-    # - If the incoming message is from the office's own number
-    # - Metadata flags indicating it's a sent message
-    # - Timestamp alignment with outbound message logs
-
-    try:
-        # Extract from_id from the standard webhook structure
-        entry = payload.get("entry", [{}])[0]
-        changes = entry.get("changes", [{}])[0]
-        value = changes.get("value", {})
-        messages = value.get("messages", [])
-
-        if not messages:
-            return False
-
-        message = messages[0]
-        from_id = message.get("from")
-
-        # Check if there's context suggesting this is a doctor echo
-        # (This would be populated by conversation context)
-        context_type = message.get("context", {}).get("forwarded")
-        is_forwarded = message.get("context", {}).get("forwarded", False)
-
-        logger.debug(
-            "echo_detection_check",
-            from_id=from_id,
-            is_forwarded=is_forwarded,
-        )
-
-        # Simple heuristic: Meta marks echoed messages with specific context
-        return False  # Conservative default - let other logic handle it
-
-    except (KeyError, IndexError, TypeError) as e:
-        logger.warning("echo_detection_error", error=str(e))
-        return False
-
-
 async def handle_echo(
     office_id: uuid.UUID,
     conversation_id: uuid.UUID,

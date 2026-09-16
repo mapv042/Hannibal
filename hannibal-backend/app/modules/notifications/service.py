@@ -24,18 +24,22 @@ from app.core.constants import MX_TIMEZONE
 from app.db.models import Appointment, Office, Patient
 from app.modules.notifications import templates
 from app.modules.reminders.wa_templates import (
+    TEMPLATE_DOCTOR_APPOINTMENT_BRIEF,
     TEMPLATE_DOCTOR_CANCELLATION,
     TEMPLATE_DOCTOR_NEW_APPOINTMENT,
     TEMPLATE_DOCTOR_NEW_PATIENT,
     TEMPLATE_DOCTOR_NEW_PATIENT_APPOINTMENT,
     TEMPLATE_DOCTOR_PATIENT_ARRIVED,
     TEMPLATE_DOCTOR_UNCONFIRMED_SUMMARY,
+    TEMPLATE_RESCHEDULE_NOTICE,
+    build_doctor_appointment_brief_params,
     build_doctor_cancellation_params,
     build_doctor_new_appointment_params,
     build_doctor_new_patient_appointment_params,
     build_doctor_new_patient_params,
     build_doctor_patient_arrived_params,
     build_doctor_unconfirmed_summary_params,
+    build_reschedule_notice_params,
 )
 from app.modules.whatsapp.doctor_notify import send_doctor_alert
 from app.utils.logger import get_logger
@@ -132,6 +136,56 @@ async def notify_cancellation(
     )
 
 
+async def notify_reschedule(
+    db: AsyncSession,
+    redis_client: aioredis.Redis,
+    meta_client,
+    new_appointment_id: UUID,
+) -> str:
+    """Tell the doctor an appointment moved, whoever moved it.
+
+    Covers both reschedule paths, which used to be one notification and one
+    silence: a patient answering a slot the DOCTOR cancelled (the doctor is
+    waiting on that answer, so it is sent regardless of the toggle), and a
+    patient moving their own appointment (news the doctor never used to get at
+    all — the office toggle applies there).
+
+    The new appointment points at the one it replaced through
+    `rescheduled_from`; without that link there is nothing to report.
+    """
+    new_appointment = await db.get(Appointment, new_appointment_id)
+    if not new_appointment:
+        return "not_found"
+    if not new_appointment.rescheduled_from:
+        return "skipped"
+
+    old_appointment = await db.get(Appointment, new_appointment.rescheduled_from)
+    office = await db.get(Office, new_appointment.office_id)
+    patient = await db.get(Patient, new_appointment.patient_id)
+    if not office or not patient or not old_appointment:
+        return "skipped"
+
+    by_doctor_cancellation = old_appointment.cancelled_by == "doctor"
+    if not by_doctor_cancellation and not office.notify_reschedule:
+        return "skipped"
+
+    patient_name = patient.name or "El paciente"
+    old_slot = templates.format_slot(old_appointment.start_datetime)
+    new_slot = templates.format_slot(new_appointment.start_datetime)
+
+    return await send_doctor_alert(
+        redis_client,
+        meta_client,
+        office,
+        text=templates.doctor_reschedule(
+            patient_name, old_slot, new_slot, by_doctor_cancellation
+        ),
+        template_name=TEMPLATE_RESCHEDULE_NOTICE,
+        template_params=build_reschedule_notice_params(patient_name, new_slot),
+        log_event="doctor_reschedule",
+    )
+
+
 async def _build_patient_brief(
     db: AsyncSession, appointment: Appointment, patient: Patient
 ) -> list[str]:
@@ -215,6 +269,47 @@ async def notify_arrival(
         template_name=TEMPLATE_DOCTOR_PATIENT_ARRIVED,
         template_params=build_doctor_patient_arrived_params(patient_name, detail),
         log_event="doctor_patient_arrived",
+    )
+
+
+async def notify_appointment_brief(
+    db: AsyncSession,
+    redis_client: aioredis.Redis,
+    meta_client,
+    appointment_id: UUID,
+) -> str:
+    """Send the doctor the pre-consultation brief shortly before the appointment.
+
+    The brief used to travel only on the arrival alert, so a patient who never
+    answered the check-in meant a doctor who walked in with nothing. This one is
+    driven by the clock, not by the patient: it fires off the `doctor_brief`
+    reminder rule, and an office that doesn't want it disables that rule.
+    """
+    appointment = await db.get(Appointment, appointment_id)
+    if not appointment:
+        return "not_found"
+    if appointment.status not in ("scheduled", "confirmed"):
+        return "skipped"
+
+    office = await db.get(Office, appointment.office_id)
+    patient = await db.get(Patient, appointment.patient_id)
+    if not office or not patient:
+        return "skipped"
+
+    patient_name = patient.name or "El paciente"
+    brief_lines = await _build_patient_brief(db, appointment, patient)
+    slot_time = appointment.start_datetime.astimezone(MX_TIMEZONE).strftime("%H:%M")
+
+    return await send_doctor_alert(
+        redis_client,
+        meta_client,
+        office,
+        text=templates.doctor_appointment_brief(patient_name, slot_time, brief_lines),
+        template_name=TEMPLATE_DOCTOR_APPOINTMENT_BRIEF,
+        template_params=build_doctor_appointment_brief_params(
+            patient_name, templates.brief_detail(brief_lines)
+        ),
+        log_event="doctor_appointment_brief",
     )
 
 

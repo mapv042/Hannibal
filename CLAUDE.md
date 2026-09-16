@@ -23,10 +23,10 @@ hannibal/
 │   │   │   ├── conversation/         # Session store (Redis), base_manager + conversation managers (patient + doctor)
 │   │   │   ├── scheduling/           # Availability engine, unified booking engine (booking.py), appointments CRUD, blocks
 │   │   │   ├── urgencies/            # Urgent-appointment requests (doctor-in-the-loop overbooking): service, templates, Celery notify + timeout
-│   │   │   ├── reminders/            # Celery tasks (day_before, 4h, 1h, post-appointment), confirmation requests (interactive buttons in-window), reconciliation
+│   │   │   ├── reminders/            # One periodic sweep dispatches every due reminder (week/day-before+confirm, 6h, doctor brief, check-in, follow-up)
 │   │   │   ├── offices/              # Office/practice CRUD
 │   │   │   ├── patients/             # Patient CRUD
-│   │   │   ├── notifications/        # Configurable doctor notifications (new appointment/patient, cancellations, unconfirmed summary, patient arrival)
+│   │   │   ├── notifications/        # Configurable doctor notifications (new appointment/patient, cancellation, reschedule, pre-consultation brief, unconfirmed summary, arrival)
 │   │   │   ├── audit/                # Post-action write audit (Rule 12): action vs. DB + Google Calendar
 │   │   │   └── google_calendar/      # OAuth2, sync, watch channels
 │   │   ├── middleware/               # JWT auth, rate limiting
@@ -90,11 +90,11 @@ All enums use string values in English:
 - `AppointmentStatus`: scheduled, confirmed, cancelled, completed, no_show
 - `WhatsAppMode`: coexistence, dedicated, new
 - `ConversationStatus`: active, waiting_confirmation, paused_by_doctor, completed, abandoned
-- `ReminderType`: week_before, day_before, 6h, at_time, post_appointment (timing via `ReminderRule` / `DEFAULT_REMINDER_RULES`). `at_time` (offset 0) is the waiting-room check-in. Every other reminder is clamped into the patient-facing sending window (Rule 15, `reminders/scheduler.clamp_to_sending_window`) so a 6h offset on a 9am cita goes out at 8am, never at 3am
+- `ReminderType`: week_before, day_before, 6h, doctor_brief, at_time, post_appointment (timing via `ReminderRule` / `DEFAULT_REMINDER_RULES`). `day_before` is one message that reminds *and* asks to confirm (interactive buttons in-window) — it replaced the separate daily "confirmation requests" job, which sent a near-duplicate of it. `doctor_brief` (-15 min) is doctor-facing. Those two and `at_time` skip the clamp; every other patient-facing reminder is clamped into the sending window (Rule 15, `reminders/scheduler.clamp_to_sending_window`) so a 6h offset on a 9am cita goes out at 8am, never at 3am
 - `ArrivalStatus`: on_the_way, arrived, no_answer (waiting room; stored on `Appointment.arrival_status`)
 - `BlockOrigin`: manual, google_calendar, holiday (statutory MX holidays seeded as full-day `TimeBlock`s at office creation)
 
-> **Vestigial enums** (defined but unused — safe to ignore/remove): `Intent`, `SubscriptionPlan`, `AppointmentType`. `Intent` predates the tool-use rewrite; the manager no longer does intent detection.
+> The tool-use rewrite removed intent detection entirely — there is no `Intent` enum and no state machine.
 
 ### Doctor channel
 An office has one or two doctor-channel numbers: `owner_phone` and the optional
@@ -104,23 +104,25 @@ alert and both can instruct the doctor assistant. Never read `owner_phone` direc
 notification and the webhook's `is_doctor` check all go through.
 
 ### WhatsApp coexistence
-The doctor can use WhatsApp on their phone simultaneously with the bot. The pause is office-wide via the doctor `pause_bot`/`resume_bot` tools (Redis key `whatsapp:bot_paused:{office_id}`; default 60 min). While paused, incoming patient messages are still persisted to the conversation history (the bot just stays silent). ⚠️ Automatic echo detection (`is_doctor_echo`) is a stub — it always returns False; pausing on doctor echoes is not implemented yet (requires subscribing to Meta's `message_echoes` webhook field).
+The doctor can use WhatsApp on their phone simultaneously with the bot. The pause is office-wide via the doctor `pause_bot`/`resume_bot` tools (Redis key `whatsapp:bot_paused:{office_id}`; default 60 min). While paused, incoming patient messages are still persisted to the conversation history (the bot just stays silent). ⚠️ Pausing automatically on a doctor's own outbound message is not implemented (it needs Meta's `message_echoes` webhook field); the doctor pauses explicitly.
 
 ### Availability engine (modules/scheduling/availability.py)
 Calculates free slots by: getting weekly schedules → generating all possible slots → subtracting existing appointments → subtracting time blocks → checking Google Calendar freebusy. Results cached in Redis (5 min TTL). Slot locking via Redis SETNX (60s) prevents double-booking.
 
 ### Booking engine (modules/scheduling/booking.py)
-`book_appointment()` is the **single** path that creates appointments — used by the patient tool, the doctor tool and the dashboard service. It does: slot validation (`check_slot_bookable`) → Redis slot lock → Google Calendar event → insert → cache invalidation → reminder scheduling.
-`allow_conflict` is **not** a blanket override: validation always runs, and it only tolerates conflicts whose kind is in `OVERRIDABLE_CONFLICTS` (another appointment, or a raw Google freebusy period — our own appointments are mirrored there). A `TimeBlock` and the office's working hours stay hard (Rule 11). `check_slot_bookable` returns a typed `SlotConflict(kind, message)`. `booked_by_patient_id` records who asked for the appointment, so a parent who booked for their child keeps the right to cancel it (Rule 8). It flushes but never commits (callers own the transaction). Do not create `Appointment` rows anywhere else (exception: the urgency-approval overbook path in `urgencies/service.py`).
+`book_appointment()` is the **single** path that creates appointments — used by the patient tool, the doctor tool and the dashboard service. It does: slot validation (`check_slot_bookable`) → Redis slot lock → Google Calendar event → insert → cache invalidation. It does *not* schedule reminders: the periodic sweep derives those from the row it writes.
+`allow_conflict` is **not** a blanket override: validation always runs, and it only tolerates conflicts whose kind is in `OVERRIDABLE_CONFLICTS` (another appointment, or a raw Google freebusy period — our own appointments are mirrored there). A `TimeBlock` and the office's working hours stay hard (Rule 11). `check_slot_bookable` returns a typed `SlotConflict(kind, message)`. `booked_by_patient_id` records who asked for the appointment, so a parent who booked for their child keeps the right to cancel it (Rule 8). `rescheduled_from` points at the appointment this one replaces — every reschedule sets it, which is what lets a stale id resolve forward (`tool_helpers.resolve_active_appointment`) and what the doctor's "se movió una cita" notice reads. It flushes but never commits (callers own the transaction). Do not create `Appointment` rows anywhere else (exception: the urgency-approval overbook path in `urgencies/service.py`).
 
 ### Conversation managers (modules/conversation/)
-`BaseToolConversationManager` (base_manager.py) holds the shared machinery: message extraction (voice notes are transcribed with Whisper via `ai/transcription.py` when `OPEN_AI_KEY` is set; interactive button taps arrive as their title text), the tool-use loop (on iteration-budget exhaustion it makes a final `tool_choice="none"` call so the model closes the turn with what it has), and text-only history. **Persisted history (Redis) contains only plain user/assistant text turns** — provider-specific tool chains live in a per-turn working copy and are discarded, so switching `AI_PROVIDER` never breaks live sessions. Managers receive the raw webhook `message` dict directly (no payload re-wrapping).
+`BaseToolConversationManager` (base_manager.py) holds the shared machinery: message extraction (voice notes are transcribed with Whisper via `ai/transcription.py` when `OPEN_AI_KEY` is set; interactive button taps arrive as their title text), the tool-use loop (on iteration-budget exhaustion it makes a final `tool_choice="none"` call so the model closes the turn with what it has), and text-only history.
+
+**Two invariants keep what the assistant says in step with what it wrote.** (1) Each tool call runs in its own SAVEPOINT (`execute_tool` / `execute_doctor_tool`), so a handler that raises leaves nothing behind and the session stays usable — before this, a partial write was still committed at the end of the turn while the patient was told it had failed, and the poisoned session made every later call in the turn fail too. (2) A mutating tool (`MUTATING_TOOLS` / `DOCTOR_MUTATING_TOOLS`) never runs twice with identical arguments in one turn; the repeat gets the first result. The model may emit parallel tool calls, and two identical `create_appointment` calls used to book once and then report the first booking back as "ya tienes una cita ese día". Queued side effects go through `app/core/celery_dispatch.dispatch`, which logs a broker failure instead of raising it into the handler — a late notification is recoverable, a lie about what happened is not. **Persisted history (Redis) contains only plain user/assistant text turns** — provider-specific tool chains live in a per-turn working copy and are discarded, so switching `AI_PROVIDER` never breaks live sessions. Managers receive the raw webhook `message` dict directly (no payload re-wrapping).
 
 ### Urgencias (urgent appointments) — doctor-in-the-loop
 Patient signals urgency → patient tool `request_urgent_appointment` creates an `UrgencyRequest` (pending) and enqueues two Celery tasks (`app/modules/urgencies/tasks.py`): `notify_doctor_urgency_task` (countdown ~5s, so the request commits first) pings the doctor on WhatsApp, and `expire_urgency_request_task` (eta = now + `URGENCY_APPROVAL_TIMEOUT_MINUTES`) is the timeout fallback. The doctor approves/rejects by replying — `DoctorConversationManager` injects pending requests into the doctor prompt (`URGENCIAS PENDIENTES`) and the doctor tool `resolve_urgent_request` books the (overbooked) `type="urgent"` appointment and notifies the patient. The bot never overbooks without the doctor's approval. If the doctor doesn't reply in time, the timeout marks the request `expired` and offers the patient the next normal slot. Doctor 24h-window detection uses a Redis key (`doctor_last_inbound:{office_id}`), not the `Message` table, because doctor messages aren't persisted there. Requires a Meta-approved template `urgency_alert` (param: patient_name) for the out-of-window doctor alert.
 
 ### Sala de espera (waiting-room check-in)
-At the appointment's start time the `at_time` reminder rule fires `send_arrival_check`
+The doctor gets their pre-consultation brief at `doctor_brief` (-15 min) whether or not the patient ever answers; at the appointment's start time the `at_time` reminder rule fires `send_arrival_check`
 (`reminders/tasks.py`): interactive buttons («Ya llegué» / «Voy en camino») in-window, the
 `arrival_check_in` template outside it. A tapped button reaches the model as its title text — the
 button id is dropped on the way in — so the task primes the patient's session
@@ -151,7 +153,7 @@ spent, escalate to the doctor: a notice that silently fails is the outcome Rule 
 - `session:{whatsapp_id}:{office_id}` — conversation context (TTL 24h)
 - `whatsapp:bot_paused:{office_id}` — bot pause (office-wide; single source of truth, set by the doctor `pause_bot` tool, checked in the webhook router)
 - `avail_cache:{office_id}:{date}` — availability cache (TTL 5min)
-- `slot_lock:{office_id}:{datetime}` — anti-collision lock (TTL 60s); taken by every booking path (patient tool, doctor tool, dashboard) before inserting
+- `slot_lock:{office_id}:{datetime}` — anti-collision lock (TTL 60s); taken by every booking path (patient tool, doctor tool, dashboard) before inserting, and **released as soon as the appointment is cancelled or moved** — otherwise the slot reads as free everywhere and still refuses to be booked for another minute
 - `wamsg_dedup:{message_id}` — webhook idempotency (TTL 24h); Meta retries are skipped
 - `conv_lock:{office_id}:{sender}` — per-conversation turn serialization (TTL 120s); a second message from the same sender waits for the previous turn
 - `doctor_last_inbound:{office_id}` — doctor's last inbound timestamp (TTL 24h), for the doctor service-window check
@@ -196,7 +198,7 @@ npm run dev
 2. **Webhook returns 200 immediately** — processing happens in FastAPI `BackgroundTasks`
 3. **Verification endpoint** returns `PlainTextResponse` with just the challenge value (Meta requirement)
 4. **Session context stored in Redis** (not DB) for speed — persisted to DB on conversation close
-5. **Celery Beat** schedule (`celery_app.py`): reminder reconciliation (daily 7am, safety net only), confirmation requests (daily, `CONFIRMATION_REQUEST_HOUR`), Google Calendar watch renewal (every 24h via `app.modules.google_calendar.tasks.renew_google_watches`, which renews channels expiring within `RENEWAL_BUFFER_DAYS`). Per-appointment reminders are enqueued with `eta` by `reminders/scheduler.py` — every booking path (patient/doctor tools, dashboard service, urgency approval) calls `schedule_reminders_for_appointment` at creation/reschedule time.
+5. **Celery Beat** schedule (`celery_app.py`): `dispatch_due_reminders` every 5 min (the single reminder clock), the unconfirmed-appointments digest every 15 min, Google Calendar watch renewal daily (`renew_google_watches`, renews channels expiring within `RENEWAL_BUFFER_DAYS`). **Nothing is scheduled at booking time.** `reminders/scheduler.py` is pure arithmetic (when each rule is due) and `reminders/tasks.dispatch_due_reminders` sweeps the appointments in range, compares each office's `ReminderRule`s against the per-type sent flags, and dispatches what is due. Far-future `eta` tasks are gone, and with them the lost-on-worker-restart, delivered-twice and nightly-reconciliation problems they created.
 6. **DB base.py uses lazy initialization** — `get_engine()` and `get_async_session_maker()` create connections on first use, not at import time (required for Alembic to work)
 
 ## Environment variables (minimum required)
@@ -225,7 +227,6 @@ TWILIO_AUTH_TOKEN=...
 GOOGLE_CLIENT_ID=...            # Google Calendar OAuth
 GOOGLE_CLIENT_SECRET=...
 GOOGLE_REDIRECT_URI=...
-CONFIRMATION_REQUEST_HOUR=8     # hour (MX TZ) to send daily confirmation requests
 ```
 
 ## Testing

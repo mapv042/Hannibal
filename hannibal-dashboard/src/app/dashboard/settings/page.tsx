@@ -19,6 +19,7 @@ type NotifKey =
   | 'notify_new_patient'
   | 'notify_unconfirmed'
   | 'notify_arrival'
+  | 'notify_reschedule'
 
 const NOTIFICATION_DEFS: { key: NotifKey; label: string; description: string }[] = [
   {
@@ -45,6 +46,11 @@ const NOTIFICATION_DEFS: { key: NotifKey; label: string; description: string }[]
     key: 'notify_arrival',
     label: 'Llegada del paciente',
     description: 'Te avisamos en cuanto el paciente responde que ya llegó o que viene en camino.',
+  },
+  {
+    key: 'notify_reschedule',
+    label: 'Cita movida',
+    description: 'Te avisamos cuando un paciente cambia su cita de horario.',
   },
 ]
 
@@ -117,6 +123,7 @@ export default function SettingsPage() {
     notify_new_patient: true,
     notify_unconfirmed: true,
     notify_arrival: true,
+    notify_reschedule: true,
   })
   const [savingNotifications, setSavingNotifications] = useState(false)
   const [notificationsSaved, setNotificationsSaved] = useState(false)
@@ -153,6 +160,7 @@ export default function SettingsPage() {
             notify_new_patient: officeData.notify_new_patient,
             notify_unconfirmed: officeData.notify_unconfirmed,
             notify_arrival: officeData.notify_arrival,
+            notify_reschedule: officeData.notify_reschedule,
           })
 
           const rulesRes = await api.getReminderRules(officeData.id)

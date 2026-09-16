@@ -33,7 +33,6 @@ from app.modules.whatsapp.provisioning import (
 from app.modules.whatsapp.coexistence import (
     check_pause,
     get_conversation_by_whatsapp_id,
-    is_doctor_echo,
 )
 from app.modules.conversation.manager import ConversationManager
 from app.modules.conversation.doctor_manager import DoctorConversationManager
@@ -396,15 +395,6 @@ async def _route_message(
         # The bot stays silent, but the message must still show up in the
         # dashboard conversation history.
         await _persist_incoming_while_paused(message, office, db)
-        return
-
-    # Check for doctor echo (coexistence mode)
-    if is_doctor_echo({"entry": [{"changes": [{"value": {"messages": [message]}}]}]}):
-        logger.info(
-            "message_skipped_doctor_echo",
-            message_id=message_id,
-            office_id=str(office.id),
-        )
         return
 
     # Route to the tool-use conversation manager

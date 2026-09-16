@@ -2,10 +2,12 @@
 
 Every path that creates an appointment goes through book_appointment(), so the
 guarantees live in exactly one place: slot validation, the anti-race Redis
-lock, the Google Calendar event, availability-cache invalidation and reminder
-scheduling. Callers keep their own transaction semantics (the tool handlers
-commit at end of turn; the dashboard service commits itself) — this function
-only flushes.
+lock, the Google Calendar event and availability-cache invalidation. Reminders
+are not scheduled here: the periodic sweep in app.modules.reminders.tasks
+derives them from the row this function writes.
+
+Callers keep their own transaction semantics (the tool handlers commit at end of
+turn; the dashboard service commits itself) — this function only flushes.
 """
 
 from __future__ import annotations
@@ -20,7 +22,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Appointment, Office
 from app.modules.google_calendar.service import create_calendar_event
-from app.modules.reminders.scheduler import schedule_reminders_for_appointment
 from app.modules.scheduling.availability import (
     OVERRIDABLE_CONFLICTS,
     check_slot_bookable,
@@ -70,8 +71,9 @@ async def book_appointment(
     gcal_color_id: str = "9",
     booked_by_patient_id: Optional[uuid.UUID] = None,
     intake_notes: Optional[str] = None,
+    rescheduled_from: Optional[uuid.UUID] = None,
 ) -> BookingOutcome:
-    """Validate, lock and create an appointment (plus GCal event, cache, reminders).
+    """Validate, lock and create an appointment (plus GCal event and cache).
 
     `allow_conflict` tolerates only an overlap with another appointment (a
     deliberate doctor overbook). Time blocks and the office's working hours are
@@ -84,6 +86,10 @@ async def book_appointment(
     `intake_notes` carries the answers to the office's configured pre-visit
     questions, so they reach the doctor's brief. Administrative context only —
     never a diagnosis or a clinical note.
+
+    `rescheduled_from` is the appointment this one replaces. Every reschedule
+    sets it: it is what lets a stale id still resolve to the live appointment,
+    and what the doctor's "se movió una cita" notice reads to say what changed.
 
     The slot lock is deliberately NOT released on success — its 60s TTL covers
     the window until the caller's transaction commits; releasing earlier would
@@ -139,6 +145,7 @@ async def book_appointment(
         # Defaults to the patient themselves so every row has an owner; differs
         # only when someone booked on another person's behalf.
         booked_by_patient_id=booked_by_patient_id or patient_id,
+        rescheduled_from=rescheduled_from,
     )
     db.add(appointment)
     await db.flush()
@@ -148,8 +155,6 @@ async def book_appointment(
             await invalidate_availability_cache(office.id, start_dt.date(), redis_client)
         except Exception as e:
             logger.warning("booking_cache_invalidate_failed", error=str(e))
-
-    await schedule_reminders_for_appointment(db, office.id, appointment.id, start_dt)
 
     logger.info(
         "appointment_booked",

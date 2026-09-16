@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import List, Optional
 from uuid import UUID
 
@@ -16,6 +16,32 @@ from app.core.exceptions import NotFoundError
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+# A block can legitimately span a vacation; cap the per-day invalidation loop so
+# a bad range can't spin through years of cache keys.
+MAX_INVALIDATED_DAYS = 400
+
+
+async def _invalidate_range(
+    office_id: UUID,
+    start_date: datetime,
+    end_date: datetime,
+    redis_client: aioredis.Redis,
+) -> None:
+    """Drop the cached availability of every day a block covers."""
+    current = start_date.date()
+    last = end_date.date()
+    for _ in range(MAX_INVALIDATED_DAYS):
+        if current > last:
+            return
+        await invalidate_availability_cache(office_id, current, redis_client)
+        current += timedelta(days=1)
+    logger.warning(
+        "block_cache_invalidation_truncated",
+        office_id=str(office_id),
+        start=str(start_date),
+        end=str(end_date),
+    )
 
 
 async def create_block(
@@ -47,18 +73,14 @@ async def create_block(
         start_date=start_date,
         end_date=end_date,
         reason=reason,
-        all_day=all_day,
+        is_all_day=all_day,
         origin="manual",
     )
 
     db.add(time_block)
     await db.flush()
 
-    # Invalidate cache for affected dates
-    current_date = start_date.date()
-    while current_date <= end_date.date():
-        await invalidate_availability_cache(office_id, current_date, redis_client)
-        current_date += __import__("datetime").timedelta(days=1)
+    await _invalidate_range(office_id, start_date, end_date, redis_client)
 
     await db.commit()
     await db.refresh(time_block)
@@ -100,11 +122,7 @@ async def delete_block(
 
     await db.delete(time_block)
 
-    # Invalidate cache for affected dates
-    current_date = start_date.date()
-    while current_date <= end_date.date():
-        await invalidate_availability_cache(office_id, current_date, redis_client)
-        current_date += __import__("datetime").timedelta(days=1)
+    await _invalidate_range(office_id, start_date, end_date, redis_client)
 
     await db.commit()
 

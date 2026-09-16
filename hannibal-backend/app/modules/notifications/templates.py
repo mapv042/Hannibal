@@ -91,3 +91,42 @@ def doctor_unconfirmed_summary(slots: List[str], tone: str = "informal") -> str:
     header = f"Tienes {count} {noun} de hoy sin confirmar:"
     body = "\n".join(f"• {s}" for s in slots)
     return f"{header}\n{body}"
+
+
+def doctor_reschedule(
+    patient_name: str, old_slot: str, new_slot: str, by_doctor_cancellation: bool
+) -> str:
+    """Alert: an appointment moved.
+
+    `by_doctor_cancellation` distinguishes the two ways this happens: the doctor
+    cancelled a slot and the patient answered by rebooking (the doctor is
+    waiting on that answer), or the patient moved their own appointment
+    unprompted (news to the doctor).
+    """
+    lead = (
+        f"{patient_name} reagendó la cita que cancelaste."
+        if by_doctor_cancellation
+        else f"{patient_name} movió su cita."
+    )
+    return f"{lead}\n\nAntes: {old_slot}\nAhora: {new_slot}"
+
+
+def doctor_appointment_brief(
+    patient_name: str, slot_time: str, brief_lines: List[str]
+) -> str:
+    """Pre-consultation brief, sent shortly before the appointment starts.
+
+    Same content as the brief carried by the arrival alert, but it does not
+    depend on the patient answering the check-in: the doctor gets it whether or
+    not the patient replies, which is the whole point of walking in prepared.
+    """
+    headline = f"En unos minutos ({slot_time}) tienes cita con {patient_name}."
+    if not brief_lines:
+        return headline
+    body = "\n".join(f"• {line}" for line in brief_lines)
+    return f"{headline}\n\n{body}"
+
+
+def brief_detail(brief_lines: List[str]) -> str:
+    """One-line brief for the out-of-window template parameter."""
+    return "; ".join(brief_lines) if brief_lines else "sin notas previas"

@@ -72,12 +72,6 @@ class UnauthorizedError(HTTPException):
         )
 
 
-class IntentDetectionError(Exception):
-    """Intent detection failure."""
-
-    pass
-
-
 class SessionStoreError(Exception):
     """Session store operation failure."""
 

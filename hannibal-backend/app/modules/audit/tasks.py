@@ -16,6 +16,7 @@ import redis.asyncio as aioredis
 from celery import shared_task
 
 from app.config import settings
+from app.core.celery_dispatch import dispatch
 from app.db.base import get_async_session_maker
 from app.modules.audit.service import verify_appointment_write
 from app.utils.logger import get_logger
@@ -49,23 +50,14 @@ def enqueue_write_audit(
         "status": status,
         "patient_id": str(patient_id) if patient_id else None,
     }
-    try:
-        verify_appointment_write_task.apply_async(
-            args=[str(appointment_id), expectation],
-            countdown=AUDIT_COUNTDOWN_SECONDS,
-        )
-        logger.info(
-            "write_audit_enqueued",
-            appointment_id=str(appointment_id),
-            action=action,
-        )
-    except Exception as e:
-        # Never let the audit break the action it is auditing.
-        logger.warning(
-            "write_audit_enqueue_failed",
-            appointment_id=str(appointment_id),
-            error=str(e),
-        )
+    dispatch(
+        verify_appointment_write_task,
+        [str(appointment_id), expectation],
+        countdown=AUDIT_COUNTDOWN_SECONDS,
+        event="write_audit_enqueued",
+        appointment_id=str(appointment_id),
+        action=action,
+    )
 
 
 async def _verify_async(appointment_id: str, expectation: dict) -> str:

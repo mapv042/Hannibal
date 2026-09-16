@@ -43,6 +43,7 @@ export type Office = {
   notify_new_patient: boolean
   notify_unconfirmed: boolean
   notify_arrival: boolean
+  notify_reschedule: boolean
   google_calendar_token: Record<string, unknown> | null
   plan: string
   created_at: string

@@ -66,8 +66,10 @@ TEMPLATE_DOCTOR_NEW_PATIENT = "doctor_new_patient"
 TEMPLATE_DOCTOR_UNCONFIRMED_SUMMARY = "doctor_unconfirmed_summary"
 #   doctor_patient_arrived          -> "El paciente {{patient_name}} avisó: {{detail}}. Revisa tu sala de espera."
 #   doctor_sync_warning             -> "Aviso sobre la cita de {{patient_name}}: {{detail}}. Conviene revisarla."
+#   doctor_appointment_brief        -> "En breve tienes cita con {{patient_name}}. Resumen: {{detail}}. Revisa tu agenda."
 TEMPLATE_DOCTOR_PATIENT_ARRIVED = "doctor_patient_arrived"
 TEMPLATE_DOCTOR_SYNC_WARNING = "doctor_sync_warning"
+TEMPLATE_DOCTOR_APPOINTMENT_BRIEF = "doctor_appointment_brief"
 
 # Set to False if the templates were created with positional params ({{1}}, {{2}})
 # instead of named params ({{patient_name}}). Named is the modern default and
@@ -235,6 +237,16 @@ def build_doctor_sync_warning_params(
     patient_name: str, detail: str
 ) -> List[Dict[str, str]]:
     """doctor_sync_warning: patient_name, detail (what diverged, one line)."""
+    return [
+        _param("patient_name", patient_name),
+        _param("detail", detail),
+    ]
+
+
+def build_doctor_appointment_brief_params(
+    patient_name: str, detail: str
+) -> List[Dict[str, str]]:
+    """doctor_appointment_brief: patient_name, detail (the brief in one line)."""
     return [
         _param("patient_name", patient_name),
         _param("detail", detail),

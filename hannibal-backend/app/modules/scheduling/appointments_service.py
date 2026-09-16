@@ -12,7 +12,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.db.models import Appointment, Office, Patient
-from app.modules.reminders.scheduler import schedule_reminders_for_appointment
 from app.modules.scheduling.schemas import CreateAppointmentRequest, UpdateAppointmentRequest
 from app.modules.scheduling.availability import (
     check_slot_bookable,
@@ -223,12 +222,13 @@ async def reschedule_appointment(
         appointment.start_datetime = new_start_time
         appointment.end_datetime = new_start_time + timedelta(minutes=appointment.duration_minutes)
 
-        # Reset reminder flags (new datetime ⇒ reminders must be rescheduled)
+        # Reset the sent flags: the new datetime makes every reminder due again,
+        # and the sweep reads these flags to decide what still has to go out.
         appointment.reminder_week_before_sent = False
         appointment.reminder_day_before_sent = False
         appointment.reminder_6h_sent = False
+        appointment.doctor_brief_sent = False
         appointment.follow_up_sent = False
-        appointment.confirmation_request_sent = False
         appointment.arrival_check_sent = False
         appointment.arrival_status = None
         appointment.arrival_reported_at = None
@@ -259,11 +259,6 @@ async def reschedule_appointment(
 
         await db.commit()
         await db.refresh(appointment)
-
-        # Reminders were reset above — schedule them for the new datetime
-        await schedule_reminders_for_appointment(
-            db, office_id, appointment.id, appointment.start_datetime
-        )
 
         # Rule 9: the patient has to hear that their cita moved.
         enqueue_patient_reschedule_notice(appointment_id)

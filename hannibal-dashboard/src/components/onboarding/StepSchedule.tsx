@@ -21,6 +21,7 @@ export type ReminderType =
   | 'week_before'
   | 'day_before'
   | '6h'
+  | 'doctor_brief'
   | 'at_time'
   | 'post_appointment'
 
@@ -37,8 +38,9 @@ export const REMINDER_DEFS: {
   offsetMinutes: number
 }[] = [
   { type: 'week_before', label: 'Una semana antes', description: 'Para que el paciente pueda moverla mientras hay tiempo de llenar el espacio', offsetMinutes: -10080 },
-  { type: 'day_before', label: 'Un día antes', description: 'Recordatorio el día previo a la cita', offsetMinutes: -1440 },
+  { type: 'day_before', label: 'Un día antes', description: 'Recordatorio el día previo, con botones para confirmar o cancelar', offsetMinutes: -1440 },
   { type: '6h', label: '6 horas antes', description: 'Recordatorio el mismo día de la cita', offsetMinutes: -360 },
+  { type: 'doctor_brief', label: 'Resumen antes de la consulta', description: 'Te mandamos a ti el motivo, las notas y la última visita 15 minutos antes de cada cita', offsetMinutes: -15 },
   { type: 'at_time', label: 'Aviso de llegada', description: 'A la hora de la cita le preguntamos al paciente si ya llegó y te avisamos', offsetMinutes: 0 },
   { type: 'post_appointment', label: 'Seguimiento post-consulta', description: 'Mensaje de seguimiento después de la cita', offsetMinutes: 120 },
 ]
@@ -49,6 +51,7 @@ export const DEFAULT_REMINDER_TOGGLES: ReminderToggles = {
   week_before: true,
   day_before: true,
   '6h': true,
+  doctor_brief: true,
   at_time: true,
   post_appointment: true,
 }

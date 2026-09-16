@@ -9,11 +9,17 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.utils.dates import now_mx
+from app.utils.phone import phone_match_variants
 from app.utils.logger import get_logger
 from app.core.exceptions import ConversationError
 from app.db.models import Appointment, Office, Patient, Conversation, Message
 from app.modules.ai.prompts.base import WAITING_ARRIVAL_STATUS, build_system_prompt
-from app.modules.ai.tools import TOOL_DEFINITIONS, ToolContext, execute_tool
+from app.modules.ai.tools import (
+    MUTATING_TOOLS,
+    TOOL_DEFINITIONS,
+    ToolContext,
+    execute_tool,
+)
 from app.modules.conversation.base_manager import BaseToolConversationManager
 from app.modules.conversation.session_store import SessionStore
 from app.modules.conversation.schemas import SessionContext
@@ -163,6 +169,7 @@ class ConversationManager(BaseToolConversationManager):
                 execute_tool,
                 tool_ctx,
                 log_prefix="patient",
+                mutating_tools=MUTATING_TOOLS,
             )
 
             # Update patient_id if a tool created the patient
@@ -272,12 +279,27 @@ class ConversationManager(BaseToolConversationManager):
     async def _get_or_create_patient(
         self, db: AsyncSession, office_id: uuid.UUID, whatsapp_id: str,
     ) -> Optional[Patient]:
+        """Find the patient behind an incoming WhatsApp id.
+
+        Matches on every equivalent form of the number, not just the raw Meta
+        id. A patient the office registered by phone — someone booked for by a
+        relative, or added from the dashboard — is stored as "+52…" or as the
+        10 digits, so an exact match on the inbound "521…" missed them and the
+        bot answered a known patient with "no tienes citas".
+        """
+        try:
+            variants = phone_match_variants(whatsapp_id)
+        except ValueError:
+            variants = [whatsapp_id]
+        if whatsapp_id not in variants:
+            variants.append(whatsapp_id)
+
         stmt = select(Patient).where(
             (Patient.office_id == office_id)
-            & (Patient.whatsapp_id == whatsapp_id)
-        )
+            & (Patient.whatsapp_id.in_(variants) | Patient.phone.in_(variants))
+        ).limit(1)
         result = await db.execute(stmt)
-        return result.scalar_one_or_none()
+        return result.scalars().first()
 
     async def _save_incoming_message(
         self, db: AsyncSession, office_id: uuid.UUID, whatsapp_id: str,

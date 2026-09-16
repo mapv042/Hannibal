@@ -10,6 +10,7 @@ import redis.asyncio as aioredis
 from celery import shared_task
 
 from app.config import settings
+from app.core.celery_dispatch import dispatch
 from app.core.constants import MX_TIMEZONE, URGENCY_APPROVAL_TIMEOUT_MINUTES
 from app.db.base import get_async_session_maker
 from app.modules.urgencies.service import (
@@ -38,12 +39,22 @@ def _log_exception(task_name: str, e: Exception) -> None:
 
 def enqueue_urgency_flow(request_id: UUID) -> None:
     """Schedule the doctor notification (soon) and the timeout fallback (later)."""
-    notify_doctor_urgency_task.apply_async(
-        args=[str(request_id)], countdown=NOTIFY_COUNTDOWN_SECONDS
+    dispatch(
+        notify_doctor_urgency_task,
+        [str(request_id)],
+        countdown=NOTIFY_COUNTDOWN_SECONDS,
+        event="urgency_notify_enqueued",
+        request_id=str(request_id),
     )
     run_at = datetime.now(MX_TIMEZONE) + timedelta(minutes=URGENCY_APPROVAL_TIMEOUT_MINUTES)
-    expire_urgency_request_task.apply_async(args=[str(request_id)], eta=run_at)
-    logger.info("urgency_flow_enqueued", request_id=str(request_id), timeout_at=run_at.isoformat())
+    dispatch(
+        expire_urgency_request_task,
+        [str(request_id)],
+        eta=run_at,
+        event="urgency_timeout_enqueued",
+        request_id=str(request_id),
+        timeout_at=run_at.isoformat(),
+    )
 
 
 async def _notify_doctor_urgency_async(request_id: str) -> str:

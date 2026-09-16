@@ -1,11 +1,14 @@
-"""Notify the doctor when a patient reschedules a slot the doctor had cancelled.
+"""Linking a patient's new booking to a slot the DOCTOR cancelled.
 
-When the doctor cancels an appointment and asks the patient to reschedule, the
-patient's new booking should report back to the doctor how the freed slot ended
-up. This module links the patient's new appointment to the doctor's cancelled
-one (via Appointment.rescheduled_from) and sends the doctor a window-aware
-WhatsApp message (free text in-window, approved template otherwise). Mirrors the
-doctor-in-the-loop notification pattern in app/modules/urgencies/service.py.
+When the doctor cancels an appointment and asks the patient to rebook, the
+patient's next booking is an answer the doctor is waiting on. This module finds
+that pending cancellation and links the new appointment to it through
+`Appointment.rescheduled_from`; the notification itself is sent by
+`app.modules.notifications.service.notify_reschedule`, which covers every
+reschedule rather than only this case.
+
+Rule 13 lives here too: if the patient cancels outright instead of rebooking,
+the doctor has to hear how it actually ended.
 """
 
 from __future__ import annotations
@@ -38,15 +41,6 @@ def _format_slot(dt: datetime) -> str:
     """Format an appointment datetime as 'lunes 16/06/2025 a las 16:00' (MX TZ)."""
     dt = dt.astimezone(MX_TIMEZONE) if dt.tzinfo else dt.replace(tzinfo=MX_TIMEZONE)
     return f"{DAYS_ES[dt.weekday()]} {dt.strftime('%d/%m/%Y')} a las {dt.strftime('%H:%M')}"
-
-
-def _doctor_reschedule_text(patient_name: str, old_slot: str, new_slot: str) -> str:
-    """Free-text alert to the doctor (sent while their 24h window is open)."""
-    return (
-        f"{patient_name} reagendó la cita que cancelaste.\n\n"
-        f"Antes: {old_slot}\n"
-        f"Ahora: {new_slot}"
-    )
 
 
 def _doctor_gave_up_text(patient_name: str, old_slot: str) -> str:
@@ -129,47 +123,6 @@ async def link_pending_doctor_cancellation(
         cancelled_appointment_id=str(cancelled.id),
     )
     return True
-
-
-async def notify_doctor_of_reschedule(
-    db: AsyncSession,
-    redis_client: aioredis.Redis,
-    meta_client,
-    new_appointment_id: UUID,
-) -> str:
-    """Notify the doctor how a freed slot was rescheduled (free text in-window, else template).
-
-    Returns a status: "notified" | "skipped" | "not_found". "not_found" usually
-    means the patient turn hasn't committed yet, so the task retries on it.
-    """
-    new_appointment = await db.get(Appointment, new_appointment_id)
-    if not new_appointment:
-        return "not_found"
-    if not new_appointment.rescheduled_from:
-        return "skipped"
-
-    old_appointment = await db.get(Appointment, new_appointment.rescheduled_from)
-    office = await db.get(Office, new_appointment.office_id)
-    patient = (
-        await db.get(Patient, new_appointment.patient_id)
-        if new_appointment.patient_id
-        else None
-    )
-    if not office or not patient or not old_appointment:
-        return "skipped"
-    patient_name = patient.name or "El paciente"
-    old_slot = _format_slot(old_appointment.start_datetime)
-    new_slot = _format_slot(new_appointment.start_datetime)
-
-    return await send_doctor_alert(
-        redis_client,
-        meta_client,
-        office,
-        text=_doctor_reschedule_text(patient_name, old_slot, new_slot),
-        template_name=TEMPLATE_RESCHEDULE_NOTICE,
-        template_params=build_reschedule_notice_params(patient_name, new_slot),
-        log_event="reschedule_notify_doctor",
-    )
 
 
 async def notify_doctor_of_abandoned_reschedule(

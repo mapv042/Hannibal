@@ -147,12 +147,9 @@ async def resolve_urgency_request(
     if start_dt is None:
         return {"error": "Para aprobar la urgencia necesito la fecha y la hora. Pregúntaselas al doctor."}
 
+    # Urgent bookings skip slot validation — overbooking is the point — but the
+    # row is otherwise ordinary, so the reminder sweep picks it up like any other.
     appointment = await _create_urgent_appointment(db, office, patient, start_dt, request.reason)
-
-    # Urgent bookings skip slot validation (overbooking is the point), but they
-    # still get the office's reminders.
-    from app.modules.reminders.scheduler import schedule_reminders_for_appointment
-    await schedule_reminders_for_appointment(db, office.id, appointment.id, start_dt)
 
     request.status = UrgencyStatus.APPROVED.value
     request.appointment_id = appointment.id

@@ -223,6 +223,8 @@ async def update_office(
         office.notify_new_patient = data.notify_new_patient
     if data.notify_arrival is not None:
         office.notify_arrival = data.notify_arrival
+    if data.notify_reschedule is not None:
+        office.notify_reschedule = data.notify_reschedule
     if data.notify_unconfirmed is not None:
         office.notify_unconfirmed = data.notify_unconfirmed
 

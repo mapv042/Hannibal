@@ -203,3 +203,37 @@ async def availability_for_dates(
     if len(days) == 1:
         return days[0]
     return {"days": days}
+
+
+async def resolve_active_appointment(
+    db: AsyncSession, appointment: Appointment
+) -> Optional[Appointment]:
+    """Follow a reschedule chain forward to the appointment that is live now.
+
+    A reschedule cancels one row and creates another, so an id the model picked
+    up earlier in the turn goes stale the moment the appointment moves. Without
+    this, asking to cancel right after rescheduling hit "esa cita ya fue
+    cancelada", and the model recovered by re-reading and trying again — which
+    read to the patient as the assistant failing and then contradicting itself.
+
+    Returns the live appointment (possibly the one passed in), or None when the
+    chain ends in a cancellation that nothing replaced.
+    """
+    current = appointment
+    seen = {current.id}
+
+    while current.status == "cancelled":
+        successor = (
+            await db.execute(
+                select(Appointment)
+                .where(Appointment.rescheduled_from == current.id)
+                .order_by(Appointment.created_at.desc())
+                .limit(1)
+            )
+        ).scalars().first()
+        if successor is None or successor.id in seen:
+            return None
+        seen.add(successor.id)
+        current = successor
+
+    return current
