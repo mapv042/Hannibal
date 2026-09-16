@@ -52,3 +52,28 @@ def get_async_session_maker():
             autoflush=False,
         )
     return _async_session_maker
+
+
+async def dispose_engine() -> None:
+    """Close every pooled connection and drop the cached engine.
+
+    Celery runs each task body in its own `asyncio.run()`, which creates an event
+    loop and closes it on the way out. The asyncpg connections the pool keeps are
+    bound to the loop that opened them, so the *next* task in the same worker
+    process checks out a connection whose loop is gone and fails — first as
+    "attached to a different loop" on the pre-ping, then as
+    "connection was closed in the middle of operation". Only the first task after
+    a worker boots ever succeeded.
+
+    Disposing inside the task's own loop closes those connections while their
+    loop is still alive and forces the next task to build a fresh engine. Call it
+    at the end of every task body (see app.core.task_runner.run_task); the API
+    process must NOT call it per request, where one long-lived pool is correct.
+    """
+    global _engine, _async_session_maker
+
+    if _engine is not None:
+        await _engine.dispose()
+
+    _engine = None
+    _async_session_maker = None

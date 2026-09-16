@@ -8,12 +8,12 @@ keeps working without manual reconnection.
 
 from __future__ import annotations
 
-import asyncio
 from datetime import timedelta
 
 from celery import shared_task
 from sqlalchemy import or_, select
 
+from app.core.task_runner import run_task
 from app.db.base import get_async_session_maker
 from app.db.models import Office
 from app.modules.google_calendar.watch import build_webhook_url, renew_watch_channel
@@ -69,7 +69,7 @@ def renew_google_watches(self):
     """Beat task: renew Google Calendar watch channels nearing expiry."""
     _log("renew_google_watches: START")
     try:
-        asyncio.run(_renew_google_watches_async())
+        run_task(_renew_google_watches_async())
     except Exception as e:
         _log_exception("renew_google_watches", e)
         raise

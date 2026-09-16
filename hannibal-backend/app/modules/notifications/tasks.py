@@ -12,7 +12,6 @@ doctor's first availability block that day.
 
 from __future__ import annotations
 
-import asyncio
 from datetime import datetime, timedelta
 from uuid import UUID
 
@@ -23,6 +22,7 @@ from sqlalchemy import select
 from app.config import settings
 from app.core.celery_dispatch import dispatch
 from app.core.constants import MX_TIMEZONE
+from app.core.task_runner import run_task
 from app.db.base import get_async_session_maker
 from app.db.models import AvailabilitySchedule, Office
 from app.modules.notifications.service import (
@@ -179,7 +179,7 @@ def notify_appointment_task(self, appointment_id: str, is_new_patient: bool):
     """Notify the doctor of a newly booked appointment. Retries on 'not_found'."""
     _log(f"notify_appointment: START appointment_id={appointment_id}")
     try:
-        status = asyncio.run(_notify_appointment_async(appointment_id, is_new_patient))
+        status = run_task(_notify_appointment_async(appointment_id, is_new_patient))
     except Exception as e:
         _log_exception("notify_appointment", e)
         raise
@@ -200,7 +200,7 @@ def notify_cancellation_task(self, appointment_id: str):
     """Notify the doctor of a patient cancellation. Retries on 'not_found'."""
     _log(f"notify_cancellation: START appointment_id={appointment_id}")
     try:
-        status = asyncio.run(_notify_cancellation_async(appointment_id))
+        status = run_task(_notify_cancellation_async(appointment_id))
     except Exception as e:
         _log_exception("notify_cancellation", e)
         raise
@@ -221,7 +221,7 @@ def notify_arrival_task(self, appointment_id: str):
     """Notify the doctor that the patient arrived. Retries on 'not_found'."""
     _log(f"notify_arrival: START appointment_id={appointment_id}")
     try:
-        status = asyncio.run(_notify_arrival_async(appointment_id))
+        status = run_task(_notify_arrival_async(appointment_id))
     except Exception as e:
         _log_exception("notify_arrival", e)
         raise
@@ -242,7 +242,7 @@ def notify_reschedule_task(self, new_appointment_id: str):
     """Notify the doctor that an appointment moved. Retries on 'not_found'."""
     _log(f"notify_reschedule: START appointment_id={new_appointment_id}")
     try:
-        status = asyncio.run(_notify_reschedule_async(new_appointment_id))
+        status = run_task(_notify_reschedule_async(new_appointment_id))
     except Exception as e:
         _log_exception("notify_reschedule", e)
         raise
@@ -327,7 +327,7 @@ def send_unconfirmed_summaries(self):
     """Beat task: send each office its daily unconfirmed-appointments digest."""
     _log("send_unconfirmed_summaries: START")
     try:
-        asyncio.run(_send_unconfirmed_summaries_async())
+        run_task(_send_unconfirmed_summaries_async())
         _log("send_unconfirmed_summaries: DONE")
     except Exception as e:
         _log_exception("send_unconfirmed_summaries", e)

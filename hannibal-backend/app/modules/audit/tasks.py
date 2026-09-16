@@ -8,7 +8,6 @@ and "not_found" retries cover a turn that runs long.
 
 from __future__ import annotations
 
-import asyncio
 from typing import Optional
 from uuid import UUID
 
@@ -17,6 +16,7 @@ from celery import shared_task
 
 from app.config import settings
 from app.core.celery_dispatch import dispatch
+from app.core.task_runner import run_task
 from app.db.base import get_async_session_maker
 from app.modules.audit.service import verify_appointment_write
 from app.utils.logger import get_logger
@@ -84,7 +84,7 @@ def verify_appointment_write_task(self, appointment_id: str, expectation: dict):
     """Verify one appointment write against the DB and Google Calendar."""
     logger.info("audit_task_start", appointment_id=appointment_id)
     try:
-        status = asyncio.run(_verify_async(appointment_id, expectation))
+        status = run_task(_verify_async(appointment_id, expectation))
     except Exception as e:
         logger.error("audit_task_failed", appointment_id=appointment_id, error=str(e), exc_info=True)
         raise

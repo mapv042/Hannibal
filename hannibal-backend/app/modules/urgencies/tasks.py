@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from datetime import datetime, timedelta
 from uuid import UUID
 
@@ -12,6 +11,7 @@ from celery import shared_task
 from app.config import settings
 from app.core.celery_dispatch import dispatch
 from app.core.constants import MX_TIMEZONE, URGENCY_APPROVAL_TIMEOUT_MINUTES
+from app.core.task_runner import run_task
 from app.db.base import get_async_session_maker
 from app.modules.urgencies.service import (
     expire_urgency_request,
@@ -91,7 +91,7 @@ def notify_doctor_urgency_task(self, request_id: str):
     """
     _log(f"notify_doctor_urgency: START request_id={request_id}")
     try:
-        status = asyncio.run(_notify_doctor_urgency_async(request_id))
+        status = run_task(_notify_doctor_urgency_async(request_id))
     except Exception as e:
         _log_exception("notify_doctor_urgency", e)
         raise
@@ -113,7 +113,7 @@ def expire_urgency_request_task(self, request_id: str):
     """Timeout fallback: offer the patient a normal slot if still pending."""
     _log(f"expire_urgency_request: START request_id={request_id}")
     try:
-        asyncio.run(_expire_urgency_request_async(request_id))
+        run_task(_expire_urgency_request_async(request_id))
         _log(f"expire_urgency_request: DONE request_id={request_id}")
     except Exception as e:
         _log_exception("expire_urgency_request", e)

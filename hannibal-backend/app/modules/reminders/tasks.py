@@ -16,7 +16,6 @@ from __future__ import annotations
 
 from uuid import UUID, uuid4
 from datetime import datetime, timedelta
-import asyncio
 
 from sqlalchemy import select, and_
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -31,6 +30,7 @@ from app.core.constants import (
     SENT_FLAG_BY_REMINDER_TYPE,
     ReminderType,
 )
+from app.core.task_runner import run_task
 from app.db.base import get_async_session_maker
 from app.db.models import Appointment, Office, Patient, Conversation, Message
 from app.modules.reminders.scheduler import due_at, is_still_worth_sending
@@ -644,7 +644,7 @@ async def _post_follow_up_async(appointment_id: str) -> None:
 def send_reminder_week_before(self, appointment_id: str):
     """Send week-before reminder."""
     try:
-        asyncio.run(_send_reminder(appointment_id, ReminderType.WEEK_BEFORE.value))
+        run_task(_send_reminder(appointment_id, ReminderType.WEEK_BEFORE.value))
     except Exception as e:
         _log_exception("send_reminder_week_before", e)
         raise
@@ -654,7 +654,7 @@ def send_reminder_week_before(self, appointment_id: str):
 def send_reminder_6h(self, appointment_id: str):
     """Send same-day reminder, scheduled 6 hours before the appointment."""
     try:
-        asyncio.run(_send_reminder(appointment_id, ReminderType.SIX_HOURS.value))
+        run_task(_send_reminder(appointment_id, ReminderType.SIX_HOURS.value))
     except Exception as e:
         _log_exception("send_reminder_6h", e)
         raise
@@ -664,7 +664,7 @@ def send_reminder_6h(self, appointment_id: str):
 def send_day_before(self, appointment_id: str):
     """Send the day-before reminder / confirmation request."""
     try:
-        asyncio.run(_send_day_before(appointment_id))
+        run_task(_send_day_before(appointment_id))
     except Exception as e:
         _log_exception("send_day_before", e)
         raise
@@ -674,7 +674,7 @@ def send_day_before(self, appointment_id: str):
 def send_arrival_check(self, appointment_id: str):
     """Ask the patient whether they've arrived, at the appointment's start time."""
     try:
-        asyncio.run(_send_arrival_check(appointment_id))
+        run_task(_send_arrival_check(appointment_id))
     except Exception as e:
         _log_exception("send_arrival_check", e)
         raise
@@ -684,7 +684,7 @@ def send_arrival_check(self, appointment_id: str):
 def send_doctor_brief(self, appointment_id: str):
     """Send the doctor their pre-consultation brief."""
     try:
-        asyncio.run(_send_doctor_brief(appointment_id))
+        run_task(_send_doctor_brief(appointment_id))
     except Exception as e:
         _log_exception("send_doctor_brief", e)
         raise
@@ -694,7 +694,7 @@ def send_doctor_brief(self, appointment_id: str):
 def post_follow_up(self, appointment_id: str):
     """Send the post-appointment follow-up."""
     try:
-        asyncio.run(_post_follow_up_async(appointment_id))
+        run_task(_post_follow_up_async(appointment_id))
     except Exception as e:
         _log_exception("post_follow_up", e)
         raise
@@ -793,7 +793,7 @@ async def _dispatch_due_reminders_async() -> None:
 def dispatch_due_reminders(self):
     """Beat task: find and dispatch every reminder that has come due."""
     try:
-        asyncio.run(_dispatch_due_reminders_async())
+        run_task(_dispatch_due_reminders_async())
     except Exception as e:
         _log_exception("dispatch_due_reminders", e)
         raise

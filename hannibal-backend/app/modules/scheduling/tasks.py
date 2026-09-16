@@ -3,7 +3,6 @@ and the Rule 13 report that a requested reschedule ended in a cancellation."""
 
 from __future__ import annotations
 
-import asyncio
 from uuid import UUID
 
 import redis.asyncio as aioredis
@@ -11,6 +10,7 @@ from celery import shared_task
 
 from app.config import settings
 from app.core.celery_dispatch import dispatch
+from app.core.task_runner import run_task
 from app.db.base import get_async_session_maker
 from app.modules.scheduling.patient_notify import (
     alert_doctor_undelivered_notice,
@@ -88,7 +88,7 @@ async def _notify_patient_async(kind: str, appointment_id: str) -> str:
 def _escalate_undelivered(kind: str, appointment_id: str) -> None:
     """Hand an undeliverable patient notice to the doctor. Never raises."""
     try:
-        asyncio.run(_escalate_undelivered_async(kind, appointment_id))
+        run_task(_escalate_undelivered_async(kind, appointment_id))
     except Exception as e:
         _log_exception("escalate_undelivered_notice", e)
 
@@ -110,7 +110,7 @@ def _run_patient_notice(task, kind: str, appointment_id: str) -> None:
     """Shared body: send, retry on both 'not_found' and a send failure."""
     _log(f"notify_patient_{kind}: START appointment_id={appointment_id}")
     try:
-        status = asyncio.run(_notify_patient_async(kind, appointment_id))
+        status = run_task(_notify_patient_async(kind, appointment_id))
     except Exception as e:
         _log_exception(f"notify_patient_{kind}", e)
         try:
@@ -187,7 +187,7 @@ def notify_doctor_abandoned_reschedule_task(self, cancelled_appointment_id: str)
     """Tell the doctor the patient cancelled instead of rescheduling (Rule 13)."""
     _log(f"notify_abandoned_reschedule: START id={cancelled_appointment_id}")
     try:
-        status = asyncio.run(
+        status = run_task(
             _notify_abandoned_reschedule_async(cancelled_appointment_id)
         )
     except Exception as e:
