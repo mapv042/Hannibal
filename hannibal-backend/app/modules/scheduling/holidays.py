@@ -19,6 +19,7 @@ from typing import List, Tuple
 
 from app.core.constants import BlockOrigin, MX_TIMEZONE
 from app.db.models import TimeBlock
+from app.utils.dates import now_mx
 
 # How many years ahead of the office's first day we seed. Two covers the whole
 # of the current year plus the next one for an office created in December.
@@ -68,7 +69,7 @@ def build_holiday_blocks(
     Only holidays on or after `from_date` are produced — seeding an office in
     July shouldn't litter its calendar with blocks it can never use.
     """
-    start_from = from_date or datetime.now(tz=MX_TIMEZONE).date()
+    start_from = from_date or now_mx().date()
     blocks: List[TimeBlock] = []
 
     for offset in range(years):

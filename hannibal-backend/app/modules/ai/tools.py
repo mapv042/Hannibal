@@ -38,6 +38,7 @@ from app.modules.notifications.tasks import (
     enqueue_reschedule_notification,
 )
 from app.modules.audit.tasks import enqueue_write_audit
+from app.utils.dates import now_mx
 from app.utils.logger import get_logger
 from app.utils.phone import (
     display_or_raw,
@@ -466,7 +467,7 @@ async def _handle_get_patient_appointments(args: dict, ctx: ToolContext) -> dict
     if not ctx.patient_id:
         return {"appointments": [], "message": "No se encontró registro del paciente."}
 
-    now = datetime.now(tz=MX_TIMEZONE)
+    now = now_mx()
     stmt = (
         select(Appointment)
         .where(
@@ -935,7 +936,7 @@ async def _handle_report_arrival(args: dict, ctx: ToolContext) -> dict:
                 eta_minutes = None
 
     appointment.arrival_status = status
-    appointment.arrival_reported_at = datetime.now(MX_TIMEZONE)
+    appointment.arrival_reported_at = now_mx()
     appointment.arrival_eta_minutes = (
         eta_minutes if status == ArrivalStatus.ON_THE_WAY.value else None
     )

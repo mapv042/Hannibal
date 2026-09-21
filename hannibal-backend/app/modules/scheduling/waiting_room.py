@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.constants import ArrivalStatus, MX_TIMEZONE
 from app.db.models import Appointment, Patient
+from app.utils.dates import now_mx
 
 # How long an arrival stays in the doctor's context. Past this the patient has
 # either been seen or gone home, and keeping them listed would be misleading.
@@ -47,7 +48,7 @@ async def get_waiting_room(office_id: UUID, db: AsyncSession) -> list[dict]:
     that the patient has answered about. Appointments already marked completed
     or cancelled drop out — the doctor has moved on from those.
     """
-    now = datetime.now(tz=MX_TIMEZONE)
+    now = now_mx()
     window_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     earliest = max(
         window_start,

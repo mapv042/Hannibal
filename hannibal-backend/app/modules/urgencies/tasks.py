@@ -17,6 +17,7 @@ from app.modules.urgencies.service import (
     expire_urgency_request,
     notify_doctor_of_urgency,
 )
+from app.utils.dates import now_mx
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -46,7 +47,7 @@ def enqueue_urgency_flow(request_id: UUID) -> None:
         event="urgency_notify_enqueued",
         request_id=str(request_id),
     )
-    run_at = datetime.now(MX_TIMEZONE) + timedelta(minutes=URGENCY_APPROVAL_TIMEOUT_MINUTES)
+    run_at = now_mx() + timedelta(minutes=URGENCY_APPROVAL_TIMEOUT_MINUTES)
     dispatch(
         expire_urgency_request_task,
         [str(request_id)],

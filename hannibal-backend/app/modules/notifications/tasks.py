@@ -32,6 +32,7 @@ from app.modules.notifications.service import (
     notify_reschedule,
     notify_unconfirmed_summary,
 )
+from app.utils.dates import now_mx
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -284,7 +285,7 @@ async def _send_unconfirmed_summaries_async() -> None:
 
     redis_client = aioredis.from_url(settings.redis_url, decode_responses=True)
     meta_client = MetaCloudClient()
-    now = datetime.now(MX_TIMEZONE)
+    now = now_mx()
     # Model stores day_of_week as 0=Sun..6=Sat; isoweekday() is 1=Mon..7=Sun.
     weekday_db = now.isoweekday() % 7
 

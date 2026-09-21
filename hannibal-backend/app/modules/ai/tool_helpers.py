@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.constants import DAYS_ES, MX_TIMEZONE
 from app.db.models import Appointment, Office
 from app.modules.scheduling.availability import compute_day_availability
-from app.utils.dates import relative_day_label, spanish_date_label
+from app.utils.dates import relative_day_label, spanish_date_label, now_mx
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -147,7 +147,7 @@ async def availability_for_dates(
             resolve_appointment_duration) so what's offered is what's booked.
             None keeps each schedule's configured duration.
     """
-    today = datetime.now(tz=MX_TIMEZONE).date()
+    today = now_mx().date()
     days: list[dict] = []
 
     for date_str in dates:

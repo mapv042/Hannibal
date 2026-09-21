@@ -28,6 +28,7 @@ from app.modules.reminders.wa_templates import (
     build_reschedule_notice_params,
 )
 from app.modules.whatsapp.doctor_notify import send_doctor_alert
+from app.utils.dates import now_mx
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -65,7 +66,7 @@ async def find_pending_doctor_cancellation(
     (Rule 13 — the doctor has to hear about that one too, or they keep believing
     the patient is coming back).
     """
-    cutoff = datetime.now(MX_TIMEZONE) - timedelta(days=PENDING_CANCELLATION_LOOKBACK_DAYS)
+    cutoff = now_mx() - timedelta(days=PENDING_CANCELLATION_LOOKBACK_DAYS)
 
     conditions = [
         Appointment.office_id == office_id,

@@ -4,6 +4,7 @@ from datetime import date as date_cls, datetime, timedelta
 from typing import Optional
 from zoneinfo import ZoneInfo
 
+from app.core.clock import clock_offset
 from app.core.constants import DAYS_ES, MX_TIMEZONE as MX_TZ
 
 # How many days the reference calendar injected into the LLM prompts spans.
@@ -68,13 +69,21 @@ def spanish_date_label(target_date: date_cls, today: date_cls) -> str:
 
 
 def now_mx() -> datetime:
-    """
-    Get current time in Mexico City timezone.
+    """Current time in Mexico City, and the only place the app reads the clock.
+
+    Call this instead of `datetime.now(MX_TIMEZONE)` anywhere — a bare
+    `datetime.now` is a second source of truth that the conversation simulator
+    cannot move, so a flow using one would keep running in real time while the
+    rest of the system had travelled days ahead.
+
+    Outside the simulator the offset is zero and this is exactly
+    `datetime.now(tz=MX_TZ)`; see app/core/clock.py.
 
     Returns:
-        Current datetime in America/Mexico_City timezone
+        Current datetime in America/Mexico_City, shifted by the simulated clock
+        offset when a simulator run is active.
     """
-    return datetime.now(tz=MX_TZ)
+    return datetime.now(tz=MX_TZ) + clock_offset()
 
 
 def to_mx(dt: datetime) -> datetime:

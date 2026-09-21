@@ -59,6 +59,11 @@ class Settings(BaseSettings):
     # app refuses to start with placeholder/empty secrets (see validate_secrets).
     environment: str = "development"
 
+    # Conversation simulator: lets the virtual clock be moved and exposes the
+    # /api/sim router. Ignored outright when environment is production — see
+    # app/core/clock.py:simulation_enabled.
+    simulation_mode: bool = False
+
     # Security
     encryption_key: str = "0" * 64  # 64-char hex for AES-256
     jwt_secret: str = ""

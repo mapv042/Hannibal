@@ -57,6 +57,7 @@ from app.modules.reminders.wa_templates import (
 )
 from app.modules.conversation.session_store import SessionStore
 from app.modules.whatsapp.window import service_window_open
+from app.utils.dates import now_mx
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -195,7 +196,7 @@ async def _record_outgoing_message(
             },
         )
         db.add(message)
-        conversation.last_message_at = datetime.now(MX_TZ)
+        conversation.last_message_at = now_mx()
     except Exception as e:
         _log_exception("record_outgoing_message", e)
 
@@ -304,7 +305,7 @@ async def _send_reminder(appointment_id: str, reminder_type: str) -> None:
         appointment, patient, office = loaded
 
         start_local = appointment.start_datetime.astimezone(MX_TZ)
-        now_local = datetime.now(MX_TZ)
+        now_local = now_mx()
         appointment_date = format_appointment_date(start_local, now_local)
         appointment_time = start_local.strftime("%H:%M")
 
@@ -718,7 +719,7 @@ async def _dispatch_due_reminders_async() -> None:
     """Dispatch every reminder whose due time has passed and that hasn't been sent."""
     from app.modules.reminders.rules import get_active_reminder_rules
 
-    now = datetime.now(MX_TZ)
+    now = now_mx()
     # An appointment is in scope if any of its reminders could be due right now:
     # the earliest fires |MIN_REMINDER_OFFSET| before the start, the latest
     # MAX_REMINDER_OFFSET after it. A day of slack on each side absorbs the

@@ -19,6 +19,7 @@ from sqlalchemy import select, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Conversation, Message
+from app.utils.dates import now_mx
 
 MX_TZ = ZoneInfo("America/Mexico_City")
 SERVICE_WINDOW = timedelta(hours=24)
@@ -58,7 +59,7 @@ async def service_window_open(
     last_inbound = result.scalar_one_or_none()
     if last_inbound is None:
         return False
-    return (datetime.now(MX_TZ) - last_inbound) < window
+    return (now_mx() - last_inbound) < window
 
 
 async def record_doctor_inbound(
@@ -75,7 +76,7 @@ async def record_doctor_inbound(
     try:
         await redis_client.set(
             DOCTOR_LAST_INBOUND_KEY.format(office_id=office_id),
-            datetime.now(MX_TZ).isoformat(),
+            now_mx().isoformat(),
             ex=int(window.total_seconds()),
         )
     except Exception:

@@ -42,6 +42,7 @@ from app.modules.reminders.wa_templates import (
     build_reschedule_notice_params,
 )
 from app.modules.whatsapp.doctor_notify import send_doctor_alert
+from app.utils.dates import now_mx
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -327,7 +328,7 @@ async def notify_unconfirmed_summary(
     if not office.notify_unconfirmed:
         return "skipped"
 
-    now = datetime.now(MX_TIMEZONE)
+    now = now_mx()
     start_of_day = datetime.combine(now.date(), time.min, tzinfo=MX_TIMEZONE)
     end_of_day = datetime.combine(now.date(), time.max, tzinfo=MX_TIMEZONE)
 

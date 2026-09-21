@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.constants import MX_TIMEZONE
 from app.db.models import Appointment
+from app.utils.dates import now_mx
 
 Period = Literal["week", "month", "quarter"]
 
@@ -111,7 +112,7 @@ async def get_office_stats(
     than zero" is not a number worth showing the doctor.
     """
     days = _PERIOD_DAYS.get(period, 30)
-    now = datetime.now(MX_TIMEZONE)
+    now = now_mx()
     current_start = now - timedelta(days=days)
     previous_start = current_start - timedelta(days=days)
 

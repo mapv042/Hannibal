@@ -39,6 +39,7 @@ from app.modules.reminders.wa_templates import (
 )
 from app.modules.whatsapp.doctor_notify import doctor_recipients
 from app.modules.urgencies import templates
+from app.utils.dates import now_mx
 from app.utils.logger import get_logger
 from app.utils.phone import display_or_raw
 
@@ -130,7 +131,7 @@ async def resolve_urgency_request(
     if not approved:
         request.status = UrgencyStatus.REJECTED.value
         request.resolution_note = note
-        request.resolved_at = datetime.now(MX_TIMEZONE)
+        request.resolved_at = now_mx()
         await db.flush()
         await _send_patient_text(
             db, office, patient, templates.patient_urgency_rejected(office.assistant_tone), meta_client
@@ -154,7 +155,7 @@ async def resolve_urgency_request(
     request.status = UrgencyStatus.APPROVED.value
     request.appointment_id = appointment.id
     request.resolution_note = note
-    request.resolved_at = datetime.now(MX_TIMEZONE)
+    request.resolved_at = now_mx()
     await db.flush()
 
     local_start = start_dt.astimezone(MX_TIMEZONE) if start_dt.tzinfo else start_dt.replace(tzinfo=MX_TIMEZONE)
@@ -192,7 +193,7 @@ async def expire_urgency_request(
     patient = await db.get(Patient, request.patient_id)
 
     request.status = UrgencyStatus.EXPIRED.value
-    request.resolved_at = datetime.now(MX_TIMEZONE)
+    request.resolved_at = now_mx()
     await db.flush()
 
     if not office or not patient:

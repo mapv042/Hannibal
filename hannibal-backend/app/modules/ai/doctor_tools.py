@@ -38,6 +38,7 @@ from app.modules.reminders.wa_templates import (
     TEMPLATE_OFFICE_MESSAGE,
     build_office_message_params,
 )
+from app.utils.dates import now_mx
 from app.utils.logger import get_logger
 from app.utils.phone import display_or_raw, normalize_phone, to_whatsapp_id
 
@@ -606,7 +607,7 @@ async def _handle_get_appointments(args: dict, ctx: DoctorToolContext) -> dict:
     end_date_str = args.get("end_date", "")
 
     if not date_str:
-        start_date = datetime.now(tz=MX_TIMEZONE).date()
+        start_date = now_mx().date()
     else:
         try:
             start_date = date_cls.fromisoformat(date_str)
@@ -918,7 +919,7 @@ async def _handle_block_time(args: dict, ctx: DoctorToolContext) -> dict:
 
 @_handler("list_time_blocks")
 async def _handle_list_time_blocks(args: dict, ctx: DoctorToolContext) -> dict:
-    today = datetime.now(tz=MX_TIMEZONE).date()
+    today = now_mx().date()
     try:
         start_date = (
             date_cls.fromisoformat(args["start_date"]) if args.get("start_date") else today
