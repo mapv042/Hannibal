@@ -31,7 +31,7 @@ from app.modules.audit.tasks import enqueue_write_audit
 from app.modules.notifications.tasks import enqueue_reschedule_notification
 from app.modules.google_calendar.sync import cancel_appointment_in_calendar, sync_time_block
 from app.modules.whatsapp.coexistence import pause_bot, resume_bot, check_pause
-from app.modules.whatsapp.meta_client import MetaCloudClient
+from app.modules.whatsapp.transport import WhatsAppClient
 from app.modules.whatsapp.window import service_window_open
 from app.modules.reminders.wa_templates import (
     TEMPLATE_LANGUAGE,
@@ -465,7 +465,7 @@ class DoctorToolContext:
         db: AsyncSession,
         office: Office,
         redis_client: redis.Redis,
-        meta_client: MetaCloudClient,
+        meta_client: WhatsAppClient,
     ):
         self.db = db
         self.office = office

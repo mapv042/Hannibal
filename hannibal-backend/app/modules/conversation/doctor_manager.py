@@ -20,7 +20,7 @@ from app.modules.ai.doctor_tools import (
     execute_doctor_tool,
 )
 from app.modules.conversation.base_manager import BaseToolConversationManager
-from app.modules.whatsapp.meta_client import MetaCloudClient
+from app.modules.whatsapp.transport import WhatsAppClient
 from app.modules.whatsapp.window import record_doctor_inbound
 from app.modules.scheduling.waiting_room import get_waiting_room
 from app.modules.urgencies.service import get_pending_urgencies
@@ -46,7 +46,7 @@ class DoctorConversationManager(BaseToolConversationManager):
 
     def __init__(
         self,
-        meta_client: MetaCloudClient,
+        meta_client: WhatsAppClient,
         redis_client: redis.Redis,
         ai_service=None,
     ):

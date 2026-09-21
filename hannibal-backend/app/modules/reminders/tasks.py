@@ -293,7 +293,7 @@ async def _load_sendable(
 
 async def _send_reminder(appointment_id: str, reminder_type: str) -> None:
     """Plain patient reminder (week before, 6h before): text or template."""
-    from app.modules.whatsapp.meta_client import MetaCloudClient
+    from app.modules.whatsapp.transport import get_meta_client
 
     flag_attr = FLAG_MAP[reminder_type]
     task_name = f"send_reminder_{reminder_type}"
@@ -327,7 +327,7 @@ async def _send_reminder(appointment_id: str, reminder_type: str) -> None:
         )
 
         via = await _send_free_or_template(
-            MetaCloudClient(),
+            get_meta_client(),
             db,
             office,
             patient,
@@ -352,7 +352,7 @@ async def _send_day_before(appointment_id: str) -> None:
     message: confirm/cancel buttons for a cita still awaiting confirmation, a
     plain reminder for one the patient already confirmed.
     """
-    from app.modules.whatsapp.meta_client import MetaCloudClient
+    from app.modules.whatsapp.transport import get_meta_client
 
     async with get_async_session_maker()() as db:
         loaded = await _load_sendable(
@@ -375,7 +375,7 @@ async def _send_day_before(appointment_id: str) -> None:
             "assistant_name": office.assistant_name,
         }
 
-        meta_client = MetaCloudClient()
+        meta_client = get_meta_client()
         session_store = SessionStore()
         try:
             if not needs_confirmation:
@@ -461,7 +461,7 @@ async def _send_arrival_check(appointment_id: str) -> None:
     their reply is read as an arrival report rather than a new scheduling
     request.
     """
-    from app.modules.whatsapp.meta_client import MetaCloudClient
+    from app.modules.whatsapp.transport import get_meta_client
 
     async with get_async_session_maker()() as db:
         loaded = await _load_sendable(
@@ -477,7 +477,7 @@ async def _send_arrival_check(appointment_id: str) -> None:
             tone=office.assistant_tone,
         )
 
-        meta_client = MetaCloudClient()
+        meta_client = get_meta_client()
         session_store = SessionStore()
         try:
             # In-window: two taps ("Ya llegué" / "Voy en camino"). Out of window
@@ -541,7 +541,7 @@ async def _send_doctor_brief(appointment_id: str) -> None:
 
     from app.config import settings
     from app.modules.notifications.service import notify_appointment_brief
-    from app.modules.whatsapp.meta_client import MetaCloudClient
+    from app.modules.whatsapp.transport import get_meta_client
 
     redis_client = aioredis.from_url(settings.redis_url, decode_responses=True)
     try:
@@ -560,7 +560,7 @@ async def _send_doctor_brief(appointment_id: str) -> None:
                 return
 
             status = await notify_appointment_brief(
-                db, redis_client, MetaCloudClient(), appointment.id
+                db, redis_client, get_meta_client(), appointment.id
             )
             if status == "notified":
                 appointment.doctor_brief_sent = True
@@ -572,7 +572,7 @@ async def _send_doctor_brief(appointment_id: str) -> None:
 
 async def _post_follow_up_async(appointment_id: str) -> None:
     """Post-appointment follow-up, sent after the visit."""
-    from app.modules.whatsapp.meta_client import MetaCloudClient
+    from app.modules.whatsapp.transport import get_meta_client
 
     async with get_async_session_maker()() as db:
         # Not _load_sendable: the follow-up is the one reminder that is still
@@ -622,7 +622,7 @@ async def _post_follow_up_async(appointment_id: str) -> None:
         )
 
         await _send_free_or_template(
-            MetaCloudClient(),
+            get_meta_client(),
             db,
             office,
             patient,

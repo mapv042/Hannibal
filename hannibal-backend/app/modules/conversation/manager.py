@@ -23,7 +23,7 @@ from app.modules.ai.tools import (
 from app.modules.conversation.base_manager import BaseToolConversationManager
 from app.modules.conversation.session_store import SessionStore
 from app.modules.conversation.schemas import SessionContext
-from app.modules.whatsapp.meta_client import MetaCloudClient
+from app.modules.whatsapp.transport import WhatsAppClient
 
 logger = get_logger(__name__)
 
@@ -55,7 +55,7 @@ class ConversationManager(BaseToolConversationManager):
     def __init__(
         self,
         session_store: SessionStore,
-        meta_client: MetaCloudClient,
+        meta_client: WhatsAppClient,
         ai_service=None,
     ):
         super().__init__(meta_client, ai_service)

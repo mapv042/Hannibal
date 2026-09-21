@@ -38,6 +38,10 @@ class Settings(BaseSettings):
     open_ai_reasoning_effort: str = "none"
 
     # Meta/WhatsApp
+    # "meta" sends through the Cloud API; "fake" records outbound messages in
+    # Redis for the conversation simulator. Ignored (treated as "meta") when
+    # environment is production — see modules/whatsapp/transport.py.
+    whatsapp_transport: str = "meta"
     meta_verify_token: str = ""
     meta_app_secret: str = ""
     meta_app_id: str = ""

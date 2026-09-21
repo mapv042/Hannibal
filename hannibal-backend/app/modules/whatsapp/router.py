@@ -37,7 +37,7 @@ from app.modules.whatsapp.coexistence import (
 from app.modules.conversation.manager import ConversationManager
 from app.modules.conversation.doctor_manager import DoctorConversationManager
 from app.modules.conversation.session_store import SessionStore
-from app.modules.whatsapp.meta_client import MetaCloudClient
+from app.modules.whatsapp.transport import get_meta_client
 from app.core.exceptions import WhatsAppError
 from app.modules.whatsapp.doctor_notify import doctor_recipients
 from app.utils.phone import normalize_phone
@@ -379,7 +379,7 @@ async def _route_message(
             message_id=message_id,
             office_id=str(office.id),
         )
-        meta_client = MetaCloudClient()
+        meta_client = get_meta_client()
         doctor_manager = DoctorConversationManager(meta_client, redis_client)
         await doctor_manager.process(office, message, db)
         return
@@ -399,7 +399,7 @@ async def _route_message(
 
     # Route to the tool-use conversation manager
     session_store = SessionStore(redis_client)
-    meta_client = MetaCloudClient()
+    meta_client = get_meta_client()
     manager = ConversationManager(session_store, meta_client)
     await manager.process(office, message, db)
 

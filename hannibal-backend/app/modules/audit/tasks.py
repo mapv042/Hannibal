@@ -61,7 +61,7 @@ def enqueue_write_audit(
 
 
 async def _verify_async(appointment_id: str, expectation: dict) -> str:
-    from app.modules.whatsapp.meta_client import MetaCloudClient
+    from app.modules.whatsapp.transport import get_meta_client
 
     redis_client = aioredis.from_url(settings.redis_url, decode_responses=True)
     try:
@@ -69,7 +69,7 @@ async def _verify_async(appointment_id: str, expectation: dict) -> str:
             status = await verify_appointment_write(
                 db,
                 redis_client,
-                MetaCloudClient(),
+                get_meta_client(),
                 UUID(appointment_id),
                 expectation,
             )

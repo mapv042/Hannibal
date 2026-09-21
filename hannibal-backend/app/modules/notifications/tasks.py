@@ -116,13 +116,13 @@ def enqueue_arrival_notification(appointment_id: UUID) -> None:
 
 
 async def _notify_appointment_async(appointment_id: str, is_new_patient: bool) -> str:
-    from app.modules.whatsapp.meta_client import MetaCloudClient
+    from app.modules.whatsapp.transport import get_meta_client
 
     redis_client = aioredis.from_url(settings.redis_url, decode_responses=True)
     try:
         async with get_async_session_maker()() as db:
             status = await notify_appointment(
-                db, redis_client, MetaCloudClient(), UUID(appointment_id), is_new_patient
+                db, redis_client, get_meta_client(), UUID(appointment_id), is_new_patient
             )
             await db.commit()
             return status
@@ -131,13 +131,13 @@ async def _notify_appointment_async(appointment_id: str, is_new_patient: bool) -
 
 
 async def _notify_arrival_async(appointment_id: str) -> str:
-    from app.modules.whatsapp.meta_client import MetaCloudClient
+    from app.modules.whatsapp.transport import get_meta_client
 
     redis_client = aioredis.from_url(settings.redis_url, decode_responses=True)
     try:
         async with get_async_session_maker()() as db:
             status = await notify_arrival(
-                db, redis_client, MetaCloudClient(), UUID(appointment_id)
+                db, redis_client, get_meta_client(), UUID(appointment_id)
             )
             await db.commit()
             return status
@@ -146,13 +146,13 @@ async def _notify_arrival_async(appointment_id: str) -> str:
 
 
 async def _notify_cancellation_async(appointment_id: str) -> str:
-    from app.modules.whatsapp.meta_client import MetaCloudClient
+    from app.modules.whatsapp.transport import get_meta_client
 
     redis_client = aioredis.from_url(settings.redis_url, decode_responses=True)
     try:
         async with get_async_session_maker()() as db:
             status = await notify_cancellation(
-                db, redis_client, MetaCloudClient(), UUID(appointment_id)
+                db, redis_client, get_meta_client(), UUID(appointment_id)
             )
             await db.commit()
             return status
@@ -161,13 +161,13 @@ async def _notify_cancellation_async(appointment_id: str) -> str:
 
 
 async def _notify_reschedule_async(new_appointment_id: str) -> str:
-    from app.modules.whatsapp.meta_client import MetaCloudClient
+    from app.modules.whatsapp.transport import get_meta_client
 
     redis_client = aioredis.from_url(settings.redis_url, decode_responses=True)
     try:
         async with get_async_session_maker()() as db:
             status = await notify_reschedule(
-                db, redis_client, MetaCloudClient(), UUID(new_appointment_id)
+                db, redis_client, get_meta_client(), UUID(new_appointment_id)
             )
             await db.commit()
             return status
@@ -281,10 +281,10 @@ async def _first_block_start_today(db, office_id, weekday_db: int):
 
 
 async def _send_unconfirmed_summaries_async() -> None:
-    from app.modules.whatsapp.meta_client import MetaCloudClient
+    from app.modules.whatsapp.transport import get_meta_client
 
     redis_client = aioredis.from_url(settings.redis_url, decode_responses=True)
-    meta_client = MetaCloudClient()
+    meta_client = get_meta_client()
     now = now_mx()
     # Model stores day_of_week as 0=Sun..6=Sat; isoweekday() is 1=Mon..7=Sun.
     weekday_db = now.isoweekday() % 7

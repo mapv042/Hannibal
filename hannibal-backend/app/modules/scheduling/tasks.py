@@ -74,13 +74,13 @@ def enqueue_patient_reschedule_notice(appointment_id: UUID) -> None:
 
 
 async def _notify_patient_async(kind: str, appointment_id: str) -> str:
-    from app.modules.whatsapp.meta_client import MetaCloudClient
+    from app.modules.whatsapp.transport import get_meta_client
 
     sender = (
         notify_patient_cancellation if kind == "cancellation" else notify_patient_reschedule
     )
     async with get_async_session_maker()() as db:
-        status = await sender(db, MetaCloudClient(), UUID(appointment_id))
+        status = await sender(db, get_meta_client(), UUID(appointment_id))
         await db.commit()
         return status
 
@@ -94,13 +94,13 @@ def _escalate_undelivered(kind: str, appointment_id: str) -> None:
 
 
 async def _escalate_undelivered_async(kind: str, appointment_id: str) -> None:
-    from app.modules.whatsapp.meta_client import MetaCloudClient
+    from app.modules.whatsapp.transport import get_meta_client
 
     redis_client = aioredis.from_url(settings.redis_url, decode_responses=True)
     try:
         async with get_async_session_maker()() as db:
             await alert_doctor_undelivered_notice(
-                db, redis_client, MetaCloudClient(), UUID(appointment_id), kind
+                db, redis_client, get_meta_client(), UUID(appointment_id), kind
             )
     finally:
         await redis_client.close()
@@ -168,13 +168,13 @@ def enqueue_abandoned_reschedule_notification(cancelled_appointment_id: UUID) ->
 
 
 async def _notify_abandoned_reschedule_async(cancelled_appointment_id: str) -> str:
-    from app.modules.whatsapp.meta_client import MetaCloudClient
+    from app.modules.whatsapp.transport import get_meta_client
 
     redis_client = aioredis.from_url(settings.redis_url, decode_responses=True)
     try:
         async with get_async_session_maker()() as db:
             status = await notify_doctor_of_abandoned_reschedule(
-                db, redis_client, MetaCloudClient(), UUID(cancelled_appointment_id)
+                db, redis_client, get_meta_client(), UUID(cancelled_appointment_id)
             )
             await db.commit()
             return status

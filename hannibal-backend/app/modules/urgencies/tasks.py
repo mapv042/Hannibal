@@ -59,12 +59,12 @@ def enqueue_urgency_flow(request_id: UUID) -> None:
 
 
 async def _notify_doctor_urgency_async(request_id: str) -> str:
-    from app.modules.whatsapp.meta_client import MetaCloudClient
+    from app.modules.whatsapp.transport import get_meta_client
 
     redis_client = aioredis.from_url(settings.redis_url, decode_responses=True)
     try:
         async with get_async_session_maker()() as db:
-            status = await notify_doctor_of_urgency(db, redis_client, MetaCloudClient(), UUID(request_id))
+            status = await notify_doctor_of_urgency(db, redis_client, get_meta_client(), UUID(request_id))
             await db.commit()
             return status
     finally:
@@ -72,12 +72,12 @@ async def _notify_doctor_urgency_async(request_id: str) -> str:
 
 
 async def _expire_urgency_request_async(request_id: str) -> None:
-    from app.modules.whatsapp.meta_client import MetaCloudClient
+    from app.modules.whatsapp.transport import get_meta_client
 
     redis_client = aioredis.from_url(settings.redis_url, decode_responses=True)
     try:
         async with get_async_session_maker()() as db:
-            await expire_urgency_request(db, redis_client, MetaCloudClient(), UUID(request_id))
+            await expire_urgency_request(db, redis_client, get_meta_client(), UUID(request_id))
             await db.commit()
     finally:
         await redis_client.close()
