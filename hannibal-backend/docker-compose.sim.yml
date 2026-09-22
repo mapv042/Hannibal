@@ -1,0 +1,37 @@
+# Throwaway Postgres + Redis for developing the conversation simulator.
+#
+# The simulator's database is disposable by design — resetting a scenario means
+# destroying and reseeding — so it never points at Supabase. That also means the
+# simulator can be built and run locally even while the local connection to
+# argos-test is broken: nothing here depends on it.
+#
+#   docker compose -f docker-compose.sim.yml up -d
+#   docker compose -f docker-compose.sim.yml down -v   # and it is gone
+#
+# The deployed simulator uses Railway addons instead; same shape, same code.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: argos
+      POSTGRES_PASSWORD: argos
+      POSTGRES_DB: argos_sim
+    ports:
+      - "55432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U argos -d argos_sim"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+    # No volume on purpose: a container restart is a clean slate.
+
+  redis:
+    image: redis:8.2-alpine
+    ports:
+      - "56379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 15

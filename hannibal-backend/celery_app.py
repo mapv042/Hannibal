@@ -6,7 +6,7 @@ from celery import Celery
 from celery.schedules import crontab
 
 from app.config import settings
-from app.utils.logger import configure_logging
+from app.utils.logger import configure_logging, get_logger
 
 # Structured JSON logs (same format as the API) for workers and beat
 configure_logging("INFO")
@@ -75,3 +75,34 @@ import app.modules.scheduling.tasks  # noqa: F401
 import app.modules.notifications.tasks  # noqa: F401
 import app.modules.google_calendar.tasks  # noqa: F401
 import app.modules.audit.tasks  # noqa: F401
+
+# --------------------------------------------------------------------------- #
+# Simulated clock
+# --------------------------------------------------------------------------- #
+# Tasks have to see the same "now" the API does. Without this the worker runs on
+# real time while the simulator has moved days ahead, and every reminder it
+# writes gets the wrong date — a message saying "mañana" about an appointment
+# three days out. The offset is read once per task rather than per timestamp.
+#
+# The import is inside the guard on purpose: app.modules.sim refuses to import in
+# production, and celery_app is imported there.
+if settings.simulation_mode and not settings.is_production:
+    from celery.signals import task_prerun
+
+    @task_prerun.connect
+    def _load_simulated_clock(**_kwargs):  # pragma: no cover - worker-side hook
+        import redis
+
+        from app.core.clock import set_clock_offset
+        from app.modules.sim.runner import CLOCK_KEY
+
+        client = redis.from_url(settings.redis_url, decode_responses=True)
+        try:
+            raw = client.get(CLOCK_KEY)
+            set_clock_offset(int(raw) if raw else 0)
+        except Exception as e:  # a missing offset must not kill the task
+            logger = get_logger(__name__)
+            logger.warning("sim_clock_load_failed", error=str(e))
+        finally:
+            client.close()
+

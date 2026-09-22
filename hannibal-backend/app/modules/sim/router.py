@@ -152,7 +152,7 @@ async def sim_state(
 ) -> dict:
     """Everything the UI needs to render: the clock, the next event, the outbox."""
     office = await _the_office(db)
-    await load_offset_into_context(office.id)
+    await load_offset_into_context()
 
     upcoming = await next_event_at(office.id)
 
@@ -165,7 +165,7 @@ async def sim_state(
         },
         "clock": {
             "now": now_mx().isoformat(),
-            "offset_seconds": await get_offset(office.id),
+            "offset_seconds": await get_offset(),
         },
         "next_event_at": upcoming.isoformat() if upcoming else None,
         "outbox": await _read_outbox(redis_client, office),
@@ -184,7 +184,7 @@ async def sim_inbound(
     rather than re-rendering the whole transcript.
     """
     office = await _the_office(db)
-    await load_offset_into_context(office.id)
+    await load_offset_into_context()
 
     if body.sender == "doctor":
         sender = office.owner_phone
@@ -216,7 +216,7 @@ async def sim_clock(
 ) -> dict:
     """Move the clock forward and report everything the move set off."""
     office = await _the_office(db)
-    await load_offset_into_context(office.id)
+    await load_offset_into_context()
 
     if body.to == "next_event":
         return await advance_to_next_event(office.id)
