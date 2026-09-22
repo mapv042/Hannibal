@@ -715,8 +715,15 @@ TASK_BY_REMINDER_TYPE = {
 # The sweep (Celery Beat)
 # --------------------------------------------------------------------------- #
 
-async def _dispatch_due_reminders_async() -> None:
-    """Dispatch every reminder whose due time has passed and that hasn't been sent."""
+async def _dispatch_due_reminders_async() -> list[dict]:
+    """Dispatch every reminder whose due time has passed and that hasn't been sent.
+
+    Returns:
+        One dict per dispatched reminder (appointment_id, reminder_type,
+        due_at). The Celery task ignores it; the simulator shows it back to
+        the operator so a clock jump reports what it actually caused instead
+        of leaving them to guess.
+    """
     from app.modules.reminders.rules import get_active_reminder_rules
 
     now = now_mx()
@@ -741,7 +748,7 @@ async def _dispatch_due_reminders_async() -> None:
         ).scalars().all()
 
         rules_cache: dict = {}
-        dispatched = 0
+        dispatched: list[dict] = []
 
         for appointment in appointments:
             if appointment.office_id not in rules_cache:
@@ -782,12 +789,19 @@ async def _dispatch_due_reminders_async() -> None:
                     reminder_type=reminder_type,
                     due_at=due.isoformat(),
                 ):
-                    dispatched += 1
+                    dispatched.append(
+                        {
+                            "appointment_id": str(appointment.id),
+                            "reminder_type": reminder_type,
+                            "due_at": due.isoformat(),
+                        }
+                    )
 
         _log(
-            f"dispatch_due_reminders: {dispatched} dispatched from "
+            f"dispatch_due_reminders: {len(dispatched)} dispatched from "
             f"{len(appointments)} appointments in scope"
         )
+        return dispatched
 
 
 @shared_task(bind=True)

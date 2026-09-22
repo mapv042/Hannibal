@@ -67,6 +67,10 @@ class Settings(BaseSettings):
     # /api/sim router. Ignored outright when environment is production — see
     # app/core/clock.py:simulation_enabled.
     simulation_mode: bool = False
+    # Basic-auth credentials for the simulator UI. No password means the
+    # simulator refuses to serve — it fails closed, never open.
+    sim_basic_auth_user: str = "argos"
+    sim_basic_auth_password: str = ""
 
     # Security
     encryption_key: str = "0" * 64  # 64-char hex for AES-256

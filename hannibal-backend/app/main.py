@@ -280,3 +280,16 @@ app.include_router(
     prefix="/api/google-calendar",
     tags=["google-calendar"],
 )
+
+# The conversation simulator is mounted only where it is switched on, so in
+# production these routes do not exist at all — a 404, not a 403. The module
+# itself also refuses to import in production; see app/modules/sim/__init__.py
+# for why the guard is doubled.
+if settings.simulation_mode and not settings.is_production:
+    from app.modules.sim.router import router as sim_router
+
+    app.include_router(sim_router, prefix="/api/sim", tags=["simulator"])
+    logger.warning(
+        "simulator_enabled",
+        detail="/api/sim is mounted: the clock can be moved and data wiped",
+    )
