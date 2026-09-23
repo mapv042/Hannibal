@@ -24,8 +24,15 @@ cleaning up means deleting that calendar rather than picking events out of the
 doctor's real one.
 
 Usage:
-    python scripts/seed_sim_office.py
-    python scripts/seed_sim_office.py --reset   # wipe and reseed
+    python scripts/seed_sim_office.py             # seed, or complain if already seeded
+    python scripts/seed_sim_office.py --if-empty  # seed only if empty, never complain
+    python scripts/seed_sim_office.py --reset     # wipe and reseed
+
+`--if-empty` is what the container runs at boot: it makes the throwaway database
+genuinely throwaway, since destroying it and restarting brings the office back
+with no one having to remember a command. It exits 0 when there was nothing to
+do, so only a real failure stops the boot — and a simulator with no office is
+useless, so failing loudly there is right.
 """
 
 from __future__ import annotations
@@ -161,13 +168,17 @@ async def _seed(db) -> Office:
     return office
 
 
-async def main(reset: bool) -> int:
+async def main(reset: bool, if_empty: bool) -> int:
     _refuse_in_production()
 
     async with get_async_session_maker()() as db:
         existing = (await db.execute(select(Office))).scalars().all()
 
         if existing and not reset:
+            if if_empty:
+                print(f"{len(existing)} office(s) already present — nothing to do.")
+                await dispose_engine()
+                return 0
             print(
                 f"{len(existing)} office(s) already present — pass --reset to wipe "
                 "and reseed. Doing nothing."
@@ -213,5 +224,10 @@ if __name__ == "__main__":
         action="store_true",
         help="wipe every table first (the simulator's database is disposable)",
     )
+    parser.add_argument(
+        "--if-empty",
+        action="store_true",
+        help="seed only when the database is empty, and exit 0 either way",
+    )
     args = parser.parse_args()
-    raise SystemExit(asyncio.run(main(args.reset)))
+    raise SystemExit(asyncio.run(main(args.reset, args.if_empty)))
