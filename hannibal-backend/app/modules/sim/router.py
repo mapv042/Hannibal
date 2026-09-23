@@ -29,6 +29,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.ai_selection import clear_ai_override, current_selection, set_ai_override
+from app.config import settings
 from app.core.dependencies import get_db, get_redis
 from app.db.models import Office
 from app.modules.sim.auth import require_sim_auth
@@ -342,4 +343,78 @@ async def sim_reset(
         "name": office.name,
         "clock": "reset to real time",
         "outbox": "cleared",
+    }
+
+
+class CalendarRequest(BaseModel):
+    """Which calendar the simulator should write its appointments into."""
+
+    # Google's id for a secondary calendar, e.g. "abc123@group.calendar.google.com".
+    # Omitted means "primary", which is almost never what you want here.
+    calendar_id: Optional[str] = None
+
+
+@router.get("/gcal/connect")
+async def sim_gcal_connect(
+    db: AsyncSession = Depends(get_db),
+    redis_client: aioredis.Redis = Depends(get_redis),
+) -> dict:
+    """Start the Google Calendar consent flow for the simulator's office.
+
+    The dashboard's equivalent is gated on a Supabase JWT and resolves the office
+    from the token's subject. The simulator has no dashboard and no login, so it
+    would be unreachable — but the gate exists to stop someone connecting a
+    calendar to an office that is not theirs, and here there is exactly one
+    office and the whole router already sits behind Basic auth.
+
+    Everything after this is the ordinary flow: the same single-use state nonce,
+    and the same callback, which resolves the office from that nonce rather than
+    from anything the caller supplies.
+    """
+    from app.modules.google_calendar.auth import get_google_oauth_url
+
+    office = await _the_office(db)
+    url = await get_google_oauth_url(office.id, redis_client)
+
+    return {
+        "auth_url": url,
+        "note": (
+            "open this in a browser and grant consent; point it at a throwaway "
+            "calendar afterwards with POST /api/sim/gcal/calendar"
+        ),
+    }
+
+
+@router.post("/gcal/calendar")
+async def sim_gcal_calendar(
+    body: CalendarRequest,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Choose which calendar the simulator writes into.
+
+    Point this at a disposable secondary calendar, never the doctor's real one.
+    The simulator invents appointments and moves time, and resetting a scenario
+    wipes the database but cannot reach into Google — so events pile up. With a
+    calendar of its own, cleaning up is deleting that calendar; with `primary`,
+    it is picking fake appointments out of someone's real week by hand.
+    """
+    office = await _the_office(db)
+    office.google_calendar_id = body.calendar_id
+    await db.commit()
+
+    logger.info("sim_calendar_set", calendar_id=body.calendar_id)
+    return {
+        "calendar_id": office.google_calendar_id or "primary",
+        "connected": bool(office.google_calendar_token),
+    }
+
+
+@router.get("/gcal/status")
+async def sim_gcal_status(db: AsyncSession = Depends(get_db)) -> dict:
+    """Whether the simulator has a calendar connected, and which one."""
+    office = await _the_office(db)
+    return {
+        "connected": bool(office.google_calendar_token),
+        "calendar_id": office.google_calendar_id or "primary (cámbialo)",
+        "redirect_uri_configured": settings.google_redirect_uri,
     }
