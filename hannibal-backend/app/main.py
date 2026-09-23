@@ -250,10 +250,16 @@ async def ai_service_exception_handler(request, exc: AIServiceError):
 
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request, exc: HTTPException):
-    """Handle generic HTTP exceptions."""
+    """Handle generic HTTP exceptions.
+
+    Headers are passed through, not dropped. A 401 whose `WWW-Authenticate` is
+    swallowed becomes a 401 no browser will ever answer — it shows the JSON body
+    instead of prompting for credentials, which is how this was found.
+    """
     return JSONResponse(
         status_code=exc.status_code,
         content={"detail": exc.detail},
+        headers=getattr(exc, "headers", None),
     )
 
 

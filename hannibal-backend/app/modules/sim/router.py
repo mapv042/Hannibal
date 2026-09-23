@@ -17,11 +17,13 @@ the assistant's reply as the response to the message you just sent.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any, Literal, Optional
 from uuid import UUID, uuid4
 
 import redis.asyncio as aioredis
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -45,6 +47,15 @@ from app.utils.logger import get_logger
 logger = get_logger(__name__)
 
 router = APIRouter(dependencies=[Depends(require_sim_auth)])
+
+STATIC_DIR = Path(__file__).parent / "static"
+
+
+@router.get("/", include_in_schema=False)
+async def sim_ui() -> FileResponse:
+    """The simulator itself. Served from the backend so there is one URL,
+    one password and no separate frontend deploy to keep in step."""
+    return FileResponse(STATIC_DIR / "index.html")
 
 
 # --------------------------------------------------------------------------- #

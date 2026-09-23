@@ -1,0 +1,534 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Argos · Simulador</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=Instrument+Serif&display=swap">
+<style>
+  :root {
+    --ground: #F7F5F0;
+    --panel: #FCFBF8;
+    --white: #FFFFFF;
+    --ink: #1F1D1A;
+    --ink-2: #5C574C;
+    --line: #E2DED5;
+    --clay: #A8521F;
+    --clay-bg: #FBF1E8;
+    --clay-line: #EBD9C6;
+    --teal: #2A6152;
+    --teal-bg: #DCE8E3;
+    --chrome: #1F1D1A;
+    --chrome-2: #2C2A26;
+    --chrome-ink: #C9C3B6;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--ground); color: var(--ink);
+    font-family: 'IBM Plex Sans', system-ui, sans-serif;
+    height: 100vh; display: flex; flex-direction: column; overflow: hidden;
+  }
+  button { font-family: inherit; cursor: pointer; }
+  .mono { font-family: 'IBM Plex Mono', monospace; }
+
+  /* ---------- top bar ---------- */
+  header {
+    flex-shrink: 0; height: 56px; background: var(--chrome); color: var(--ground);
+    display: flex; align-items: center; gap: 14px; padding: 0 20px;
+  }
+  .brand { font-family: 'Instrument Serif', Georgia, serif; font-size: 21px; }
+  .pill {
+    font-size: 11px; color: var(--chrome-ink); border: 1px solid #494540;
+    border-radius: 999px; padding: 4px 11px;
+  }
+  header select {
+    font-family: 'IBM Plex Mono', monospace; font-size: 12px; background: var(--chrome-2);
+    color: var(--ground); border: 1px solid #494540; border-radius: 8px;
+    padding: 8px 10px; min-height: 40px;
+  }
+  header label { font-size: 12px; color: var(--chrome-ink); }
+  .spacer { flex-grow: 1; }
+
+  /* ---------- clock bar ---------- */
+  .clockbar {
+    flex-shrink: 0; min-height: 76px; background: var(--white);
+    border-bottom: 1px solid var(--line); display: flex; align-items: center;
+    gap: 16px; padding: 12px 20px; flex-wrap: wrap;
+  }
+  .clock-now { font-size: 21px; font-weight: 500; letter-spacing: -.3px; }
+  .cap {
+    font-size: 10px; font-weight: 600; letter-spacing: .7px;
+    text-transform: uppercase; color: var(--ink-2);
+  }
+  .divider { width: 1px; height: 38px; background: var(--line); }
+  .btn {
+    min-height: 44px; padding: 0 15px; border: 1px solid #D8D3C8; border-radius: 9px;
+    background: var(--white); color: var(--ink); font-size: 13px; font-weight: 500;
+  }
+  .btn:hover:not(:disabled) { background: #F2EFE8; }
+  .btn:disabled { opacity: .45; cursor: not-allowed; }
+  .btn-primary {
+    border-color: var(--clay); background: var(--clay); color: #fff; font-weight: 600;
+    display: inline-flex; align-items: center; gap: 8px;
+  }
+  .btn-primary:hover:not(:disabled) { background: #8F4419; }
+
+  /* ---------- panels ---------- */
+  main {
+    flex-grow: 1; display: grid; gap: 14px; padding: 16px 20px;
+    grid-template-columns: 1fr 1fr 1.15fr; min-height: 0;
+  }
+  section {
+    display: flex; flex-direction: column; min-height: 0;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 11px;
+    overflow: hidden;
+  }
+  .panel-head {
+    flex-shrink: 0; padding: 12px 14px; background: var(--white);
+    border-bottom: 1px solid var(--line); display: flex; flex-direction: column; gap: 9px;
+  }
+  .panel-title { display: flex; align-items: baseline; gap: 9px; }
+  .panel-title strong { font-size: 14px; }
+  .who { font-size: 10px; font-weight: 600; letter-spacing: .9px; text-transform: uppercase; }
+  .who.pac { color: var(--ink-2); }
+  .who.doc { color: var(--teal); }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; }
+  .btn-sm { min-height: 44px; padding: 0 12px; font-size: 12px; }
+
+  .log { flex-grow: 1; overflow-y: auto; padding: 14px; display: flex; flex-direction: column; gap: 11px; }
+  .msg { display: flex; flex-direction: column; gap: 3px; max-width: 86%; }
+  .msg.out { align-self: flex-end; align-items: flex-end; }
+  .msg.in { align-self: flex-start; align-items: flex-start; }
+  .bubble { padding: 9px 12px; border-radius: 12px; font-size: 13px; line-height: 1.45; white-space: pre-wrap; }
+  .out .bubble { background: #E8E3D8; border-bottom-right-radius: 3px; }
+  .doc-panel .out .bubble { background: var(--teal-bg); }
+  .in .bubble { background: var(--white); border: 1px solid var(--line); border-bottom-left-radius: 3px; }
+  .auto .bubble { background: var(--clay-bg); border-color: var(--clay-line); }
+  .stamp { font-family: 'IBM Plex Mono', monospace; font-size: 9.5px; color: var(--ink-2); }
+  .tag {
+    display: inline-flex; align-items: center; gap: 4px; font-size: 9px; font-weight: 600;
+    letter-spacing: .6px; text-transform: uppercase; border-radius: 4px; padding: 2px 6px;
+    background: #EFECE4; color: var(--ink-2);
+  }
+  .tag.auto { background: var(--clay-bg); border: 1px solid var(--clay-line); color: #8A4517; }
+  .tagline { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .tmpl { font-family: 'IBM Plex Mono', monospace; font-size: 9.5px; color: #8A4517; }
+  .btns { display: flex; gap: 7px; margin-top: 8px; }
+  .wa-btn {
+    flex-grow: 1; min-height: 44px; border: 1px solid #D8C4AC; border-radius: 8px;
+    background: #fff; color: #8A4517; font-size: 12px; font-weight: 600;
+  }
+  .wa-btn:hover { background: #F7EDE2; }
+  .jump {
+    display: flex; align-items: center; gap: 10px; padding: 2px 0;
+    font-family: 'IBM Plex Mono', monospace; font-size: 9.5px; color: var(--ink-2);
+  }
+  .jump::before, .jump::after { content: ''; flex-grow: 1; height: 1px; background: var(--line); }
+
+  .composer {
+    flex-shrink: 0; padding: 10px 12px; background: var(--white);
+    border-top: 1px solid var(--line); display: flex; gap: 8px;
+  }
+  .composer input {
+    flex-grow: 1; min-height: 44px; padding: 0 12px; border: 1px solid #D8D3C8;
+    border-radius: 9px; background: var(--panel); font-family: inherit; font-size: 13px; color: var(--ink);
+  }
+  .send { min-height: 44px; padding: 0 16px; border-radius: 9px; font-size: 13px; font-weight: 600; color: #fff; border: 1px solid; }
+  .send.pac { background: var(--ink); border-color: var(--ink); }
+  .send.doc { background: var(--teal); border-color: var(--teal); }
+
+  /* ---------- trace ---------- */
+  .trace { background: var(--chrome); border-color: var(--chrome); }
+  .trace .panel-head { background: transparent; border-bottom-color: #38352F; }
+  .trace .who { color: var(--chrome-ink); }
+  .trace-log { flex-grow: 1; overflow-y: auto; padding: 14px; display: flex; flex-direction: column; gap: 10px; }
+  .entry { padding: 10px 13px; background: var(--chrome-2); border-radius: 9px; display: flex; flex-direction: column; gap: 6px; }
+  .entry-head { display: flex; align-items: center; gap: 8px; font-family: 'IBM Plex Mono', monospace; font-size: 11.5px; color: #E8A87C; }
+  .entry pre { margin: 0; font-family: 'IBM Plex Mono', monospace; font-size: 10.5px; line-height: 1.55; color: var(--chrome-ink); white-space: pre-wrap; word-break: break-word; }
+  .entry .ok { color: #9DBFAF; }
+  .entry .muted { color: #8C8679; margin-left: auto; font-size: 10px; }
+  .entry.clock { background: transparent; border: 1px dashed #494540; }
+
+  .empty { color: var(--ink-2); font-size: 12.5px; padding: 8px 2px; }
+  .trace .empty { color: #8C8679; }
+  .banner {
+    display: none; background: #F6E0DA; color: #7F2F1E; font-size: 12.5px;
+    padding: 9px 20px; border-bottom: 1px solid #E8C4BA;
+  }
+  .banner.show { display: block; }
+</style>
+</head>
+<body>
+
+<header>
+  <span class="brand">Argos · Simulador</span>
+  <span class="pill" id="office-name">cargando…</span>
+  <span class="spacer"></span>
+  <label for="model">Modelo</label>
+  <select id="model"></select>
+</header>
+
+<div class="banner" id="banner"></div>
+
+<div class="clockbar">
+  <div>
+    <div class="clock-now mono" id="clock-now">—</div>
+    <div class="cap" id="clock-offset">hora virtual</div>
+  </div>
+  <span class="divider"></span>
+  <button class="btn btn-primary" id="next-event">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 4l10 8-10 8z"/><path d="M19 4v16"/></svg>
+    Siguiente evento
+  </button>
+  <button class="btn adv" data-seconds="3600">+1 h</button>
+  <button class="btn adv" data-seconds="21600">+6 h</button>
+  <button class="btn adv" data-seconds="86400">+1 día</button>
+  <div style="flex-grow:1; min-width:180px">
+    <div class="cap">Próximo evento</div>
+    <div style="font-size:13px" id="next-label">—</div>
+  </div>
+  <button class="btn" id="clear-outbox">Limpiar transcripción</button>
+</div>
+
+<main>
+  <!-- paciente -->
+  <section>
+    <div class="panel-head">
+      <div class="panel-title">
+        <span class="who pac">Paciente</span><strong id="pac-name">Juan Pérez</strong>
+        <span class="spacer"></span><span class="mono" style="font-size:10px;color:var(--ink-2)" id="pac-phone"></span>
+      </div>
+      <div class="row">
+        <button class="btn btn-sm" id="new-session">Nueva sesión</button>
+        <button class="btn btn-sm" id="new-patient">Paciente nuevo</button>
+      </div>
+    </div>
+    <div class="log" id="pac-log"><div class="empty">Escribe un mensaje para empezar.</div></div>
+    <div class="composer">
+      <label for="pac-input" style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)">Mensaje como paciente</label>
+      <input id="pac-input" placeholder="Escribir como el paciente…">
+      <button class="send pac" data-role="patient">Enviar</button>
+    </div>
+  </section>
+
+  <!-- doctor -->
+  <section class="doc-panel">
+    <div class="panel-head">
+      <div class="panel-title">
+        <span class="who doc">Doctor</span><strong id="doc-name">—</strong>
+        <span class="spacer"></span><span class="mono" style="font-size:10px;color:var(--ink-2)" id="doc-phone"></span>
+      </div>
+      <div class="row"><button class="btn btn-sm" id="doc-session">Nueva sesión</button></div>
+    </div>
+    <div class="log" id="doc-log"><div class="empty">Sin mensajes todavía.</div></div>
+    <div class="composer">
+      <label for="doc-input" style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)">Mensaje como doctor</label>
+      <input id="doc-input" placeholder="Escribir como la doctora…">
+      <button class="send doc" data-role="doctor">Enviar</button>
+    </div>
+  </section>
+
+  <!-- traza -->
+  <section class="trace">
+    <div class="panel-head">
+      <div class="panel-title"><span class="who">Traza</span><span class="spacer"></span>
+      <span class="mono" style="font-size:10px;color:#8C8679" id="trace-meta"></span></div>
+    </div>
+    <div class="trace-log" id="trace"><div class="empty">Las acciones aparecerán aquí.</div></div>
+  </section>
+</main>
+
+<script>
+const API = '/api/sim';
+const MODELS = [
+  ['openai',    'gpt-4.1-mini'],
+  ['openai',    'gpt-5.6-luna'],
+  ['anthropic', 'claude-haiku-4-5-20251001'],
+];
+
+let state = null;
+let renderedOutbox = 0;
+let doctorNumbers = [];
+let patientPhone = '5215550000001';
+
+const $ = (id) => document.getElementById(id);
+const fmt = (iso) => {
+  const d = new Date(iso);
+  return d.toLocaleString('es-MX', { weekday: 'short', day: '2-digit', month: 'short',
+                                     hour: '2-digit', minute: '2-digit', hour12: false });
+};
+const fmtShort = (iso) => new Date(iso).toLocaleString('es-MX',
+  { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', hour12: false });
+
+function banner(text) {
+  const b = $('banner');
+  if (!text) { b.classList.remove('show'); return; }
+  b.textContent = text; b.classList.add('show');
+}
+
+async function call(path, options = {}) {
+  const res = await fetch(API + path, {
+    headers: { 'Content-Type': 'application/json' }, ...options,
+  });
+  if (!res.ok) {
+    let detail = res.statusText;
+    try { detail = (await res.json()).detail || detail; } catch (e) {}
+    throw new Error(detail);
+  }
+  return res.json();
+}
+
+function busy(on) {
+  document.querySelectorAll('button').forEach(b => b.disabled = on);
+}
+
+/* ---------------- rendering ---------------- */
+
+function isDoctor(to) { return doctorNumbers.includes(to); }
+
+function messageNode(m) {
+  const wrap = document.createElement('div');
+  const automatic = m.kind === 'template' || m.template_name || m.auto;
+  wrap.className = 'msg in' + (automatic ? ' auto' : '');
+
+  const tags = document.createElement('div');
+  tags.className = 'tagline';
+  const tag = document.createElement('span');
+  if (automatic) {
+    tag.className = 'tag auto';
+    tag.textContent = 'automático';
+    tags.appendChild(tag);
+    if (m.template_name) {
+      const t = document.createElement('span');
+      t.className = 'tmpl'; t.textContent = m.template_name;
+      tags.appendChild(t);
+    }
+  } else {
+    tag.className = 'tag'; tag.textContent = 'texto libre';
+    tags.appendChild(tag);
+  }
+  wrap.appendChild(tags);
+
+  const bubble = document.createElement('div');
+  bubble.className = 'bubble';
+  bubble.textContent = m.body || (m.template_name ? `[plantilla ${m.template_name}]` : '');
+  wrap.appendChild(bubble);
+
+  if (m.buttons && m.buttons.length) {
+    const row = document.createElement('div');
+    row.className = 'btns';
+    m.buttons.forEach(b => {
+      const btn = document.createElement('button');
+      btn.className = 'wa-btn';
+      btn.textContent = b.title;
+      // A tap arrives as the button's TITLE text, exactly as in production —
+      // the id is dropped on the way in.
+      btn.onclick = () => send('patient', b.title);
+      row.appendChild(btn);
+    });
+    bubble.appendChild(row);
+  }
+
+  const stamp = document.createElement('div');
+  stamp.className = 'stamp';
+  stamp.textContent = fmtShort(m.sent_at);
+  wrap.appendChild(stamp);
+  return wrap;
+}
+
+function ownNode(text) {
+  const wrap = document.createElement('div');
+  wrap.className = 'msg out';
+  const b = document.createElement('div');
+  b.className = 'bubble'; b.textContent = text;
+  wrap.appendChild(b);
+  const s = document.createElement('div');
+  s.className = 'stamp';
+  s.textContent = state ? fmtShort(state.clock.now) : '';
+  wrap.appendChild(s);
+  return wrap;
+}
+
+function appendTo(log, node) {
+  const empty = log.querySelector('.empty');
+  if (empty) empty.remove();
+  log.appendChild(node);
+  log.scrollTop = log.scrollHeight;
+}
+
+function renderOutbox(messages, from = 0) {
+  messages.slice(from).forEach(m => {
+    appendTo($(isDoctor(m.to) ? 'doc-log' : 'pac-log'), messageNode(m));
+  });
+  renderedOutbox = messages.length;
+}
+
+function jumpMarker(label) {
+  ['pac-log', 'doc-log'].forEach(id => {
+    const d = document.createElement('div');
+    d.className = 'jump'; d.textContent = label;
+    appendTo($(id), d);
+  });
+}
+
+function trace(title, lines, cls = '') {
+  const log = $('trace');
+  const empty = log.querySelector('.empty');
+  if (empty) empty.remove();
+  const e = document.createElement('div');
+  e.className = 'entry ' + cls;
+  const h = document.createElement('div');
+  h.className = 'entry-head'; h.textContent = title;
+  e.appendChild(h);
+  lines.forEach(l => {
+    const p = document.createElement('pre');
+    if (l.startsWith('→')) p.className = 'ok';
+    p.textContent = l;
+    e.appendChild(p);
+  });
+  log.appendChild(e);
+  log.scrollTop = log.scrollHeight;
+}
+
+function paintClock() {
+  $('clock-now').textContent = fmt(state.clock.now);
+  const h = Math.floor(state.clock.offset_seconds / 3600);
+  const d = Math.floor(h / 24);
+  $('clock-offset').textContent = state.clock.offset_seconds
+    ? `hora virtual · +${d}d ${h % 24}h`
+    : 'hora virtual · sin desfase';
+  $('next-label').textContent = state.next_event_at ? fmt(state.next_event_at) : 'nada pendiente';
+  $('next-event').disabled = !state.next_event_at;
+}
+
+/* ---------------- actions ---------------- */
+
+async function refresh(repaintLog = false) {
+  state = await call('/state');
+  doctorNumbers = [state.office.owner_phone, state.office.secondary_owner_phone].filter(Boolean);
+  $('office-name').textContent = state.office.name;
+  $('doc-name').textContent = 'Doctor';
+  $('doc-phone').textContent = state.office.owner_phone || '';
+  $('pac-phone').textContent = patientPhone;
+  paintClock();
+
+  if (repaintLog) {
+    $('pac-log').innerHTML = ''; $('doc-log').innerHTML = '';
+    renderedOutbox = 0;
+    renderOutbox(state.outbox);
+  }
+}
+
+async function send(role, text) {
+  if (!text.trim()) return;
+  const [provider, model] = $('model').value.split('|');
+  appendTo($(role === 'doctor' ? 'doc-log' : 'pac-log'), ownNode(text));
+  busy(true);
+  try {
+    const r = await call('/inbound', {
+      method: 'POST',
+      body: JSON.stringify({
+        sender: role, text,
+        whatsapp_id: role === 'patient' ? patientPhone : null,
+        provider, model,
+      }),
+    });
+    trace(`${r.answered_with.model}`, [
+      `entrada: ${text.slice(0, 70)}`,
+      `→ ${r.produced.length} mensaje(s) de salida`,
+    ]);
+    r.produced.forEach(m => appendTo($(isDoctor(m.to) ? 'doc-log' : 'pac-log'), messageNode(m)));
+    renderedOutbox += r.produced.length;
+    banner('');
+  } catch (e) {
+    banner('Error al enviar: ' + e.message);
+    trace('error', ['→ ' + e.message]);
+  } finally {
+    busy(false);
+    await refresh();
+  }
+}
+
+async function advance(body, label) {
+  busy(true);
+  try {
+    const r = await call('/clock', { method: 'POST', body: JSON.stringify(body) });
+    if (r.skipped) { banner('No hay nada pendiente que disparar.'); return; }
+    jumpMarker(label);
+    trace(`reloj → ${fmtShort(r.now)}`, [
+      `${r.ticks} tic(s) de 5 min`,
+      `→ ${r.dispatched.length} recordatorio(s) despachado(s)`,
+      ...r.dispatched.map(d => `   ${d.reminder_type}`),
+    ], 'clock');
+    if (r.warning) banner(r.warning);
+    else banner('');
+    await refresh();
+    renderOutbox(state.outbox, renderedOutbox);
+  } catch (e) {
+    banner('Error al mover el reloj: ' + e.message);
+  } finally {
+    busy(false);
+  }
+}
+
+/* ---------------- wiring ---------------- */
+
+MODELS.forEach(([p, m]) => {
+  const o = document.createElement('option');
+  o.value = `${p}|${m}`; o.textContent = `${p} · ${m}`;
+  $('model').appendChild(o);
+});
+
+document.querySelectorAll('.send').forEach(btn => {
+  btn.onclick = () => {
+    const input = $(btn.dataset.role === 'doctor' ? 'doc-input' : 'pac-input');
+    const text = input.value; input.value = '';
+    send(btn.dataset.role, text);
+  };
+});
+['pac-input', 'doc-input'].forEach(id => {
+  $(id).addEventListener('keydown', e => {
+    if (e.key === 'Enter') {
+      const role = id === 'doc-input' ? 'doctor' : 'patient';
+      const text = e.target.value; e.target.value = '';
+      send(role, text);
+    }
+  });
+});
+
+$('next-event').onclick = () => advance({ to: 'next_event' }, 'salto al siguiente evento');
+document.querySelectorAll('.adv').forEach(b => {
+  b.onclick = () => advance({ seconds: Number(b.dataset.seconds) }, `el reloj avanzó ${b.textContent.trim()}`);
+});
+
+$('new-session').onclick = async () => {
+  await call(`/session/reset?whatsapp_id=${encodeURIComponent(patientPhone)}`, { method: 'POST' });
+  jumpMarker('sesión reiniciada — el bot olvidó la charla, no al paciente');
+  trace('nueva sesión', [`→ session:${patientPhone} borrada`]);
+};
+
+$('doc-session').onclick = async () => {
+  await call(`/session/reset?whatsapp_id=${encodeURIComponent(state.office.owner_phone)}`, { method: 'POST' });
+  trace('nueva sesión (doctor)', ['→ sesión del doctor borrada']);
+};
+
+$('new-patient').onclick = async () => {
+  patientPhone = '52155' + Math.floor(1e7 + Math.random() * 9e7);
+  $('pac-phone').textContent = patientPhone;
+  $('pac-log').innerHTML = '';
+  jumpMarker('paciente nuevo: el bot nunca lo ha visto');
+  trace('paciente nuevo', [`→ ${patientPhone}`]);
+};
+
+$('clear-outbox').onclick = async () => {
+  await call('/outbox/clear', { method: 'POST' });
+  await refresh(true);
+  $('trace').innerHTML = '<div class="empty">Las acciones aparecerán aquí.</div>';
+};
+
+refresh(true).catch(e => banner('No se pudo cargar el estado: ' + e.message));
+</script>
+</body>
+</html>
