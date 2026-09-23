@@ -131,10 +131,39 @@ async def existing_offices(db: AsyncSession) -> list[Office]:
     return list((await db.execute(select(Office))).scalars().all())
 
 
+# Carried across a reset. The calendar connection is configuration of the
+# environment, not part of the scenario: losing it would mean granting Google
+# consent again every single time you start over, which would make resetting
+# something to avoid rather than the normal way to begin.
+CARRIED_OVER = (
+    "google_calendar_token",
+    "google_calendar_id",
+    "google_watch_channel_id",
+    "google_watch_resource_id",
+    "google_watch_expiry",
+    "google_sync_token",
+)
+
+
 async def reset(db: AsyncSession) -> Office:
-    """Throw the scenario away and build a fresh one."""
+    """Throw the scenario away and build a fresh one, keeping the calendar link."""
+    previous = await existing_offices(db)
+    carried = (
+        {field: getattr(previous[0], field) for field in CARRIED_OVER}
+        if previous
+        else {}
+    )
+
     await wipe_all(db)
-    return await seed_office(db)
+    office = await seed_office(db)
+
+    if any(v is not None for v in carried.values()):
+        for field, value in carried.items():
+            setattr(office, field, value)
+        await db.commit()
+        await db.refresh(office)
+
+    return office
 
 
 async def ensure_seeded(db: AsyncSession) -> tuple[Office, bool]:

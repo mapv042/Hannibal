@@ -31,6 +31,9 @@ OAUTH_STATE_TTL = 600  # 10 minutes to complete the consent flow
 RETURN_TO_PATHS = {
     "onboarding": "/onboarding",
     "settings": "/dashboard/settings",
+    # The conversation simulator has no frontend: its UI is served by this same
+    # backend, so consent comes back here instead of to a dashboard page.
+    "simulator": "/api/sim/",
 }
 DEFAULT_RETURN_TO = "onboarding"
 

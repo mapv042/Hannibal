@@ -374,7 +374,8 @@ async def sim_gcal_connect(
     from app.modules.google_calendar.auth import get_google_oauth_url
 
     office = await _the_office(db)
-    url = await get_google_oauth_url(office.id, redis_client)
+    # Come back to the simulator itself; there is no dashboard to land on.
+    url = await get_google_oauth_url(office.id, redis_client, return_to="simulator")
 
     return {
         "auth_url": url,
