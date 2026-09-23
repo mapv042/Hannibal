@@ -69,19 +69,25 @@ CELERY_QUEUE = "celery"
 # How long a tick waits for the worker to catch up before moving on.
 DRAIN_TIMEOUT_SECONDS = 15.0
 DRAIN_POLL_SECONDS = 0.05
+# An empty queue means the worker *took* the task, not that it finished. This
+# is how long to let an in-flight task commit its sent flag before sweeping
+# again; a send writes a message and commits, which is not instant.
+DRAIN_SETTLE_SECONDS = 0.5
 
 
 async def _redis() -> aioredis.Redis:
     return aioredis.from_url(settings.redis_url, decode_responses=True)
 
 
-async def get_offset() -> int:
+async def get_offset(client: Optional[aioredis.Redis] = None) -> int:
     """Seconds the simulated clock is ahead of real time."""
-    client = await _redis()
+    own = client is None
+    client = client or await _redis()
     try:
         raw = await client.get(CLOCK_KEY)
     finally:
-        await client.aclose()
+        if own:
+            await client.aclose()
 
     return int(raw) if raw else 0
 
@@ -98,29 +104,19 @@ async def load_offset_into_context() -> int:
     return offset
 
 
-async def _store_offset(seconds: int) -> None:
-    client = await _redis()
-    try:
-        await client.set(CLOCK_KEY, str(seconds))
-    finally:
-        await client.aclose()
+async def _store_offset(client: aioredis.Redis, seconds: int) -> None:
+    await client.set(CLOCK_KEY, str(seconds))
 
 
-async def _drop_availability_cache(office_id: UUID) -> int:
+async def _drop_availability_cache(client: aioredis.Redis, office_id: UUID) -> int:
     """Invalidate cached availability, which was computed against the old now."""
-    client = await _redis()
-    deleted = 0
-    try:
-        async for key in client.scan_iter(match=f"avail_cache:{office_id}:*", count=500):
-            await client.delete(key)
-            deleted += 1
-    finally:
-        await client.aclose()
-
-    return deleted
+    keys = [k async for k in client.scan_iter(match=f"avail_cache:{office_id}:*", count=500)]
+    if keys:
+        await client.delete(*keys)
+    return len(keys)
 
 
-async def _expire_stale_sessions(office_id: UUID) -> int:
+async def _expire_stale_sessions(client: aioredis.Redis, office_id: UUID) -> int:
     """Drop sessions that would have expired by now in *virtual* time.
 
     Redis TTLs run on the wall clock, so after a three-day jump a session that
@@ -133,30 +129,26 @@ async def _expire_stale_sessions(office_id: UUID) -> int:
     """
     import json
 
-    client = await _redis()
     expired = 0
     cutoff = now_mx() - timedelta(seconds=DEFAULT_SESSION_TTL)
-    try:
-        async for key in client.scan_iter(match=f"session:*:{office_id}", count=500):
-            raw = await client.get(key)
-            if not raw:
-                continue
-            try:
-                last = datetime.fromisoformat(json.loads(raw)["last_message_at"])
-            except (KeyError, ValueError, TypeError):
-                continue
-            if last.tzinfo is None:
-                last = last.replace(tzinfo=MX_TIMEZONE)
-            if last < cutoff:
-                await client.delete(key)
-                expired += 1
-    finally:
-        await client.aclose()
+    async for key in client.scan_iter(match=f"session:*:{office_id}", count=500):
+        raw = await client.get(key)
+        if not raw:
+            continue
+        try:
+            last = datetime.fromisoformat(json.loads(raw)["last_message_at"])
+        except (KeyError, ValueError, TypeError):
+            continue
+        if last.tzinfo is None:
+            last = last.replace(tzinfo=MX_TIMEZONE)
+        if last < cutoff:
+            await client.delete(key)
+            expired += 1
 
     return expired
 
 
-async def _drain_queue() -> bool:
+async def _drain_queue(client: aioredis.Redis) -> bool:
     """Wait until the worker has taken everything this tick queued.
 
     Production gets this for free: its ticks are five real minutes apart, so by
@@ -171,20 +163,17 @@ async def _drain_queue() -> bool:
         True if the queue drained, False if it timed out (a worker that is down
         or wedged — worth surfacing rather than hanging the request).
     """
-    client = await _redis()
     waited = 0.0
-    try:
+    if True:
         while waited < DRAIN_TIMEOUT_SECONDS:
             if await client.llen(CELERY_QUEUE) == 0:
                 # Queue empty means taken, not necessarily finished; one more
-                # short pause lets the in-flight task commit its flag.
-                await asyncio.sleep(DRAIN_POLL_SECONDS * 4)
+                # pause lets the in-flight task commit its flag.
+                await asyncio.sleep(DRAIN_SETTLE_SECONDS)
                 if await client.llen(CELERY_QUEUE) == 0:
                     return True
             await asyncio.sleep(DRAIN_POLL_SECONDS)
             waited += DRAIN_POLL_SECONDS
-    finally:
-        await client.aclose()
 
     logger.warning("sim_queue_drain_timeout", seconds=DRAIN_TIMEOUT_SECONDS)
     return False
@@ -258,31 +247,46 @@ async def advance_clock(office_id: UUID, seconds: int) -> dict:
     if seconds > MAX_ADVANCE.total_seconds():
         raise ValueError(f"cannot advance more than {MAX_ADVANCE.days} days at once")
 
-    start_offset = await get_offset()
-    target_offset = start_offset + seconds
-    dispatched: list[dict] = []
-    drained_cleanly = True
-    ticks = 0
+    client = await _redis()
+    try:
+        start_offset = await get_offset(client)
+        target_offset = start_offset + seconds
+        dispatched: list[dict] = []
+        seen: set[tuple[str, str]] = set()
+        drained_cleanly = True
+        ticks = 0
 
-    offset = start_offset
-    while offset < target_offset:
-        offset = min(offset + int(TICK.total_seconds()), target_offset)
-        await _store_offset(offset)
-        set_clock_offset(offset)
-        ticks += 1
+        offset = start_offset
+        while offset < target_offset:
+            offset = min(offset + int(TICK.total_seconds()), target_offset)
+            await _store_offset(client, offset)
+            set_clock_offset(offset)
+            ticks += 1
 
-        # Order matters: stale availability and sessions must be gone *before*
-        # the sweep runs, or it decides against data from the old now.
-        await _drop_availability_cache(office_id)
-        await _expire_stale_sessions(office_id)
+            just_dispatched = await _dispatch_due_reminders_async()
+            if just_dispatched:
+                # Let the worker run them before the next tick sweeps again, or
+                # the sweep re-dispatches what it just queued. See _drain_queue.
+                if not await _drain_queue(client):
+                    drained_cleanly = False
 
-        just_dispatched = await _dispatch_due_reminders_async()
-        if just_dispatched:
-            # Let the worker run them before the next tick sweeps again, or the
-            # sweep re-dispatches what it just queued. See _drain_queue.
-            if not await _drain_queue():
-                drained_cleanly = False
-            dispatched.extend(just_dispatched)
+                # Report each reminder once. A task that is taken but not yet
+                # committed can be queued twice; the send itself is idempotent so
+                # the patient gets one message, and the run should say one too.
+                for item in just_dispatched:
+                    key = (item["appointment_id"], item["reminder_type"])
+                    if key not in seen:
+                        seen.add(key)
+                        dispatched.append(item)
+
+        # Once, at the end, not per tick. The sweep reads neither the availability
+        # cache nor sessions — only the next *conversation* does, and that happens
+        # after this returns. Scanning the keyspace on every tick made a one-day
+        # advance open hundreds of connections and exhausted Redis.
+        await _drop_availability_cache(client, office_id)
+        await _expire_stale_sessions(client, office_id)
+    finally:
+        await client.aclose()
 
     logger.info(
         "sim_clock_advanced",
@@ -315,7 +319,7 @@ async def advance_to_next_event(office_id: UUID) -> dict:
     target = await next_event_at(office_id)
     if target is None:
         return {
-            "offset_seconds": await get_offset(),
+            "offset_seconds": offset,
             "now": now_mx().isoformat(),
             "ticks": 0,
             "dispatched": [],
