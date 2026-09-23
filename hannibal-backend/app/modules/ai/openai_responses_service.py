@@ -45,6 +45,7 @@ class OpenAIResponsesService(BaseAIService):
         timeout: int = 60,
         max_retries: int = 2,
         model: str | None = None,
+        reasoning_effort: str | None = None,
     ):
         # Reasoning turns are slower than a plain completion, so the default
         # timeout is higher than the Chat Completions service's 30s.
@@ -54,7 +55,11 @@ class OpenAIResponsesService(BaseAIService):
         )
         self.max_retries = max_retries
         self.model = model or settings.open_ai_model
-        self.effort = settings.open_ai_reasoning_effort
+        self.effort = (
+            reasoning_effort
+            if reasoning_effort is not None
+            else settings.open_ai_reasoning_effort
+        )
 
     # ------------------------------------------------------------------
     # Request building

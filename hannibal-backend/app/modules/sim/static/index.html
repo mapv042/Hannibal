@@ -28,7 +28,10 @@
   body {
     margin: 0; background: var(--ground); color: var(--ink);
     font-family: 'IBM Plex Sans', system-ui, sans-serif;
-    height: 100vh; display: flex; flex-direction: column; overflow: hidden;
+    /* min-height, not height: on a short window the panels keep a usable size
+       and the page scrolls, instead of squeezing the conversation into a strip
+       a couple of lines tall. */
+    min-height: 100vh; display: flex; flex-direction: column;
   }
   button { font-family: inherit; cursor: pointer; }
   .mono { font-family: 'IBM Plex Mono', monospace; }
@@ -80,11 +83,23 @@
     flex-grow: 1; display: grid; gap: 14px; padding: 16px 20px;
     grid-template-columns: 1fr 1fr 1.15fr; min-height: 0;
   }
+  /* Below this the three columns leave each chat too narrow to read, so the
+     trace drops to a full-width row underneath and the chats get the space. */
+  @media (max-width: 1240px) {
+    main { grid-template-columns: 1fr 1fr; }
+    main .trace { grid-column: 1 / -1; min-height: 200px; }
+  }
+  @media (max-width: 820px) {
+    main { grid-template-columns: 1fr; }
+  }
   section {
     display: flex; flex-direction: column; min-height: 0;
     background: var(--panel); border: 1px solid var(--line); border-radius: 11px;
     overflow: hidden;
   }
+  /* Enough for a handful of messages; below this the panel stops being a
+     conversation and becomes a peephole. */
+  main > section { min-height: 340px; }
   .panel-head {
     flex-shrink: 0; padding: 12px 14px; background: var(--white);
     border-bottom: 1px solid var(--line); display: flex; flex-direction: column; gap: 9px;
@@ -98,10 +113,17 @@
   .btn-sm { min-height: 44px; padding: 0 12px; font-size: 12px; }
 
   .log { flex-grow: 1; overflow-y: auto; padding: 14px; display: flex; flex-direction: column; gap: 11px; }
-  .msg { display: flex; flex-direction: column; gap: 3px; max-width: 86%; }
+  .msg { display: flex; flex-direction: column; gap: 3px; max-width: 86%; min-width: 0; }
+  @media (max-width: 1240px) { .msg { max-width: 92%; } }
   .msg.out { align-self: flex-end; align-items: flex-end; }
   .msg.in { align-self: flex-start; align-items: flex-start; }
-  .bubble { padding: 9px 12px; border-radius: 12px; font-size: 13px; line-height: 1.45; white-space: pre-wrap; }
+  .bubble {
+    padding: 9px 12px; border-radius: 12px; font-size: 13px; line-height: 1.45;
+    white-space: pre-wrap;
+    /* A long url or an unbroken number would otherwise push past the bubble
+       and out of the panel. */
+    overflow-wrap: anywhere; word-break: break-word;
+  }
   .out .bubble { background: #E8E3D8; border-bottom-right-radius: 3px; }
   .doc-panel .out .bubble { background: var(--teal-bg); }
   .in .bubble { background: var(--white); border: 1px solid var(--line); border-bottom-left-radius: 3px; }
@@ -159,26 +181,20 @@
   }
   .banner.show { display: block; }
 
-  /* ---------- tooltips ----------
-     Native title= waits a second and reads like a system message. These appear
-     at once and can hold a sentence, which is what an explanation needs. */
-  [data-tip] { position: relative; }
-  [data-tip]::after {
-    content: attr(data-tip);
-    position: absolute; top: calc(100% + 8px); left: 50%; transform: translateX(-50%);
-    width: max-content; max-width: 260px; padding: 8px 11px; z-index: 50;
+  /* ---------- tooltip ----------
+     One shared element on <body>, positioned with JS. A CSS ::after inside the
+     trigger cannot work here: the panels use overflow:hidden for their rounded
+     corners, so they clip it, and a centred tooltip on a button near the edge
+     runs off the screen. Fixed positioning escapes both. */
+  #tip {
+    position: fixed; z-index: 100; max-width: 300px; padding: 9px 12px;
     background: var(--chrome); color: var(--ground);
-    font-size: 11.5px; font-weight: 400; line-height: 1.45; text-align: left;
-    text-transform: none; letter-spacing: normal;
-    border-radius: 8px; box-shadow: 0 6px 18px rgba(31,29,26,.22);
-    opacity: 0; visibility: hidden; transition: opacity .12s ease .25s, visibility 0s .37s;
-    pointer-events: none; white-space: normal;
+    font-size: 12px; line-height: 1.45; text-align: left;
+    border-radius: 8px; box-shadow: 0 8px 22px rgba(31,29,26,.26);
+    opacity: 0; visibility: hidden; pointer-events: none;
+    transition: opacity .12s ease;
   }
-  [data-tip]:hover::after, [data-tip]:focus-visible::after {
-    opacity: 1; visibility: visible; transition-delay: .25s, 0s;
-  }
-  [data-tip].tip-left::after { left: auto; right: 0; transform: none; }
-  [data-tip].tip-up::after { top: auto; bottom: calc(100% + 8px); }
+  #tip.show { opacity: 1; visibility: visible; }
 
   /* ---------- help panel ---------- */
   .help-btn {
@@ -216,9 +232,12 @@
   <span class="pill" id="office-name">cargando…</span>
   <span class="spacer"></span>
   <label for="model">Modelo</label>
-  <select id="model" class="tip-left"
+  <select id="model"
           data-tip="Con qué modelo de IA contesta el asistente. Cámbialo y repite la misma conversación para comparar respuestas."></select>
-  <button class="help-btn tip-left" id="help-toggle" aria-label="¿Qué hace cada cosa?"
+  <label for="effort" id="effort-label" hidden>Pensamiento</label>
+  <select id="effort" hidden
+          data-tip="Cuánto razona el modelo antes de contestar. Solo aplica a modelos de razonamiento; cambia la respuesta tanto como cambiarlos de modelo."></select>
+  <button class="help-btn" id="help-toggle" aria-label="¿Qué hace cada cosa?"
           data-tip="Abre una guía breve de para qué sirve cada control.">?</button>
 </header>
 
@@ -242,6 +261,12 @@
       <h3>Mensajes automáticos</h3>
       <p>Los que salen con etiqueta naranja <b>automático</b> no los escribió nadie: los disparó el reloj (recordatorios, aviso al doctor, seguimiento).</p>
       <p>Si trae nombre de <b>plantilla</b>, es un mensaje que en WhatsApp real solo puede enviarse fuera de la ventana de 24 horas.</p>
+    </section>
+    <section>
+      <h3>Los tres botones que borran</h3>
+      <p><b>Olvidar la conversación</b> — el bot pierde el hilo de la charla, pero el paciente y sus citas siguen ahí.</p>
+      <p><b>Limpiar transcripción</b> — solo despeja la pantalla. No cambia nada por dentro.</p>
+      <p><b>Reiniciar escenario</b> — borra todo: citas, pacientes y mensajes, y regresa el reloj.</p>
     </section>
     <section>
       <h3>El panel oscuro</h3>
@@ -268,8 +293,8 @@
     <div class="cap">Próximo evento</div>
     <div style="font-size:13px" id="next-label">—</div>
   </div>
-  <button class="btn tip-left" id="clear-outbox" data-tip="Borra los mensajes de la pantalla. No toca las citas ni el reloj.">Limpiar transcripción</button>
-  <button class="btn tip-left" id="reset-all" data-tip="Empieza de cero: borra citas, pacientes y mensajes, y regresa el reloj a la hora real. Tu Google Calendar sigue conectado.">Reiniciar escenario</button>
+  <button class="btn" id="clear-outbox" data-tip="Borra los mensajes de la pantalla. No toca las citas ni el reloj.">Limpiar transcripción</button>
+  <button class="btn" id="reset-all" data-tip="Empieza de cero: borra citas, pacientes y mensajes, y regresa el reloj a la hora real. Tu Google Calendar sigue conectado.">Reiniciar escenario</button>
 </div>
 
 <main>
@@ -281,15 +306,15 @@
         <span class="spacer"></span><span class="mono" style="font-size:10px;color:var(--ink-2)" id="pac-phone"></span>
       </div>
       <div class="row">
-        <button class="btn btn-sm" id="new-session" data-tip="El bot olvida esta conversación, pero sigue conociendo al paciente y sus citas. Simula que escribe otra vez días después.">Nueva sesión</button>
-        <button class="btn btn-sm" id="new-patient" data-tip="Cambia a un número que el bot nunca ha visto, para probar cómo atiende a alguien desconocido.">Paciente nuevo</button>
+        <button class="btn btn-sm" id="new-session" data-tip="El bot olvida de qué estaban hablando, pero sigue sabiendo quién es el paciente y qué citas tiene. Es como si el paciente volviera a escribir días después.">Olvidar la conversación</button>
+        <button class="btn btn-sm" id="new-patient" data-tip="Cambia a un número de teléfono que el bot nunca ha visto. Sirve para probar cómo atiende a alguien que escribe por primera vez.">Otro paciente</button>
       </div>
     </div>
     <div class="log" id="pac-log"><div class="empty">Escribe un mensaje para empezar.</div></div>
     <div class="composer">
       <label for="pac-input" style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)">Mensaje como paciente</label>
       <input id="pac-input" placeholder="Escribir como el paciente…">
-      <button class="send pac tip-left" data-role="patient" data-tip="Manda el mensaje como el paciente. También funciona la tecla Enter.">Enviar</button>
+      <button class="send pac" data-role="patient" data-tip="Manda el mensaje como el paciente. También funciona la tecla Enter.">Enviar</button>
     </div>
   </section>
 
@@ -300,13 +325,13 @@
         <span class="who doc">Doctor</span><strong id="doc-name">—</strong>
         <span class="spacer"></span><span class="mono" style="font-size:10px;color:var(--ink-2)" id="doc-phone"></span>
       </div>
-      <div class="row"><button class="btn btn-sm" id="doc-session" data-tip="El bot olvida la conversación con el doctor.">Nueva sesión</button></div>
+      <div class="row"><button class="btn btn-sm" id="doc-session" data-tip="El bot olvida de qué estaban hablando con el doctor. No borra nada de la agenda.">Olvidar la conversación</button></div>
     </div>
     <div class="log" id="doc-log"><div class="empty">Sin mensajes todavía.</div></div>
     <div class="composer">
       <label for="doc-input" style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)">Mensaje como doctor</label>
       <input id="doc-input" placeholder="Escribir como la doctora…">
-      <button class="send doc tip-left" data-role="doctor" data-tip="Manda el mensaje como el doctor.">Enviar</button>
+      <button class="send doc" data-role="doctor" data-tip="Manda el mensaje como el doctor.">Enviar</button>
     </div>
   </section>
 
@@ -327,6 +352,11 @@ const MODELS = [
   ['openai',    'gpt-5.6-luna'],
   ['anthropic', 'claude-haiku-4-5-20251001'],
 ];
+// Only these take a reasoning effort; the rest 400 on the parameter. Mirrors
+// REASONING_FIRST_PREFIXES in app/modules/ai/openai_service.py.
+const REASONING_PREFIXES = ['gpt-5.6', 'gpt-6', 'o1', 'o3', 'o4'];
+const EFFORTS = ['none', 'minimal', 'low', 'medium', 'high'];
+const isReasoning = (m) => REASONING_PREFIXES.some(p => m.startsWith(p));
 
 let state = null;
 let renderedOutbox = 0;
@@ -506,6 +536,7 @@ async function refresh(repaintLog = false) {
 async function send(role, text) {
   if (!text.trim()) return;
   const [provider, model] = $('model').value.split('|');
+  const effort = isReasoning(model) ? $('effort').value : null;
   appendTo($(role === 'doctor' ? 'doc-log' : 'pac-log'), ownNode(text));
   busy(true);
   try {
@@ -514,10 +545,13 @@ async function send(role, text) {
       body: JSON.stringify({
         sender: role, text,
         whatsapp_id: role === 'patient' ? patientPhone : null,
-        provider, model,
+        provider, model, reasoning_effort: effort,
       }),
     });
-    trace(`${r.answered_with.model}`, [
+    const answered = r.answered_with.reasoning_effort && isReasoning(r.answered_with.model)
+      ? `${r.answered_with.model} · pensamiento ${r.answered_with.reasoning_effort}`
+      : r.answered_with.model;
+    trace(answered, [
       `entrada: ${text.slice(0, 70)}`,
       `→ ${r.produced.length} mensaje(s) de salida`,
     ]);
@@ -562,6 +596,23 @@ MODELS.forEach(([p, m]) => {
   o.value = `${p}|${m}`; o.textContent = `${p} · ${m}`;
   $('model').appendChild(o);
 });
+
+EFFORTS.forEach(e => {
+  const o = document.createElement('option');
+  o.value = e; o.textContent = e;
+  $('effort').appendChild(o);
+});
+
+// The effort selector only makes sense for a reasoning model, and showing it
+// for the others would invite a setting that silently does nothing.
+function syncEffortVisibility() {
+  const model = $('model').value.split('|')[1] || '';
+  const show = isReasoning(model);
+  $('effort').hidden = !show;
+  $('effort-label').hidden = !show;
+}
+$('model').addEventListener('change', syncEffortVisibility);
+syncEffortVisibility();
 
 document.querySelectorAll('.send').forEach(btn => {
   btn.onclick = () => {
@@ -632,6 +683,59 @@ $('clear-outbox').onclick = async () => {
   await refresh(true);
   $('trace').innerHTML = '<div class="empty">Las acciones aparecerán aquí.</div>';
 };
+
+/* ---------------- tooltips ---------------- */
+
+// Built here rather than in the markup so it cannot depend on where this
+// script sits in the document.
+const tipEl = document.createElement('div');
+tipEl.id = 'tip';
+tipEl.setAttribute('role', 'tooltip');
+document.body.appendChild(tipEl);
+let tipTimer = null;
+
+function placeTip(target) {
+  const text = target.getAttribute('data-tip');
+  if (!text) return;
+  tipEl.textContent = text;
+  tipEl.classList.add('show');
+
+  const r = target.getBoundingClientRect();
+  const t = tipEl.getBoundingClientRect();
+  const margin = 12;
+
+  // Below the trigger, or above it when there is no room below.
+  let top = r.bottom + 8;
+  if (top + t.height > innerHeight - margin) top = r.top - t.height - 8;
+
+  // Centred on the trigger, then pulled back inside the viewport.
+  let left = r.left + r.width / 2 - t.width / 2;
+  left = Math.max(margin, Math.min(left, innerWidth - t.width - margin));
+
+  tipEl.style.top = `${Math.max(margin, top)}px`;
+  tipEl.style.left = `${left}px`;
+}
+
+function hideTip() {
+  clearTimeout(tipTimer);
+  tipEl.classList.remove('show');
+}
+
+function armTip(e) {
+  const target = e.target.closest('[data-tip]');
+  if (!target) return;
+  clearTimeout(tipTimer);
+  tipTimer = setTimeout(() => placeTip(target), 220);
+}
+
+document.addEventListener('mouseover', armTip);
+document.addEventListener('focusin', armTip);
+document.addEventListener('mouseout', (e) => {
+  if (e.target.closest('[data-tip]')) hideTip();
+});
+document.addEventListener('focusout', hideTip);
+document.addEventListener('scroll', hideTip, true);
+addEventListener('resize', hideTip);
 
 refresh(true).catch(e => banner('No se pudo cargar el estado: ' + e.message));
 </script>

@@ -158,3 +158,56 @@ def test_overridden_model_picks_the_right_openai_service(monkeypatch):
         assert service.model == "gpt-5.6-luna"
     finally:
         clear_ai_override()
+
+
+def test_reasoning_effort_reaches_the_responses_service(monkeypatch):
+    """Effort chosen per run must arrive at the service that actually sends it."""
+    from app.core.ai_selection import clear_ai_override, set_ai_override
+    from app.modules.ai import get_ai_service
+    from app.modules.ai.openai_responses_service import OpenAIResponsesService
+
+    monkeypatch.setattr(settings, "simulation_mode", True)
+    monkeypatch.setattr(settings, "environment", "development")
+    monkeypatch.setattr(settings, "open_ai_key", "sk-test")
+    monkeypatch.setattr(settings, "open_ai_reasoning_effort", "none")
+
+    try:
+        set_ai_override("openai", "gpt-5.6-luna", "high")
+        service = get_ai_service()
+        assert isinstance(service, OpenAIResponsesService)
+        assert service.effort == "high"
+    finally:
+        clear_ai_override()
+
+
+def test_effort_defaults_to_the_configured_one(monkeypatch):
+    """Omitting it keeps whatever the environment is set to."""
+    from app.core.ai_selection import clear_ai_override, set_ai_override
+    from app.modules.ai import get_ai_service
+
+    monkeypatch.setattr(settings, "simulation_mode", True)
+    monkeypatch.setattr(settings, "environment", "development")
+    monkeypatch.setattr(settings, "open_ai_key", "sk-test")
+    monkeypatch.setattr(settings, "open_ai_reasoning_effort", "low")
+
+    try:
+        set_ai_override("openai", "gpt-5.6-luna")
+        assert get_ai_service().effort == "low"
+    finally:
+        clear_ai_override()
+
+
+def test_unknown_effort_is_refused(monkeypatch):
+    """A typo fails here, not as a confusing 400 from OpenAI mid-conversation."""
+    import pytest as _pytest
+
+    from app.core.ai_selection import clear_ai_override, set_ai_override
+
+    monkeypatch.setattr(settings, "simulation_mode", True)
+    monkeypatch.setattr(settings, "environment", "development")
+
+    try:
+        with _pytest.raises(ValueError, match="unknown reasoning effort"):
+            set_ai_override("openai", "gpt-5.6-luna", "altisimo")
+    finally:
+        clear_ai_override()

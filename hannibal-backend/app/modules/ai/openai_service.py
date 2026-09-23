@@ -51,6 +51,7 @@ class OpenAIService(BaseAIService):
         timeout: int = 30,
         max_retries: int = 2,
         model: str | None = None,
+        reasoning_effort: str | None = None,
     ):
         self.client = AsyncOpenAI(
             api_key=settings.open_ai_key,
@@ -59,12 +60,22 @@ class OpenAIService(BaseAIService):
         self.max_retries = max_retries
         self.model = model or settings.open_ai_model
         self.is_reasoning_first = is_reasoning_first_model(self.model)
+        # On this endpoint a reasoning-first model rejects function tools
+        # unless the effort is "none", so anything else would 400 the whole
+        # conversation. The factory routes those models to /v1/responses for
+        # exactly this reason; the parameter is accepted here only so both
+        # services have the same shape.
+        self.effort = (
+            reasoning_effort
+            if reasoning_effort is not None
+            else settings.open_ai_reasoning_effort
+        )
 
     def _apply_sampling_params(self, request_kwargs: dict, temperature: float) -> None:
         """Set the sampling parameters this model actually accepts."""
         if self.is_reasoning_first:
-            if settings.open_ai_reasoning_effort:
-                request_kwargs["reasoning_effort"] = settings.open_ai_reasoning_effort
+            if self.effort:
+                request_kwargs["reasoning_effort"] = self.effort
         else:
             request_kwargs["temperature"] = temperature
 

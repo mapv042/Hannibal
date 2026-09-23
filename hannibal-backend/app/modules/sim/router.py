@@ -152,6 +152,11 @@ class InboundRequest(BaseModel):
     # run twice, once per model, with no redeploy in between.
     provider: Optional[Literal["openai", "anthropic"]] = None
     model: Optional[str] = None
+    # How hard a reasoning-first model should think. Changes the answer as
+    # much as the model does, so it is part of what a comparison varies.
+    reasoning_effort: Optional[
+        Literal["none", "minimal", "low", "medium", "high"]
+    ] = None
 
 
 class ClockRequest(BaseModel):
@@ -190,6 +195,7 @@ async def sim_state(
         "ai": {
             "configured_provider": current_selection().provider,
             "configured_model": current_selection().model,
+            "configured_reasoning_effort": current_selection().reasoning_effort,
         },
         "next_event_at": upcoming.isoformat() if upcoming else None,
         "outbox": await _read_outbox(redis_client, office),
@@ -222,7 +228,9 @@ async def sim_inbound(
 
     if body.model:
         try:
-            set_ai_override(body.provider or "openai", body.model)
+            set_ai_override(
+                body.provider or "openai", body.model, body.reasoning_effort
+            )
         except ValueError as e:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e)
@@ -246,6 +254,7 @@ async def sim_inbound(
         "answered_with": {
             "provider": answered_with.provider,
             "model": answered_with.model,
+            "reasoning_effort": answered_with.reasoning_effort,
         },
         "produced": await _read_outbox(redis_client, office, since=before),
     }

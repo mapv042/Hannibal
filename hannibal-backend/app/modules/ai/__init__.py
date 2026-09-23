@@ -13,7 +13,7 @@ def get_ai_service() -> BaseAIService:
     run they can be overridden per request, which is what makes comparing two
     models a button rather than a redeploy (see app/core/ai_selection.py).
     """
-    provider, model = current_selection()
+    provider, model, reasoning_effort = current_selection()
 
     if provider == "anthropic":
         from app.modules.ai.anthropic_service import AnthropicService
@@ -29,6 +29,6 @@ def get_ai_service() -> BaseAIService:
     if is_reasoning_first_model(model):
         from app.modules.ai.openai_responses_service import OpenAIResponsesService
 
-        return OpenAIResponsesService(model=model)
+        return OpenAIResponsesService(model=model, reasoning_effort=reasoning_effort)
 
-    return OpenAIService(model=model)
+    return OpenAIService(model=model, reasoning_effort=reasoning_effort)

@@ -22,33 +22,67 @@ from contextvars import ContextVar
 from typing import NamedTuple, Optional
 
 
+# What OpenAI accepts for a reasoning-first model. "none" is the only value that
+# works alongside function tools on /v1/chat/completions, which is why it is the
+# configured default; on /v1/responses the rest are available.
+REASONING_EFFORTS = ("none", "minimal", "low", "medium", "high")
+
+
 class AISelection(NamedTuple):
-    """The provider and model a turn should use."""
+    """The provider, model and reasoning effort a turn should use."""
 
     provider: str
     model: str
+    # Only meaningful for reasoning-first models; ignored by the others.
+    reasoning_effort: str = ""
 
 
 _override: ContextVar[Optional[AISelection]] = ContextVar("ai_override", default=None)
 
 
-def set_ai_override(provider: str, model: str) -> None:
-    """Pin this request's provider and model.
+def set_ai_override(
+    provider: str, model: str, reasoning_effort: Optional[str] = None
+) -> None:
+    """Pin this request's provider, model and reasoning effort.
+
+    Effort belongs here with the model rather than staying a deployment-wide
+    setting, because it changes answers as much as the model does — the same
+    model at "minimal" and at "high" is two different things to compare, and
+    comparing them was the point of the simulator.
 
     Args:
         provider: "openai" or "anthropic".
         model: The model id to send.
+        reasoning_effort: One of REASONING_EFFORTS, or None to keep the
+            configured one. Ignored by models that are not reasoning-first.
 
     Raises:
-        ValueError: On an unknown provider, so a typo in the simulator's UI fails
-            here rather than as a confusing error from the wrong SDK.
+        ValueError: On an unknown provider or effort, so a typo in the
+            simulator's UI fails here rather than as a confusing 400 from the SDK.
     """
     if provider not in ("openai", "anthropic"):
         raise ValueError(f"unknown AI provider: {provider!r}")
     if not model:
         raise ValueError("a model id is required")
+    if reasoning_effort and reasoning_effort not in REASONING_EFFORTS:
+        raise ValueError(
+            f"unknown reasoning effort: {reasoning_effort!r} "
+            f"(expected one of {', '.join(REASONING_EFFORTS)})"
+        )
 
-    _override.set(AISelection(provider=provider, model=model))
+    from app.config import settings
+
+    _override.set(
+        AISelection(
+            provider=provider,
+            model=model,
+            reasoning_effort=(
+                reasoning_effort
+                if reasoning_effort is not None
+                else settings.open_ai_reasoning_effort
+            ),
+        )
+    )
 
 
 def clear_ai_override() -> None:
@@ -75,4 +109,8 @@ def current_selection() -> AISelection:
         if provider == "anthropic"
         else settings.open_ai_model
     )
-    return AISelection(provider=provider, model=model)
+    return AISelection(
+        provider=provider,
+        model=model,
+        reasoning_effort=settings.open_ai_reasoning_effort,
+    )
