@@ -99,6 +99,48 @@ async def seed_office(db: AsyncSession) -> Office:
     office.whatsapp_token = SIM_TOKEN
     office.whatsapp_app_active = True
 
+    # The onboarding answers. Without these the assistant knows nothing about
+    # what the practice offers, charges, accepts or treats as urgent — it would
+    # say "no tengo esa información" to most of what a patient actually asks,
+    # and whole behaviours (urgency triage, intake questions, quoting a price)
+    # would never be exercised. Comparing two models against a half-empty
+    # practice would not be evidence of much.
+    #
+    # Drawn from app/core/catalogs.py, the same source onboarding seeds from, so
+    # this practice looks like one a doctor actually filled in.
+    office.address = "Av. Insurgentes Sur 1234, Del Valle"
+    office.assistant_name = "Sofía"
+    office.assistant_tone = "cercano"
+    office.assistant_gender = "femenino"
+    office.welcome_message = (
+        "¡Hola! Soy Sofía, asistente del Consultorio Demo. "
+        "Con gusto le ayudo a agendar su cita."
+    )
+    office.services = [
+        {"name": "Consulta general", "price": "$800"},
+        {"name": "Consulta de seguimiento", "price": "$600"},
+        {"name": "Certificado médico", "price": "$400"},
+        {"name": "Aplicación de vacunas", "price": "$350"},
+    ]
+    # "si" | "algunos" | "no" — a string, not a boolean (String(20) column).
+    office.accepts_insurance = "algunos"
+    office.insurances = ["gnp", "axa", "metlife"]
+    office.emergency_symptoms = [
+        "Dolor de pecho",
+        "Dificultad para respirar",
+        "Sangrado que no se detiene",
+        "Pérdida de conciencia",
+        "Fiebre muy alta que no cede",
+    ]
+    office.intake_questions = {
+        "preset": ["motivo", "desde_cuando", "medicamentos"],
+        "custom": "¿Es la primera vez que nos visita?",
+    }
+    office.new_patient_cost = "$800"
+    office.returning_patient_cost = "$600"
+    office.new_patient_duration_min = 40
+    office.returning_patient_duration_min = 30
+
     for day in WEEKDAYS:
         for start, end in WEEKDAY_SHIFTS:
             db.add(
