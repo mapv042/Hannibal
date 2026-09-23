@@ -11,11 +11,21 @@ from app.utils.logger import configure_logging, get_logger
 # Structured JSON logs (same format as the API) for workers and beat
 configure_logging("INFO")
 
-# Create Celery app
+# Create Celery app.
+#
+# The result backend is optional and off by default. Nothing in this codebase
+# ever reads a task result — every enqueue goes through app.core.celery_dispatch,
+# which ignores the AsyncResult on purpose — so storing results buys nothing and
+# costs a second Redis connection per publish. It also turned out to be a real
+# failure mode: under a burst of publishes the API process logged "Retry limit
+# exceeded while trying to reconnect to the Celery result store backend" and
+# apply_async started failing, so the reminder sweep reported zero dispatched
+# while reminders were genuinely due. Set CELERY_RESULT_BACKEND to turn it back
+# on if a task ever needs to return something.
 celery_app = Celery(
     "hannibal",
     broker=settings.celery_broker_url,
-    backend=settings.celery_result_backend,
+    backend=settings.celery_result_backend or None,
 )
 
 # Reminders are no longer far-future `eta` tasks held in a worker's memory (see
@@ -35,8 +45,9 @@ celery_app.conf.update(
     task_track_started=True,
     task_time_limit=30 * 60,  # 30 minutes hard limit
     task_soft_time_limit=25 * 60,  # 25 minutes soft limit
-    # Result backend configuration
-    result_expires=3600,  # Results expire after 1 hour
+    # Results are not stored unless a backend is configured (see above).
+    task_ignore_result=not settings.celery_result_backend,
+    result_expires=3600,  # Results expire after 1 hour, when stored at all
     # Beat schedule for periodic tasks
     beat_schedule={
         "renew-google-watches": {

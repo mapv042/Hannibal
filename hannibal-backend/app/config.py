@@ -83,7 +83,9 @@ class Settings(BaseSettings):
 
     # Celery
     celery_broker_url: str = "redis://localhost:6379/0"
-    celery_result_backend: str = "redis://localhost:6379/1"
+    # Empty disables result storage. Nothing reads task results — see the
+    # comment in celery_app.py — so this is off unless something needs it.
+    celery_result_backend: str = ""
     # Patient-facing sending window (Mexico City TZ). A reminder whose offset
     # lands outside it is moved to the edge of the window, never sent at night.
     earliest_reminder_hour: int = 8  # Don't send reminders before this hour
