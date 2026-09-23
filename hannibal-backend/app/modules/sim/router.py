@@ -470,6 +470,30 @@ RECOMMENDED = [
     "gpt-6-luna",
 ]
 
+# The second tier of the dropdown. Also a fixed list rather than "everything
+# else the account can see": that was forty entries, most of which nobody should
+# ever pick for this product, and a dropdown that long stops being a choice and
+# starts being a search. These eight are the ones that add an axis the shortlist
+# above does not already cover — the cheap floor, the base of each family, the
+# variants the shortlist only half-covers, and one small reasoning model.
+#
+# Deliberately left out: `-pro` variants (built for long deliberation, the
+# opposite of a WhatsApp turn), `-chat-latest` aliases (a moving target, and not
+# a stable base for function tools), the intermediate 5.x versions (they sit
+# between models already offered and answer no question the shortlist cannot),
+# the larger o-series (o1/o1-pro/o3 are minutes-per-turn slow here), and the
+# 3.5/4/4-turbo generation (too weak at tool use to be worth a comparison).
+OTHERS = [
+    "gpt-4o-mini",
+    "gpt-4.1-nano",
+    "gpt-5-nano",
+    "gpt-5",
+    "gpt-5.6-terra",
+    "gpt-6-sol",
+    "gpt-6-astra",
+    "o4-mini",
+]
+
 MODELS_CACHE_KEY = "sim:openai_models"
 MODELS_CACHE_TTL = 60 * 60
 
@@ -519,7 +543,7 @@ async def sim_models(redis_client: aioredis.Redis = Depends(get_redis)) -> dict:
             logger.warning("sim_models_fetch_failed", error=str(e))
 
     if not available:
-        available = list(RECOMMENDED)
+        available = RECOMMENDED + OTHERS
 
     def describe(model_id: str) -> dict:
         return {
@@ -531,7 +555,7 @@ async def sim_models(redis_client: aioredis.Redis = Depends(get_redis)) -> dict:
         }
 
     shortlist = [describe(m) for m in RECOMMENDED if m in available]
-    rest = [describe(m) for m in available if m not in RECOMMENDED]
+    rest = [describe(m) for m in OTHERS if m in available]
 
     return {
         "recommended": shortlist,
@@ -545,4 +569,142 @@ async def sim_models(redis_client: aioredis.Redis = Depends(get_redis)) -> dict:
             "available": bool(settings.anthropic_api_key and settings.anthropic_ai_model),
         },
         "configured": current_selection().model,
+        # So the dropdowns can open on what this environment actually runs.
+        # A simulator whose first turn silently uses a different thinking level
+        # than test does is worse than no default at all.
+        "configured_reasoning_effort": current_selection().reasoning_effort,
+    }
+
+
+# --------------------------------------------------------------------------- #
+# What this practice is
+# --------------------------------------------------------------------------- #
+
+# 0=Sunday in AvailabilitySchedule; DAYS_ES starts on Monday.
+_DAY_NAMES = ["domingo", "lunes", "martes", "miércoles", "jueves", "viernes", "sábado"]
+
+# What each automatic message is, in the operator's words rather than the
+# enum's. Someone judging whether the bot behaved should not have to know that
+# "at_time" is the waiting-room check-in.
+_REMINDER_LABELS = {
+    "week_before": "Recordatorio una semana antes",
+    "day_before": "Recordatorio de la víspera, con botones para confirmar",
+    "6h": "Recordatorio el mismo día",
+    "doctor_brief": "Resumen para el doctor antes de la consulta",
+    "at_time": "Pregunta al paciente si ya llegó",
+    "post_appointment": "Seguimiento después de la consulta",
+}
+
+
+def _offset_label(minutes: int) -> str:
+    """'2 días antes', '15 minutos después' — signed relative to the start."""
+    if minutes == 0:
+        return "a la hora de la cita"
+    after = minutes > 0
+    minutes = abs(minutes)
+    if minutes % (60 * 24) == 0:
+        amount, unit = minutes // (60 * 24), "día"
+    elif minutes % 60 == 0:
+        amount, unit = minutes // 60, "hora"
+    else:
+        amount, unit = minutes, "minuto"
+    plural = "" if amount == 1 else "s"
+    return f"{amount} {unit}{plural} {'después' if after else 'antes'}"
+
+
+@router.get("/office")
+async def sim_office(db: AsyncSession = Depends(get_db)) -> dict:
+    """How this practice is configured, in readable form.
+
+    The simulator is for judging whether the assistant answered *correctly*, and
+    that is impossible without knowing what the practice actually offers. Someone
+    testing blind cannot tell a right price from an invented one, or a legitimate
+    "no atiendo ese día" from a bug.
+
+    Insurer and intake ids are resolved to their labels here for the same reason:
+    "gnp" is a database value, "GNP Seguros" is what the patient would hear.
+    """
+    from sqlalchemy import asc
+
+    from app.core.catalogs import insurer_labels, intake_labels, specialty_label
+    from app.db.models import AvailabilitySchedule, ReminderRule
+
+    office = await _the_office(db)
+
+    schedules = (
+        await db.execute(
+            select(AvailabilitySchedule)
+            .where(
+                AvailabilitySchedule.office_id == office.id,
+                AvailabilitySchedule.is_active.is_(True),
+            )
+            .order_by(asc(AvailabilitySchedule.day_of_week), asc(AvailabilitySchedule.start_time))
+        )
+    ).scalars().all()
+
+    by_day: dict[str, list[str]] = {}
+    for row in schedules:
+        day = _DAY_NAMES[row.day_of_week]
+        by_day.setdefault(day, []).append(
+            f"{row.start_time.strftime('%H:%M')}–{row.end_time.strftime('%H:%M')}"
+        )
+
+    rules = (
+        await db.execute(
+            select(ReminderRule).where(
+                ReminderRule.office_id == office.id, ReminderRule.enabled.is_(True)
+            )
+        )
+    ).scalars().all()
+
+    intake = office.intake_questions or {}
+    custom = intake.get("custom") if isinstance(intake, dict) else None
+    preguntas = intake_labels(intake.get("preset") if isinstance(intake, dict) else None)
+    if custom:
+        preguntas = preguntas + [custom]
+
+    return {
+        "nombre": office.name,
+        "doctor": " ".join(
+            filter(None, [office.doctor_first_name, office.doctor_last_name])
+        ),
+        "especialidad": specialty_label(office.specialty) or office.specialty,
+        "direccion": ", ".join(filter(None, [office.address, office.city, office.state])),
+        "asistente": {
+            "nombre": office.assistant_name,
+            "tono": office.assistant_tone,
+        },
+        "horarios": [{"dia": d, "bloques": b} for d, b in by_day.items()],
+        "duraciones": {
+            "primera_vez": office.new_patient_duration_min,
+            "seguimiento": office.returning_patient_duration_min,
+        },
+        "servicios": office.services or [],
+        "costos": {
+            "primera_vez": office.new_patient_cost,
+            "seguimiento": office.returning_patient_cost,
+        },
+        "seguros": {
+            "acepta": office.accepts_insurance,
+            "lista": insurer_labels(office.insurances),
+        },
+        "sintomas_de_urgencia": office.emergency_symptoms or [],
+        "preguntas_antes_de_la_cita": preguntas,
+        "mensajes_automaticos": sorted(
+            (
+                {
+                    "que": _REMINDER_LABELS.get(r.reminder_type, r.reminder_type),
+                    "cuando": _offset_label(r.offset_minutes),
+                    "orden": r.offset_minutes,
+                }
+                for r in rules
+            ),
+            key=lambda r: r["orden"],
+        ),
+        "telefonos": {
+            "paciente_por_defecto": "5215550000001",
+            "doctor": office.owner_phone,
+            "secretaria": office.secondary_owner_phone,
+        },
+        "calendario_conectado": bool(office.google_calendar_token),
     }
