@@ -26,6 +26,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.ai_selection import clear_ai_override, current_selection, set_ai_override
 from app.core.dependencies import get_db, get_redis
 from app.db.models import Office
 from app.modules.sim.auth import require_sim_auth
@@ -132,6 +133,11 @@ class InboundRequest(BaseModel):
     text: str = Field(min_length=1, max_length=4000)
     # Which patient is speaking. Omitted means the doctor, or the default patient.
     whatsapp_id: Optional[str] = None
+    # Answer this turn with a specific model instead of the configured one. This
+    # is the whole point of the simulator for model comparison: the same scenario
+    # run twice, once per model, with no redeploy in between.
+    provider: Optional[Literal["openai", "anthropic"]] = None
+    model: Optional[str] = None
 
 
 class ClockRequest(BaseModel):
@@ -167,6 +173,10 @@ async def sim_state(
             "now": now_mx().isoformat(),
             "offset_seconds": await get_offset(),
         },
+        "ai": {
+            "configured_provider": current_selection().provider,
+            "configured_model": current_selection().model,
+        },
         "next_event_at": upcoming.isoformat() if upcoming else None,
         "outbox": await _read_outbox(redis_client, office),
     }
@@ -196,15 +206,33 @@ async def sim_inbound(
     else:
         sender = body.whatsapp_id or "5215550000001"
 
-    before = await _outbox_length(redis_client, office)
+    if body.model:
+        try:
+            set_ai_override(body.provider or "openai", body.model)
+        except ValueError as e:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e)
+            ) from e
 
-    await _process_webhook_async(
-        _meta_shaped_payload(office, sender, body.text),
-        redis_client,
-    )
+    before = await _outbox_length(redis_client, office)
+    answered_with = current_selection()
+
+    try:
+        await _process_webhook_async(
+            _meta_shaped_payload(office, sender, body.text),
+            redis_client,
+        )
+    finally:
+        # The override is per turn: leaving it set would silently colour the next
+        # message, which is exactly the confusion a comparison must not have.
+        clear_ai_override()
 
     return {
         "sent_as": sender,
+        "answered_with": {
+            "provider": answered_with.provider,
+            "model": answered_with.model,
+        },
         "produced": await _read_outbox(redis_client, office, since=before),
     }
 

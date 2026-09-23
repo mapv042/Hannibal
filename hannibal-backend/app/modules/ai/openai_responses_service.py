@@ -40,7 +40,12 @@ REPLAYABLE_ITEM_TYPES = ("reasoning", "function_call", "message")
 class OpenAIResponsesService(BaseAIService):
     """LLM interactions via the OpenAI Responses API, with reasoning enabled."""
 
-    def __init__(self, timeout: int = 60, max_retries: int = 2):
+    def __init__(
+        self,
+        timeout: int = 60,
+        max_retries: int = 2,
+        model: str | None = None,
+    ):
         # Reasoning turns are slower than a plain completion, so the default
         # timeout is higher than the Chat Completions service's 30s.
         self.client = AsyncOpenAI(
@@ -48,7 +53,7 @@ class OpenAIResponsesService(BaseAIService):
             timeout=timeout,
         )
         self.max_retries = max_retries
-        self.model = settings.open_ai_model
+        self.model = model or settings.open_ai_model
         self.effort = settings.open_ai_reasoning_effort
 
     # ------------------------------------------------------------------

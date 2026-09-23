@@ -97,3 +97,64 @@ def test_clock_offset_ignored_in_production(monkeypatch):
     set_clock_offset(3 * 24 * 3600)
 
     assert clock_offset() == timedelta(0)
+
+
+def test_model_override_ignored_in_production(monkeypatch):
+    """A stray override cannot change which model production answers with."""
+    from app.core.ai_selection import clear_ai_override, current_selection, set_ai_override
+
+    monkeypatch.setattr(settings, "ai_provider", "openai")
+    monkeypatch.setattr(settings, "open_ai_model", "gpt-4.1-mini")
+    monkeypatch.setattr(settings, "simulation_mode", True)
+    monkeypatch.setattr(settings, "environment", "production")
+
+    set_ai_override("anthropic", "claude-haiku-4-5-20251001")
+    try:
+        assert current_selection().model == "gpt-4.1-mini"
+    finally:
+        clear_ai_override()
+
+
+def test_model_override_applies_in_simulation(monkeypatch):
+    """And it does apply where it is meant to, or the test above proves nothing."""
+    from app.core.ai_selection import clear_ai_override, current_selection, set_ai_override
+
+    monkeypatch.setattr(settings, "ai_provider", "openai")
+    monkeypatch.setattr(settings, "open_ai_model", "gpt-4.1-mini")
+    monkeypatch.setattr(settings, "simulation_mode", True)
+    monkeypatch.setattr(settings, "environment", "development")
+
+    set_ai_override("anthropic", "claude-haiku-4-5-20251001")
+    try:
+        chosen = current_selection()
+        assert (chosen.provider, chosen.model) == (
+            "anthropic",
+            "claude-haiku-4-5-20251001",
+        )
+    finally:
+        clear_ai_override()
+
+
+def test_overridden_model_picks_the_right_openai_service(monkeypatch):
+    """A reasoning-first override must route to /v1/responses, not chat/completions."""
+    from app.core.ai_selection import clear_ai_override, set_ai_override
+    from app.modules.ai import get_ai_service
+    from app.modules.ai.openai_responses_service import OpenAIResponsesService
+    from app.modules.ai.openai_service import OpenAIService
+
+    monkeypatch.setattr(settings, "simulation_mode", True)
+    monkeypatch.setattr(settings, "environment", "development")
+    monkeypatch.setattr(settings, "open_ai_key", "sk-test")
+
+    try:
+        set_ai_override("openai", "gpt-4.1-mini")
+        service = get_ai_service()
+        assert isinstance(service, OpenAIService)
+        assert service.model == "gpt-4.1-mini"
+
+        set_ai_override("openai", "gpt-5.6-luna")
+        service = get_ai_service()
+        assert isinstance(service, OpenAIResponsesService)
+        assert service.model == "gpt-5.6-luna"
+    finally:
+        clear_ai_override()

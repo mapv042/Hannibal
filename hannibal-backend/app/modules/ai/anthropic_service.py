@@ -46,13 +46,18 @@ class AnthropicService(BaseAIService):
     Uses Claude Haiku as the underlying model.
     """
 
-    def __init__(self, timeout: int = 30, max_retries: int = 2):
+    def __init__(
+        self,
+        timeout: int = 30,
+        max_retries: int = 2,
+        model: str | None = None,
+    ):
         self.client = AsyncAnthropic(
             api_key=settings.anthropic_api_key,
             timeout=timeout,
         )
         self.max_retries = max_retries
-        self.model = settings.anthropic_ai_model
+        self.model = model or settings.anthropic_ai_model
 
     async def _raw_chat(
         self,

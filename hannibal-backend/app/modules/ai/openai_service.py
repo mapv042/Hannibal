@@ -46,13 +46,18 @@ class OpenAIService(BaseAIService):
     The model comes from OPEN_AI_MODEL.
     """
 
-    def __init__(self, timeout: int = 30, max_retries: int = 2):
+    def __init__(
+        self,
+        timeout: int = 30,
+        max_retries: int = 2,
+        model: str | None = None,
+    ):
         self.client = AsyncOpenAI(
             api_key=settings.open_ai_key,
             timeout=timeout,
         )
         self.max_retries = max_retries
-        self.model = settings.open_ai_model
+        self.model = model or settings.open_ai_model
         self.is_reasoning_first = is_reasoning_first_model(self.model)
 
     def _apply_sampling_params(self, request_kwargs: dict, temperature: float) -> None:
