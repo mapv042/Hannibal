@@ -428,3 +428,121 @@ async def sim_gcal_status(db: AsyncSession = Depends(get_db)) -> dict:
         "calendar_id": office.google_calendar_id or "primary (cámbialo)",
         "redirect_uri_configured": settings.google_redirect_uri,
     }
+
+
+# --------------------------------------------------------------------------- #
+# Which models the operator may choose from
+# --------------------------------------------------------------------------- #
+
+# Everything the account can see that is not a chat model. Filtering by what a
+# model *is not* keeps new releases in the list automatically, which is the whole
+# reason this is fetched instead of hardcoded.
+_NOT_CHAT = (
+    "audio", "realtime", "transcribe", "tts", "embedding", "image", "search",
+    "moderation", "instruct", "dall-e", "whisper", "codex", "sora", "live",
+)
+_CHAT_PREFIXES = ("gpt-", "o1", "o3", "o4")
+
+# Dated snapshots (gpt-5.4-2026-03-05) are the same model as their alias and only
+# add noise to a dropdown.
+_DATED = __import__("re").compile(r"-\d{4}-\d{2}-\d{2}$")
+
+# A shortlist for this product, offered first. The axis that matters here is
+# cost and latency against instruction-following: a patient is waiting on
+# WhatsApp, and a turn spends several tool calls. So it spans the range rather
+# than picking a winner — that is what the operator is here to decide.
+#
+# "pro" variants are deliberately left out of the shortlist (still selectable
+# below): they are built for long deliberation, which is the opposite of what a
+# chat turn needs. Anything past gpt-5.4 is ordered by version, not by measured
+# behaviour — nobody here has benchmarked them for this task, which is precisely
+# what the simulator is for.
+RECOMMENDED = [
+    "gpt-4.1-mini",
+    "gpt-5-mini",
+    "gpt-5.4-nano",
+    "gpt-5.4-mini",
+    "gpt-4.1",
+    "gpt-5.4",
+    "gpt-5.5",
+    "gpt-5.6-luna",
+    "gpt-5.6-sol",
+    "gpt-6-luna",
+]
+
+MODELS_CACHE_KEY = "sim:openai_models"
+MODELS_CACHE_TTL = 60 * 60
+
+
+def _is_chat_model(model_id: str) -> bool:
+    if not model_id.startswith(_CHAT_PREFIXES):
+        return False
+    if any(token in model_id for token in _NOT_CHAT):
+        return False
+    return not _DATED.search(model_id)
+
+
+@router.get("/models")
+async def sim_models(redis_client: aioredis.Redis = Depends(get_redis)) -> dict:
+    """The models this account can actually use.
+
+    Asked of OpenAI rather than hardcoded, so the list is true today and stays
+    true when a new model ships — a stale dropdown would quietly stop the
+    operator from testing the thing they came to test.
+
+    Falls back to the shortlist if the call fails, so a network hiccup leaves the
+    simulator usable instead of empty.
+    """
+    from app.modules.ai.openai_service import is_reasoning_first_model
+
+    cached = await redis_client.get(MODELS_CACHE_KEY)
+    if cached:
+        available = json.loads(cached)
+    else:
+        available = []
+        try:
+            import httpx
+
+            async with httpx.AsyncClient(timeout=15) as client:
+                r = await client.get(
+                    "https://api.openai.com/v1/models",
+                    headers={"Authorization": f"Bearer {settings.open_ai_key}"},
+                )
+                r.raise_for_status()
+                available = sorted(
+                    m["id"] for m in r.json()["data"] if _is_chat_model(m["id"])
+                )
+            await redis_client.setex(
+                MODELS_CACHE_KEY, MODELS_CACHE_TTL, json.dumps(available)
+            )
+        except Exception as e:
+            logger.warning("sim_models_fetch_failed", error=str(e))
+
+    if not available:
+        available = list(RECOMMENDED)
+
+    def describe(model_id: str) -> dict:
+        return {
+            "provider": "openai",
+            "model": model_id,
+            # Reasoning-first models go to /v1/responses and take a thinking
+            # level; the UI only offers that control for these.
+            "reasoning": is_reasoning_first_model(model_id),
+        }
+
+    shortlist = [describe(m) for m in RECOMMENDED if m in available]
+    rest = [describe(m) for m in available if m not in RECOMMENDED]
+
+    return {
+        "recommended": shortlist,
+        "others": rest,
+        "anthropic": {
+            "provider": "anthropic",
+            "model": settings.anthropic_ai_model,
+            "reasoning": False,
+            # Offering a provider with no key would fail as a confusing auth
+            # error mid-conversation; the UI greys it out instead.
+            "available": bool(settings.anthropic_api_key and settings.anthropic_ai_model),
+        },
+        "configured": current_selection().model,
+    }

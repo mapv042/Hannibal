@@ -347,16 +347,11 @@
 
 <script>
 const API = '/api/sim';
-const MODELS = [
-  ['openai',    'gpt-4.1-mini'],
-  ['openai',    'gpt-5.6-luna'],
-  ['anthropic', 'claude-haiku-4-5-20251001'],
-];
-// Only these take a reasoning effort; the rest 400 on the parameter. Mirrors
-// REASONING_FIRST_PREFIXES in app/modules/ai/openai_service.py.
-const REASONING_PREFIXES = ['gpt-5.6', 'gpt-6', 'o1', 'o3', 'o4'];
 const EFFORTS = ['none', 'minimal', 'low', 'medium', 'high'];
-const isReasoning = (m) => REASONING_PREFIXES.some(p => m.startsWith(p));
+// Filled from /models, which asks OpenAI what this account can actually use.
+// Keyed by "provider|model" so the lookup matches the select's value.
+let MODEL_INFO = {};
+const isReasoning = (m) => !!(MODEL_INFO[`openai|${m}`] || {}).reasoning;
 
 let state = null;
 let renderedOutbox = 0;
@@ -591,11 +586,54 @@ async function advance(body, label) {
 
 /* ---------------- wiring ---------------- */
 
-MODELS.forEach(([p, m]) => {
+function addModelOption(group, info, disabled) {
   const o = document.createElement('option');
-  o.value = `${p}|${m}`; o.textContent = `${p} · ${m}`;
-  $('model').appendChild(o);
-});
+  o.value = `${info.provider}|${info.model}`;
+  o.textContent = info.model + (disabled ? ' — sin API key' : '');
+  o.disabled = !!disabled;
+  MODEL_INFO[o.value] = info;
+  group.appendChild(o);
+}
+
+async function loadModels() {
+  const sel = $('model');
+  let data;
+  try {
+    data = await call('/models');
+  } catch (e) {
+    banner('No se pudo cargar la lista de modelos: ' + e.message);
+    return;
+  }
+
+  sel.innerHTML = ''; MODEL_INFO = {};
+
+  const recomendados = document.createElement('optgroup');
+  recomendados.label = 'Recomendados para este producto';
+  data.recommended.forEach(m => addModelOption(recomendados, m));
+  if (data.recommended.length) sel.appendChild(recomendados);
+
+  // Only offered when one is configured at all; an entry with no model name
+  // is noise, and picking it could only fail.
+  if (data.anthropic.model) {
+    const claude = document.createElement('optgroup');
+    claude.label = 'Anthropic';
+    addModelOption(claude, data.anthropic, !data.anthropic.available);
+    sel.appendChild(claude);
+  }
+
+  if (data.others.length) {
+    const otros = document.createElement('optgroup');
+    otros.label = `Todos los demás (${data.others.length})`;
+    data.others.forEach(m => addModelOption(otros, m));
+    sel.appendChild(otros);
+  }
+
+  // Start on whatever the environment is configured with, so the first run
+  // reflects what test and production actually do.
+  const configurado = `openai|${data.configured}`;
+  if (MODEL_INFO[configurado]) sel.value = configurado;
+  syncEffortVisibility();
+}
 
 EFFORTS.forEach(e => {
   const o = document.createElement('option');
@@ -612,7 +650,6 @@ function syncEffortVisibility() {
   $('effort-label').hidden = !show;
 }
 $('model').addEventListener('change', syncEffortVisibility);
-syncEffortVisibility();
 
 document.querySelectorAll('.send').forEach(btn => {
   btn.onclick = () => {
@@ -737,7 +774,9 @@ document.addEventListener('focusout', hideTip);
 document.addEventListener('scroll', hideTip, true);
 addEventListener('resize', hideTip);
 
-refresh(true).catch(e => banner('No se pudo cargar el estado: ' + e.message));
+loadModels()
+  .then(() => refresh(true))
+  .catch(e => banner('No se pudo cargar el estado: ' + e.message));
 </script>
 </body>
 </html>
