@@ -8,12 +8,16 @@ the simulator exists to remove.
 
 Two design rules worth knowing before changing anything here:
 
-**The clock advances in ticks, it does not jump.** Jumping a day and sweeping once
-at the end silently loses reminders: the sweep discards anything
-`is_still_worth_sending` now considers stale, so a 6h reminder whose appointment
-has since passed is dropped without a trace. Stepping through in beat-sized
-intervals reproduces what production would actually have sent. It is a handful of
-small queries per tick, so a day costs seconds.
+**The clock stops where something happens, and nowhere else.** Jumping straight to
+the target and sweeping once silently loses reminders — the sweep discards
+anything `is_still_worth_sending` has since made stale, so a 6h reminder whose
+appointment already passed vanishes without a trace. But avoiding that does not
+require crawling: `due_at` already knows when each pending reminder fires, so the
+advance lands on those moments in turn and finishes on the requested time. The
+first version stepped a uniform five-minute grid instead, which meant ~290 sweeps
+for a one-day advance, each publishing to Celery with a blocking call inside the
+event loop; against a real Redis that wedged the backend outright. The same day
+now costs three or four steps.
 
 **The clock only moves forward.** Google Calendar does not travel in time, so
 rewinding would leave us asking it about dates that no longer match the
@@ -57,8 +61,9 @@ logger = get_logger(__name__)
 # would be written with the wrong "mañana".
 CLOCK_KEY = "sim:clock_offset"
 
-# Matches the Celery beat cadence, so stepping reproduces production's grain.
-TICK = timedelta(minutes=5)
+# Backstop on how many times one advance may sweep. Each step should retire at
+# least one reminder, so hitting this means a sent flag is not being written.
+MAX_STEPS = 200
 
 # A single request should not be able to walk a year forward.
 MAX_ADVANCE = timedelta(days=30)
@@ -229,15 +234,24 @@ async def next_event_at(office_id: UUID) -> Optional[datetime]:
 
 
 async def advance_clock(office_id: UUID, seconds: int) -> dict:
-    """Move this office's clock forward, running everything the move implies.
+    """Move the simulated clock forward, running everything the move implies.
+
+    The clock does not crawl: it lands on the moments something is actually due
+    and sweeps there, then finishes on the requested time. `due_at` already knows
+    when every pending reminder fires, so stepping through a uniform grid to
+    avoid missing one was never necessary — and it was ruinous. A one-day advance
+    used to mean ~290 sweeps in a single request, each publishing to Celery with
+    a blocking call inside the event loop, which wedged the backend against a
+    real Redis. The same day now costs one step per pending reminder, usually
+    three or four.
 
     Args:
         office_id: The office whose clock moves.
         seconds: How far forward, in seconds. Must be positive.
 
     Returns:
-        A summary: the new offset, the new virtual time, how many caches and
-        sessions were cleared, and every reminder dispatched along the way.
+        A summary: the new offset, the new virtual time, the steps taken, and
+        every reminder dispatched along the way (each listed once).
 
     Raises:
         ValueError: If `seconds` is not positive or exceeds MAX_ADVANCE.
@@ -248,41 +262,61 @@ async def advance_clock(office_id: UUID, seconds: int) -> dict:
         raise ValueError(f"cannot advance more than {MAX_ADVANCE.days} days at once")
 
     client = await _redis()
-    try:
-        start_offset = await get_offset(client)
-        target_offset = start_offset + seconds
-        dispatched: list[dict] = []
-        seen: set[tuple[str, str]] = set()
-        drained_cleanly = True
-        ticks = 0
+    dispatched: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+    drained_cleanly = True
+    steps = 0
 
-        offset = start_offset
-        while offset < target_offset:
-            offset = min(offset + int(TICK.total_seconds()), target_offset)
+    try:
+        offset = await get_offset(client)
+        target_offset = offset + seconds
+        set_clock_offset(offset)
+
+        async def land_on(new_offset: int) -> None:
+            nonlocal offset
+            offset = new_offset
             await _store_offset(client, offset)
             set_clock_offset(offset)
-            ticks += 1
 
-            just_dispatched = await _dispatch_due_reminders_async()
-            if just_dispatched:
-                # Let the worker run them before the next tick sweeps again, or
-                # the sweep re-dispatches what it just queued. See _drain_queue.
-                if not await _drain_queue(client):
-                    drained_cleanly = False
+        async def sweep_here() -> None:
+            nonlocal drained_cleanly, steps
+            steps += 1
+            just = await _dispatch_due_reminders_async()
+            if not just:
+                return
+            # An empty queue means taken, not finished; wait before sweeping
+            # again or the next step re-dispatches what this one queued.
+            if not await _drain_queue(client):
+                drained_cleanly = False
+            for item in just:
+                key = (item["appointment_id"], item["reminder_type"])
+                if key not in seen:
+                    seen.add(key)
+                    dispatched.append(item)
 
-                # Report each reminder once. A task that is taken but not yet
-                # committed can be queued twice; the send itself is idempotent so
-                # the patient gets one message, and the run should say one too.
-                for item in just_dispatched:
-                    key = (item["appointment_id"], item["reminder_type"])
-                    if key not in seen:
-                        seen.add(key)
-                        dispatched.append(item)
+        # Stop at each pending reminder in turn. The loop ends when nothing is
+        # due before the target; MAX_STEPS is a backstop so a sent flag that
+        # never gets written cannot spin here forever.
+        while steps < MAX_STEPS:
+            upcoming = await next_event_at(office_id)
+            if upcoming is None:
+                break
+            # A second past the due time, so the sweep sees it as due.
+            needed = offset + int((upcoming - now_mx()).total_seconds()) + 1
+            if needed > target_offset:
+                break
+            await land_on(needed)
+            await sweep_here()
 
-        # Once, at the end, not per tick. The sweep reads neither the availability
-        # cache nor sessions — only the next *conversation* does, and that happens
-        # after this returns. Scanning the keyspace on every tick made a one-day
-        # advance open hundreds of connections and exhausted Redis.
+        # Finish on the time that was asked for, and sweep once more: something
+        # can come due exactly there.
+        if offset < target_offset:
+            await land_on(target_offset)
+            await sweep_here()
+
+        # Once, at the end. The sweep reads neither the availability cache nor
+        # sessions — only the next *conversation* does, and that is after this
+        # returns.
         await _drop_availability_cache(client, office_id)
         await _expire_stale_sessions(client, office_id)
     finally:
@@ -292,14 +326,14 @@ async def advance_clock(office_id: UUID, seconds: int) -> dict:
         "sim_clock_advanced",
         office_id=str(office_id),
         seconds=seconds,
-        ticks=ticks,
+        steps=steps,
         dispatched=len(dispatched),
     )
 
     result = {
         "offset_seconds": offset,
         "now": now_mx().isoformat(),
-        "ticks": ticks,
+        "steps": steps,
         "dispatched": dispatched,
     }
     if not drained_cleanly:
@@ -319,9 +353,9 @@ async def advance_to_next_event(office_id: UUID) -> dict:
     target = await next_event_at(office_id)
     if target is None:
         return {
-            "offset_seconds": offset,
+            "offset_seconds": await get_offset(),
             "now": now_mx().isoformat(),
-            "ticks": 0,
+            "steps": 0,
             "dispatched": [],
             "skipped": "nothing due within the horizon",
         }

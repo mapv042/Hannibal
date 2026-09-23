@@ -32,7 +32,9 @@ from app.core.ai_selection import clear_ai_override, current_selection, set_ai_o
 from app.core.dependencies import get_db, get_redis
 from app.db.models import Office
 from app.modules.sim.auth import require_sim_auth
+from app.modules.sim import seed as sim_seed
 from app.modules.sim.runner import (
+    CLOCK_KEY,
     advance_clock,
     advance_to_next_event,
     get_offset,
@@ -303,3 +305,41 @@ async def sim_clear_outbox(
     cleared = await redis_client.llen(key)
     await redis_client.delete(key)
     return {"cleared": cleared}
+
+
+@router.post("/reset")
+async def sim_reset(
+    db: AsyncSession = Depends(get_db),
+    redis_client: aioredis.Redis = Depends(get_redis),
+) -> dict:
+    """Throw the whole scenario away and start over.
+
+    This is the simulator's only way back: the clock moves forward and never
+    rewinds, because Google Calendar cannot rewind with it. So starting a new
+    scenario means a new database, a clock at zero and an empty transcript —
+    everything this does.
+
+    Destructive by design and by name. It is safe only because the database is
+    disposable, which is the whole premise of the environment; the package it
+    lives in refuses to load anywhere else.
+    """
+    office = await sim_seed.reset(db)
+
+    await redis_client.delete(CLOCK_KEY)
+    await redis_client.delete(OUTBOX_KEY.format(phone_number_id=office.whatsapp_phone_id))
+
+    # Sessions and locks would otherwise outlive the office they belonged to.
+    for pattern in (f"session:*:{office.id}", f"avail_cache:{office.id}:*",
+                    f"slot_lock:{office.id}:*", f"conv_lock:{office.id}:*"):
+        keys = [k async for k in redis_client.scan_iter(match=pattern, count=500)]
+        if keys:
+            await redis_client.delete(*keys)
+
+    logger.warning("sim_reset", office_id=str(office.id))
+
+    return {
+        "office_id": str(office.id),
+        "name": office.name,
+        "clock": "reset to real time",
+        "outbox": "cleared",
+    }

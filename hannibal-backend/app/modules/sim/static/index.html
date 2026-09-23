@@ -190,6 +190,7 @@
     <div style="font-size:13px" id="next-label">—</div>
   </div>
   <button class="btn" id="clear-outbox">Limpiar transcripción</button>
+  <button class="btn" id="reset-all">Reiniciar escenario</button>
 </div>
 
 <main>
@@ -458,7 +459,7 @@ async function advance(body, label) {
     if (r.skipped) { banner('No hay nada pendiente que disparar.'); return; }
     jumpMarker(label);
     trace(`reloj → ${fmtShort(r.now)}`, [
-      `${r.ticks} tic(s) de 5 min`,
+      `${r.steps} paso(s)`,
       `→ ${r.dispatched.length} recordatorio(s) despachado(s)`,
       ...r.dispatched.map(d => `   ${d.reminder_type}`),
     ], 'clock');
@@ -520,6 +521,23 @@ $('new-patient').onclick = async () => {
   $('pac-log').innerHTML = '';
   jumpMarker('paciente nuevo: el bot nunca lo ha visto');
   trace('paciente nuevo', [`→ ${patientPhone}`]);
+};
+
+$('reset-all').onclick = async () => {
+  // Destructive, and the only way back: the clock never rewinds, so a new
+  // scenario means a new database, a clock at zero and an empty transcript.
+  if (!window.confirm('Esto borra las citas, los pacientes y la transcripción, y pone el reloj en hora real. ¿Reiniciar?')) return;
+  busy(true);
+  try {
+    await call('/reset', { method: 'POST' });
+    patientPhone = '5215550000001';
+    $('trace').innerHTML = '';
+    trace('escenario reiniciado', ['→ base resembrada, reloj en cero']);
+    await refresh(true);
+    banner('');
+  } catch (e) {
+    banner('No se pudo reiniciar: ' + e.message);
+  } finally { busy(false); }
 };
 
 $('clear-outbox').onclick = async () => {
