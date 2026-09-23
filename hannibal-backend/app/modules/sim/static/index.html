@@ -158,6 +158,55 @@
     padding: 9px 20px; border-bottom: 1px solid #E8C4BA;
   }
   .banner.show { display: block; }
+
+  /* ---------- tooltips ----------
+     Native title= waits a second and reads like a system message. These appear
+     at once and can hold a sentence, which is what an explanation needs. */
+  [data-tip] { position: relative; }
+  [data-tip]::after {
+    content: attr(data-tip);
+    position: absolute; top: calc(100% + 8px); left: 50%; transform: translateX(-50%);
+    width: max-content; max-width: 260px; padding: 8px 11px; z-index: 50;
+    background: var(--chrome); color: var(--ground);
+    font-size: 11.5px; font-weight: 400; line-height: 1.45; text-align: left;
+    text-transform: none; letter-spacing: normal;
+    border-radius: 8px; box-shadow: 0 6px 18px rgba(31,29,26,.22);
+    opacity: 0; visibility: hidden; transition: opacity .12s ease .25s, visibility 0s .37s;
+    pointer-events: none; white-space: normal;
+  }
+  [data-tip]:hover::after, [data-tip]:focus-visible::after {
+    opacity: 1; visibility: visible; transition-delay: .25s, 0s;
+  }
+  [data-tip].tip-left::after { left: auto; right: 0; transform: none; }
+  [data-tip].tip-up::after { top: auto; bottom: calc(100% + 8px); }
+
+  /* ---------- help panel ---------- */
+  .help-btn {
+    width: 26px; height: 26px; border-radius: 999px; padding: 0;
+    border: 1px solid #494540; background: var(--chrome-2); color: var(--chrome-ink);
+    font-size: 13px; font-weight: 600; line-height: 1;
+  }
+  .help-btn:hover { background: #3A3733; color: var(--ground); }
+  .help {
+    display: none; padding: 16px 20px 18px; background: #FFFDF9;
+    border-bottom: 1px solid var(--line);
+  }
+  .help.show { display: block; }
+  .help h2 {
+    margin: 0 0 10px; font-family: 'Instrument Serif', Georgia, serif;
+    font-size: 20px; font-weight: 400;
+  }
+  .help-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 14px 24px; }
+  .help-grid section {
+    background: transparent; border: 0; border-radius: 0; display: block; overflow: visible;
+  }
+  .help-grid h3 {
+    margin: 0 0 5px; font-size: 10px; font-weight: 600;
+    letter-spacing: .8px; text-transform: uppercase; color: var(--clay);
+  }
+  .help-grid p { margin: 0 0 7px; font-size: 12.5px; line-height: 1.5; color: var(--ink); }
+  .help-grid b { font-weight: 600; }
+  .help-grid .muted { color: var(--ink-2); }
 </style>
 </head>
 <body>
@@ -167,10 +216,39 @@
   <span class="pill" id="office-name">cargando…</span>
   <span class="spacer"></span>
   <label for="model">Modelo</label>
-  <select id="model"></select>
+  <select id="model" class="tip-left"
+          data-tip="Con qué modelo de IA contesta el asistente. Cámbialo y repite la misma conversación para comparar respuestas."></select>
+  <button class="help-btn tip-left" id="help-toggle" aria-label="¿Qué hace cada cosa?"
+          data-tip="Abre una guía breve de para qué sirve cada control.">?</button>
 </header>
 
 <div class="banner" id="banner"></div>
+
+<div class="help" id="help">
+  <h2>Qué hace cada cosa</h2>
+  <div class="help-grid">
+    <section>
+      <h3>Los dos chats</h3>
+      <p>Escribe en el panel izquierdo como si fueras <b>el paciente</b>, y en el derecho como <b>el doctor</b>. Es el mismo bot que en producción: agenda citas de verdad, revisa disponibilidad real y escribe en Google Calendar.</p>
+      <p class="muted">Nadie recibe WhatsApp: los mensajes se quedan aquí.</p>
+    </section>
+    <section>
+      <h3>La barra del reloj</h3>
+      <p>El simulador vive en una hora inventada que puedes adelantar. Sirve para no esperar dos días a que llegue un recordatorio.</p>
+      <p><b>Siguiente evento</b> salta justo al momento en que toca mandar algo. <b>+1 h / +6 h / +1 día</b> avanzan esa cantidad.</p>
+      <p class="muted">El reloj solo avanza; para volver atrás hay que reiniciar.</p>
+    </section>
+    <section>
+      <h3>Mensajes automáticos</h3>
+      <p>Los que salen con etiqueta naranja <b>automático</b> no los escribió nadie: los disparó el reloj (recordatorios, aviso al doctor, seguimiento).</p>
+      <p>Si trae nombre de <b>plantilla</b>, es un mensaje que en WhatsApp real solo puede enviarse fuera de la ventana de 24 horas.</p>
+    </section>
+    <section>
+      <h3>El panel oscuro</h3>
+      <p>Es la traza: qué modelo contestó, cuántos mensajes salieron y qué disparó cada salto de reloj. Sirve para entender <b>por qué</b> el bot hizo algo, no solo qué dijo.</p>
+    </section>
+  </div>
+</div>
 
 <div class="clockbar">
   <div>
@@ -178,19 +256,20 @@
     <div class="cap" id="clock-offset">hora virtual</div>
   </div>
   <span class="divider"></span>
-  <button class="btn btn-primary" id="next-event">
+  <button class="btn btn-primary" id="next-event"
+          data-tip="Adelanta el reloj justo hasta el próximo mensaje programado y lo dispara. Es la forma rápida de ver qué le llega al paciente sin esperar días.">
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 4l10 8-10 8z"/><path d="M19 4v16"/></svg>
     Siguiente evento
   </button>
-  <button class="btn adv" data-seconds="3600">+1 h</button>
-  <button class="btn adv" data-seconds="21600">+6 h</button>
-  <button class="btn adv" data-seconds="86400">+1 día</button>
+  <button class="btn adv" data-seconds="3600" data-tip="Adelanta el reloj una hora y manda lo que caiga en ese rato.">+1 h</button>
+  <button class="btn adv" data-seconds="21600" data-tip="Adelanta seis horas.">+6 h</button>
+  <button class="btn adv" data-seconds="86400" data-tip="Adelanta un día completo. Útil para ver el recordatorio de la víspera.">+1 día</button>
   <div style="flex-grow:1; min-width:180px">
     <div class="cap">Próximo evento</div>
     <div style="font-size:13px" id="next-label">—</div>
   </div>
-  <button class="btn" id="clear-outbox">Limpiar transcripción</button>
-  <button class="btn" id="reset-all">Reiniciar escenario</button>
+  <button class="btn tip-left" id="clear-outbox" data-tip="Borra los mensajes de la pantalla. No toca las citas ni el reloj.">Limpiar transcripción</button>
+  <button class="btn tip-left" id="reset-all" data-tip="Empieza de cero: borra citas, pacientes y mensajes, y regresa el reloj a la hora real. Tu Google Calendar sigue conectado.">Reiniciar escenario</button>
 </div>
 
 <main>
@@ -202,15 +281,15 @@
         <span class="spacer"></span><span class="mono" style="font-size:10px;color:var(--ink-2)" id="pac-phone"></span>
       </div>
       <div class="row">
-        <button class="btn btn-sm" id="new-session">Nueva sesión</button>
-        <button class="btn btn-sm" id="new-patient">Paciente nuevo</button>
+        <button class="btn btn-sm" id="new-session" data-tip="El bot olvida esta conversación, pero sigue conociendo al paciente y sus citas. Simula que escribe otra vez días después.">Nueva sesión</button>
+        <button class="btn btn-sm" id="new-patient" data-tip="Cambia a un número que el bot nunca ha visto, para probar cómo atiende a alguien desconocido.">Paciente nuevo</button>
       </div>
     </div>
     <div class="log" id="pac-log"><div class="empty">Escribe un mensaje para empezar.</div></div>
     <div class="composer">
       <label for="pac-input" style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)">Mensaje como paciente</label>
       <input id="pac-input" placeholder="Escribir como el paciente…">
-      <button class="send pac" data-role="patient">Enviar</button>
+      <button class="send pac tip-left" data-role="patient" data-tip="Manda el mensaje como el paciente. También funciona la tecla Enter.">Enviar</button>
     </div>
   </section>
 
@@ -221,13 +300,13 @@
         <span class="who doc">Doctor</span><strong id="doc-name">—</strong>
         <span class="spacer"></span><span class="mono" style="font-size:10px;color:var(--ink-2)" id="doc-phone"></span>
       </div>
-      <div class="row"><button class="btn btn-sm" id="doc-session">Nueva sesión</button></div>
+      <div class="row"><button class="btn btn-sm" id="doc-session" data-tip="El bot olvida la conversación con el doctor.">Nueva sesión</button></div>
     </div>
     <div class="log" id="doc-log"><div class="empty">Sin mensajes todavía.</div></div>
     <div class="composer">
       <label for="doc-input" style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)">Mensaje como doctor</label>
       <input id="doc-input" placeholder="Escribir como la doctora…">
-      <button class="send doc" data-role="doctor">Enviar</button>
+      <button class="send doc tip-left" data-role="doctor" data-tip="Manda el mensaje como el doctor.">Enviar</button>
     </div>
   </section>
 
@@ -324,6 +403,8 @@ function messageNode(m) {
       const btn = document.createElement('button');
       btn.className = 'wa-btn';
       btn.textContent = b.title;
+      btn.setAttribute('data-tip',
+        'Así lo vería el paciente en WhatsApp. Al pulsarlo se envía como si él lo hubiera tocado.');
       // A tap arrives as the button's TITLE text, exactly as in production —
       // the id is dropped on the way in.
       btn.onclick = () => send('patient', b.title);
@@ -521,6 +602,12 @@ $('new-patient').onclick = async () => {
   $('pac-log').innerHTML = '';
   jumpMarker('paciente nuevo: el bot nunca lo ha visto');
   trace('paciente nuevo', [`→ ${patientPhone}`]);
+};
+
+$('help-toggle').onclick = () => {
+  const panel = $('help');
+  panel.classList.toggle('show');
+  $('help-toggle').textContent = panel.classList.contains('show') ? '×' : '?';
 };
 
 $('reset-all').onclick = async () => {
