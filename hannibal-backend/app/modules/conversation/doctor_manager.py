@@ -9,17 +9,21 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 import redis.asyncio as redis
 
+from app.utils.dates import now_mx
 from app.utils.logger import get_logger
-from app.core.exceptions import ConversationError
+from app.core.exceptions import AIServiceError, ConversationError
 from app.db.models import Office
 from app.modules.ai.prompts.doctor import build_doctor_system_prompt
 from app.modules.ai.doctor_tools import (
     DOCTOR_MUTATING_TOOLS,
+    DOCTOR_TOOL_CLAIMS,
     DOCTOR_TOOL_DEFINITIONS,
     DoctorToolContext,
     execute_doctor_tool,
 )
 from app.modules.conversation.base_manager import BaseToolConversationManager
+from app.modules.conversation.state import ConversationState
+from app.modules.conversation.tracing import persist_trace
 from app.modules.whatsapp.transport import WhatsAppClient
 from app.modules.whatsapp.window import record_doctor_inbound
 from app.modules.scheduling.waiting_room import get_waiting_room
@@ -28,6 +32,9 @@ from app.modules.urgencies.service import get_pending_urgencies
 logger = get_logger(__name__)
 
 DOCTOR_SESSION_KEY = "doctor_session:{office_id}"
+# Working memory of the doctor conversation (see conversation/state.py). Kept
+# apart from the history key, whose format (a JSON list) other code reads.
+DOCTOR_STATE_KEY = "doctor_state:{office_id}"
 DOCTOR_SESSION_TTL = 86400  # 24 hours
 MAX_HISTORY_TURNS = 30
 
@@ -59,22 +66,36 @@ class DoctorConversationManager(BaseToolConversationManager):
             return caption
         return f"[Mensaje de tipo {msg_type}]"
 
+    UNGROUNDED_FALLBACK = (
+        "No se ejecutó ninguna acción: tuve un problema procesando la instrucción. "
+        "¿Me la repites?"
+    )
+    AI_UNAVAILABLE_REPLY = (
+        "Estoy teniendo un problema técnico para procesar tu mensaje. "
+        "Intenta de nuevo en unos minutos."
+    )
+
     async def process(
         self,
         office: Office,
-        message: dict[str, Any],
+        message: dict[str, Any] | list[dict[str, Any]],
         db: AsyncSession,
     ) -> None:
-        """Process one incoming doctor message (raw webhook message dict)."""
+        """Process one doctor turn: a raw webhook message dict, or a burst of them."""
+        messages = message if isinstance(message, list) else [message]
+        trace = None
         try:
-            message_data = await self.extract_message(message, office)
-            message_text = message_data["text"]
-            whatsapp_id = message_data["from"]
+            extracted = [await self.extract_message(m, office) for m in messages]
+            message_text = "\n".join(e["text"] for e in extracted if e["text"])
+            whatsapp_id = extracted[0]["from"]
 
             logger.info(
                 "doctor_message_received",
                 office_id=str(office.id),
                 whatsapp_id=whatsapp_id,
+            )
+            trace = self.new_trace(
+                office, "doctor", whatsapp_id=whatsapp_id, user_text=message_text
             )
 
             # Record the doctor's inbound so business-initiated urgency
@@ -84,6 +105,8 @@ class DoctorConversationManager(BaseToolConversationManager):
             # Get conversation history from Redis (text turns only)
             history = await self._get_history(office.id)
             history.append({"role": "user", "content": message_text})
+            state = await self._get_state(office.id)
+            state.drop_past_slots(now_mx())
 
             # Build system prompt and tool context. Pending urgent requests and
             # today's waiting room are injected so the doctor can act on both in
@@ -94,34 +117,44 @@ class DoctorConversationManager(BaseToolConversationManager):
                 office,
                 pending_urgencies=pending_urgencies,
                 waiting_room=waiting_room,
+                state_block=state.render(),
             )
             tool_ctx = DoctorToolContext(
                 db=db,
                 office=office,
                 redis_client=self.redis_client,
                 meta_client=self.meta_client,
+                state=state,
             )
 
             # Tool-use loop on a per-turn working copy (tool chain discarded)
             working_messages = list(history)
-            response_text = await self.run_tool_loop(
-                system_prompt,
-                working_messages,
-                DOCTOR_TOOL_DEFINITIONS,
-                execute_doctor_tool,
-                tool_ctx,
-                log_prefix="doctor",
-                mutating_tools=DOCTOR_MUTATING_TOOLS,
-            )
+            try:
+                response_text = await self.run_tool_loop(
+                    system_prompt,
+                    working_messages,
+                    DOCTOR_TOOL_DEFINITIONS,
+                    execute_doctor_tool,
+                    tool_ctx,
+                    log_prefix="doctor",
+                    mutating_tools=DOCTOR_MUTATING_TOOLS,
+                    tool_claims=DOCTOR_TOOL_CLAIMS,
+                    trace=trace,
+                )
+            except AIServiceError as e:
+                logger.error("doctor_ai_unavailable", error=str(e), office_id=str(office.id))
+                trace.outcome = "error"
+                trace.error = str(e)
+                response_text = self.AI_UNAVAILABLE_REPLY
 
             if not response_text or not response_text.strip():
                 response_text = "No pude procesar tu mensaje. Intenta de nuevo."
+            trace.reply = response_text
 
             # Append the assistant turn (text only), trim, save
             history.append({"role": "assistant", "content": response_text})
             if len(history) > MAX_HISTORY_TURNS:
                 history = history[-MAX_HISTORY_TURNS:]
-            await self._save_history(office.id, history)
 
             # Send response to doctor
             try:
@@ -135,12 +168,39 @@ class DoctorConversationManager(BaseToolConversationManager):
                 logger.error("doctor_send_failed", error=str(e))
 
             await db.commit()
+            # Only after the commit: the state records writes as done.
+            await self._save_history(office.id, history)
+            await self._save_state(office.id, state)
 
             logger.info("doctor_message_processed", office_id=str(office.id))
 
         except Exception as e:
             logger.error("doctor_processing_failed", error=str(e), exc_info=True)
+            if trace is not None:
+                trace.outcome = "error"
+                trace.error = str(e)
             raise ConversationError(f"Failed to process doctor message: {str(e)}") from e
+        finally:
+            if trace is not None:
+                await persist_trace(trace)
+
+    async def _get_state(self, office_id: uuid.UUID) -> ConversationState:
+        """Load the doctor conversation's working memory from Redis."""
+        key = DOCTOR_STATE_KEY.format(office_id=office_id)
+        try:
+            data = await self.redis_client.get(key)
+            if data:
+                return ConversationState.model_validate_json(data)
+        except Exception as e:
+            logger.warning("doctor_state_load_error", error=str(e))
+        return ConversationState()
+
+    async def _save_state(self, office_id: uuid.UUID, state: ConversationState) -> None:
+        key = DOCTOR_STATE_KEY.format(office_id=office_id)
+        try:
+            await self.redis_client.setex(key, DOCTOR_SESSION_TTL, state.model_dump_json())
+        except Exception as e:
+            logger.warning("doctor_state_save_error", error=str(e))
 
     async def _get_history(self, office_id: uuid.UUID) -> list[dict]:
         """Load doctor conversation history from Redis (sanitized to text turns)."""

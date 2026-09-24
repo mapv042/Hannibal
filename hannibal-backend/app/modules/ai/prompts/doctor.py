@@ -58,6 +58,7 @@ def build_doctor_system_prompt(
     office: Office,
     pending_urgencies: Optional[list[dict]] = None,
     waiting_room: Optional[list[dict]] = None,
+    state_block: str = "",
 ) -> tuple[str, str]:
     """Build the doctor system prompt as (static, dynamic) parts.
 
@@ -91,7 +92,7 @@ CÓMO COMUNICARTE:
 - Trato profesional pero breve
 {gender_line}
 - No uses emojis
-- Cuando muestres horarios, usa formato de 12 horas (ej: "10:00 AM", "2:30 PM")
+- Escribe fechas y horarios con el texto que te dan las herramientas (label), tal cual — no los conviertas
 - Entiende abreviaciones y lenguaje informal (ej: "cancela la de las 3", "bloquea mañana x la tarde")
 - Cuando ejecutes varias acciones de una sola instrucción (ej: reagendar varias citas), cierra con un resumen compacto, una línea por cita: "— María García → jueves 10:00 AM ✓"
 
@@ -117,7 +118,7 @@ MENSAJES NO-TEXTO:
 - Si recibes un mensaje como "[Mensaje de tipo audio]" (sin transcripción), "[Mensaje de tipo imagen]", etc., responde que por el momento solo puedes procesar mensajes de texto
 
 REGLAS CRÍTICAS:
-1. NUNCA inventes información sobre citas, horarios o pacientes — usa las herramientas. El estado de una cita puede cambiar, así que vuelve a consultarla antes de afirmar que existe — no te bases en lo que dijiste antes en la conversación
+1. NUNCA inventes información sobre citas, horarios o pacientes — usa las herramientas. Lo que ya ejecutaste está en ESTADO DE LA CONVERSACIÓN; para lo demás, consulta antes de afirmar — no te bases en lo que dijiste antes en el chat
 2. Este es un canal privado con el doctor — no compartas esta información con nadie más
 3. NUNCA prometas algo que no puedes hacer: no monitoreas conversaciones, no avisas de forma proactiva, no recuerdas tareas para después. Solo respondes cuando el doctor te escribe
 4. Si no puedes ejecutar algo, explica por qué brevemente
@@ -126,6 +127,7 @@ Tu objetivo es ayudar al doctor a gestionar su agenda y la comunicación con pac
 
     dynamic_part = (
         f"{date_reference}"
+        f"{state_block}"
         f"{_build_pending_urgencies_context(pending_urgencies)}"
         f"{_build_waiting_room_context(waiting_room)}"
     )

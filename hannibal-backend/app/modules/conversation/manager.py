@@ -11,15 +11,27 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.utils.dates import now_mx
 from app.utils.phone import phone_match_variants
 from app.utils.logger import get_logger
-from app.core.exceptions import ConversationError
-from app.db.models import Appointment, Office, Patient, Conversation, Message
+from app.core.constants import DEFAULT_REMINDER_RULES
+from app.core.exceptions import AIServiceError, ConversationError
+from app.db.models import (
+    Appointment,
+    AvailabilitySchedule,
+    Conversation,
+    Message,
+    Office,
+    Patient,
+    ReminderRule,
+)
 from app.modules.ai.prompts.base import WAITING_ARRIVAL_STATUS, build_system_prompt
+from app.modules.ai.tool_helpers import is_returning_patient
 from app.modules.ai.tools import (
     MUTATING_TOOLS,
+    TOOL_CLAIMS,
     TOOL_DEFINITIONS,
     ToolContext,
     execute_tool,
 )
+from app.modules.conversation.tracing import persist_trace
 from app.modules.conversation.base_manager import BaseToolConversationManager
 from app.modules.conversation.session_store import SessionStore
 from app.modules.conversation.schemas import SessionContext
@@ -67,45 +79,65 @@ class ConversationManager(BaseToolConversationManager):
             return f"[El paciente envió un {label} con el texto: \"{caption}\"]"
         return f"[El paciente envió un {label}]"
 
+    UNGROUNDED_FALLBACK = (
+        "Disculpa, tuve un problema y no se realizó ningún cambio. "
+        "¿Me lo repites, por favor?"
+    )
+    # Sent when the model itself can't be reached. The patient's message is
+    # kept (history + dashboard), so the next message resumes with context.
+    AI_UNAVAILABLE_REPLY = (
+        "Disculpa, estoy teniendo un problema técnico en este momento. "
+        "Escríbeme de nuevo en unos minutos, por favor."
+    )
+
     async def process(
         self,
         office: Office,
-        message: dict[str, Any],
+        message: dict[str, Any] | list[dict[str, Any]],
         db: AsyncSession,
     ) -> None:
-        """Process one incoming WhatsApp message using the tool-use loop.
+        """Process one turn: one incoming WhatsApp message, or a burst of them.
 
-        `message` is the raw message dict from the Meta webhook payload.
+        `message` is the raw message dict from the Meta webhook payload, or a
+        list of them from the same sender (the webhook coalesces a burst into
+        one turn so "hola" / "quiero cita" / "mañana en la tarde" get one
+        answer instead of three half-answers).
+
         Bot pause is enforced upstream (webhook router, Redis key) — single
         source of truth; see whatsapp/coexistence.check_pause.
         """
+        messages = message if isinstance(message, list) else [message]
         # Plain-value copy for the except handler: after a failed flush the
         # session is in pending-rollback and touching ORM attributes re-raises.
         office_id = str(office.id)
+        trace = None
         try:
-            # 1. Extract message (transcribes voice notes)
-            message_data = await self.extract_message(message, office)
-            whatsapp_id = message_data["from"]
-            message_text = message_data["text"]
-            message_id = message_data["id"]
+            # 1. Extract messages (transcribes voice notes)
+            extracted = [await self.extract_message(m, office) for m in messages]
+            whatsapp_id = extracted[0]["from"]
+            message_text = "\n".join(e["text"] for e in extracted if e["text"])
 
             logger.info(
                 "processing_message_v2",
-                office_id=str(office.id),
+                office_id=office_id,
                 whatsapp_id=whatsapp_id,
-                message_id=message_id,
+                message_ids=[e["id"] for e in extracted],
+            )
+            trace = self.new_trace(
+                office, "patient", whatsapp_id=whatsapp_id, user_text=message_text
             )
 
             # 2. Get or create session
-            session = await self.session_store.get_session(whatsapp_id, str(office.id))
+            session = await self.session_store.get_session(whatsapp_id, office_id)
             conversation_obj: Optional[Conversation] = None
 
             if session:
                 stmt = select(Conversation).where(Conversation.id == session.conversation_id)
                 result = await db.execute(stmt)
                 conversation_obj = result.scalar_one_or_none()
-            else:
+            if conversation_obj is None:
                 conversation_obj = await self._get_or_create_conversation(db, office.id, whatsapp_id)
+            if not session:
                 session = SessionContext(
                     conversation_id=conversation_obj.id,
                     office_id=office.id,
@@ -114,6 +146,7 @@ class ConversationManager(BaseToolConversationManager):
                     claude_history=[],
                     collected_data={},
                 )
+            trace.conversation_id = conversation_obj.id
 
             # 3. Get or create patient
             patient = await self._get_or_create_patient(db, office.id, whatsapp_id)
@@ -121,56 +154,74 @@ class ConversationManager(BaseToolConversationManager):
                 session.patient_id = patient.id
                 conversation_obj.patient_id = patient.id
 
-            # 4. Save incoming message
-            await self._save_incoming_message(db, office.id, whatsapp_id, message_text, message_id)
+            # First contact is decided here, from the records, before this
+            # message is saved: the model can't know about a chat from last
+            # week once its session expired.
+            is_first_contact = patient is None and not await self._has_prior_messages(
+                db, conversation_obj.id
+            )
 
-            # 4.5 Check if patient is new or returning
-            is_returning = False
-            if session.patient_id:
-                past_appt = await db.execute(
-                    select(Appointment).where(
-                        (Appointment.office_id == office.id)
-                        & (Appointment.patient_id == session.patient_id)
-                        & (Appointment.status.in_(["completed", "confirmed", "scheduled"]))
-                    ).limit(1)
-                )
-                is_returning = past_appt.scalars().first() is not None
+            # 4. Save incoming messages (each one, for the dashboard history)
+            for e in extracted:
+                await self._save_incoming_message(db, office.id, whatsapp_id, e["text"], e["id"])
 
             # 5. Build system prompt and append the user turn to history
+            is_returning = await is_returning_patient(db, office, session.patient_id)
             active_appt_id = (
                 str(session.active_appointment_id)
                 if session.active_appointment_id
                 else None
             )
+            session.state.drop_past_slots(now_mx())
             system_prompt = build_system_prompt(
                 office,
                 active_appointment_id=active_appt_id,
                 is_returning_patient=is_returning,
                 patient_name=patient.name if patient else None,
                 session_status=session.status,
+                is_first_contact=is_first_contact,
+                reminder_rules=await self._reminder_rules(db, office.id),
+                state_block=session.state.render(),
+                schedules=await self._schedules(db, office.id),
             )
             session.claude_history = self.sanitize_history(session.claude_history)
             session.claude_history.append({"role": "user", "content": message_text})
 
             # 6. Tool-use loop on a per-turn working copy — the provider-specific
-            # tool chain it accumulates is discarded after the turn.
+            # tool chain it accumulates is discarded after the turn; what the
+            # tools established survives in session.state.
             tool_ctx = ToolContext(
                 db=db,
                 office=office,
                 patient_id=session.patient_id,
                 whatsapp_id=whatsapp_id,
                 redis_client=self.session_store.redis_client,
+                state=session.state,
             )
             working_messages = list(session.claude_history)
-            response_text = await self.run_tool_loop(
-                system_prompt,
-                working_messages,
-                TOOL_DEFINITIONS,
-                execute_tool,
-                tool_ctx,
-                log_prefix="patient",
-                mutating_tools=MUTATING_TOOLS,
-            )
+            try:
+                response_text = await self.run_tool_loop(
+                    system_prompt,
+                    working_messages,
+                    TOOL_DEFINITIONS,
+                    execute_tool,
+                    tool_ctx,
+                    log_prefix="patient",
+                    mutating_tools=MUTATING_TOOLS,
+                    tool_claims=TOOL_CLAIMS,
+                    # One call at a time: the booking flow is sequential by
+                    # nature, and parallel writes are where duplicates came from.
+                    parallel_tool_calls=False,
+                    trace=trace,
+                )
+            except AIServiceError as e:
+                # The model is unreachable. Anything a tool already wrote this
+                # turn stands (it is committed below with the message), and the
+                # patient hears something instead of silence.
+                logger.error("patient_ai_unavailable", error=str(e), office_id=office_id)
+                trace.outcome = "error"
+                trace.error = str(e)
+                response_text = self.AI_UNAVAILABLE_REPLY
 
             # Update patient_id if a tool created the patient
             if tool_ctx.patient_id and tool_ctx.patient_id != session.patient_id:
@@ -195,7 +246,8 @@ class ConversationManager(BaseToolConversationManager):
             # Fallback
             if not response_text or not response_text.strip():
                 response_text = "Disculpa, no pude procesar tu mensaje. ¿Podrías repetirlo?"
-                logger.warning("empty_response_fallback_v2", office_id=str(office.id))
+                logger.warning("empty_response_fallback_v2", office_id=office_id)
+            trace.reply = response_text
 
             # 7. Append the assistant turn (text only) and trim
             session.claude_history.append({"role": "assistant", "content": response_text})
@@ -235,19 +287,57 @@ class ConversationManager(BaseToolConversationManager):
             await db.commit()
 
             # 11. Save session
-            await self.session_store.save_session(whatsapp_id, str(office.id), session)
+            await self.session_store.save_session(whatsapp_id, office_id, session)
 
             logger.info(
                 "message_processed_v2",
-                office_id=str(office.id),
+                office_id=office_id,
                 whatsapp_id=whatsapp_id,
             )
 
         except ConversationError:
+            if trace is not None:
+                trace.outcome = "error"
             raise
         except Exception as e:
             logger.error("conversation_processing_failed_v2", error=str(e), office_id=office_id)
+            if trace is not None:
+                trace.outcome = "error"
+                trace.error = str(e)
             raise ConversationError(f"Failed to process conversation: {str(e)}") from e
+        finally:
+            if trace is not None:
+                await persist_trace(trace)
+
+    async def _has_prior_messages(self, db: AsyncSession, conversation_id) -> bool:
+        result = await db.execute(
+            select(Message.id).where(Message.conversation_id == conversation_id).limit(1)
+        )
+        return result.scalars().first() is not None
+
+    async def _schedules(self, db: AsyncSession, office_id) -> list[AvailabilitySchedule]:
+        """The office's weekly hours, for the prompt's HORARIO DE ATENCIÓN."""
+        result = await db.execute(
+            select(AvailabilitySchedule).where(
+                (AvailabilitySchedule.office_id == office_id)
+                & (AvailabilitySchedule.is_active == True)  # noqa: E712
+            )
+        )
+        return list(result.scalars().all())
+
+    async def _reminder_rules(self, db: AsyncSession, office_id) -> list[ReminderRule]:
+        """The office's reminder rules, for the prompt's capabilities section."""
+        result = await db.execute(
+            select(ReminderRule).where(ReminderRule.office_id == office_id)
+        )
+        rules = list(result.scalars().all())
+        if rules:
+            return rules
+        # Offices created before per-office rules existed run on the defaults.
+        return [
+            ReminderRule(reminder_type=t.value, offset_minutes=o, enabled=True)
+            for t, o in DEFAULT_REMINDER_RULES
+        ]
 
     # ------------------------------------------------------------------
     # Persistence helpers

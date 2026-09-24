@@ -19,8 +19,10 @@ from app.modules.ai.tool_helpers import (
     availability_for_dates,
     format_appointment_dt,
     localize_mx,
+    offered_slots_from,
     parse_requested_dates,
 )
+from app.modules.conversation.state import ConversationState
 from app.modules.scheduling.availability import (
     OVERRIDABLE_CONFLICTS,
     invalidate_availability_cache,
@@ -290,7 +292,10 @@ DOCTOR_TOOL_DEFINITIONS = [
         "description": (
             "Consulta los horarios disponibles para agendar una cita en una o varias fechas "
             "(máximo 7 por llamada). Usa esta herramienta para verificar disponibilidad antes "
-            "de crear o reagendar citas, o cuando el doctor pregunte qué espacios tiene libres."
+            "de crear o reagendar citas, o cuando el doctor pregunte qué espacios tiene libres. "
+            "Cada horario trae un label para mostrar y un slot_id (YYYY-MM-DDTHH:MM): al crear o "
+            "reagendar usa esa fecha y esa hora tal cual. Si ningún día tiene lugar, el resultado "
+            "incluye next_available."
         ),
         "input_schema": {
             "type": "object",
@@ -466,11 +471,14 @@ class DoctorToolContext:
         office: Office,
         redis_client: redis.Redis,
         meta_client: WhatsAppClient,
+        state: ConversationState | None = None,
     ):
         self.db = db
         self.office = office
         self.redis_client = redis_client
         self.meta_client = meta_client
+        # Working memory of the doctor conversation (see conversation/state.py).
+        self.state = state if state is not None else ConversationState()
 
 
 # ---------------------------------------------------------------------------
@@ -495,6 +503,20 @@ DOCTOR_MUTATING_TOOLS = frozenset({
     "pause_bot",
     "resume_bot",
 })
+
+# What a successful call of each write lets the assistant truthfully say it did
+# (checked by conversation/grounding.py). A new write tool declares its claims here.
+DOCTOR_TOOL_CLAIMS: dict[str, frozenset[str]] = {
+    "get_appointments_by_date": frozenset({"book"}),
+    "create_appointment": frozenset({"book"}),
+    # A moved appointment is also "agendada" at its new time.
+    "reschedule_appointment": frozenset({"reschedule", "book"}),
+    "cancel_appointment": frozenset({"cancel"}),
+    "confirm_send_messages": frozenset({"message_sent"}),
+    # Reporting a delivery states that the message was sent.
+    "check_message_delivery": frozenset({"message_sent"}),
+    "resolve_urgent_request": frozenset({"book", "notify_patient"}),
+}
 
 _HANDLERS: dict[str, Any] = {}
 
@@ -1411,7 +1433,10 @@ async def _handle_get_available_slots(args: dict, ctx: DoctorToolContext) -> dic
     dates = parse_requested_dates(args)
     if isinstance(dates, dict):
         return dates
-    return await availability_for_dates(ctx.office.id, dates, ctx.db)
+    result = await availability_for_dates(ctx.office.id, dates, ctx.db)
+    if "error" not in result:
+        ctx.state.remember_slots(offered_slots_from(result))
+    return result
 
 
 @_handler("create_appointment")

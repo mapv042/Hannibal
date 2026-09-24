@@ -27,6 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import (
     Appointment,
+    AiTurnTrace,
     AvailabilitySchedule,
     Conversation,
     GoogleCalendarEvent,
@@ -54,6 +55,7 @@ WEEKDAYS = [1, 2, 3, 4, 5]  # 0=Sun in this model
 
 # Deleted newest-dependency-first so foreign keys never block the wipe.
 WIPE_ORDER = [
+    AiTurnTrace,
     Message,
     Conversation,
     GoogleCalendarEvent,

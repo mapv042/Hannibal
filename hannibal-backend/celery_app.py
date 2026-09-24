@@ -65,6 +65,11 @@ celery_app.conf.update(
             "schedule": crontab(minute="*/15"),  # checks each office; fires 1h before its first block
             "options": {"queue": "celery"},
         },
+        "prune-turn-traces": {
+            "task": "app.modules.conversation.tasks.prune_turn_traces",
+            "schedule": crontab(minute=30, hour=3),  # daily, off-hours
+            "options": {"queue": "celery"},
+        },
     },
 )
 
@@ -77,6 +82,7 @@ celery_app.autodiscover_tasks([
     "app.modules.google_calendar",
     "app.modules.urgencies",
     "app.modules.audit",
+    "app.modules.conversation",
 ])
 
 # Ensure task modules are imported so Celery registers them
@@ -86,6 +92,7 @@ import app.modules.scheduling.tasks  # noqa: F401
 import app.modules.notifications.tasks  # noqa: F401
 import app.modules.google_calendar.tasks  # noqa: F401
 import app.modules.audit.tasks  # noqa: F401
+import app.modules.conversation.tasks  # noqa: F401
 
 # --------------------------------------------------------------------------- #
 # Simulated clock

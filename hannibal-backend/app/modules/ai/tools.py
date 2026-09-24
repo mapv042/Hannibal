@@ -3,22 +3,31 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 from typing import Any, Optional
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.constants import ArrivalStatus, DAYS_ES, MX_TIMEZONE
+from app.core.constants import ArrivalStatus, MX_TIMEZONE
 from app.db.models import Appointment, Office, Patient
 from app.modules.ai.tool_helpers import (
     appointment_access_error,
     availability_for_dates,
     format_appointment_dt,
     localize_mx,
+    offered_slots_from,
     parse_requested_dates,
+    parse_slot_id,
     resolve_active_appointment,
     resolve_appointment_duration,
+    slot_id_for,
+    slots_on_day,
+)
+from app.modules.conversation.state import (
+    BookingDraft,
+    ConversationState,
+    KnownAppointment,
 )
 from app.modules.google_calendar.service import update_event_color
 from app.modules.google_calendar.sync import cancel_appointment_in_calendar
@@ -40,6 +49,7 @@ from app.modules.notifications.tasks import (
 from app.modules.audit.tasks import enqueue_write_audit
 from app.utils.dates import now_mx
 from app.utils.logger import get_logger
+from app.utils.text import sanitize_for_prompt
 from app.utils.phone import (
     display_or_raw,
     normalize_phone,
@@ -63,12 +73,11 @@ TOOL_DEFINITIONS = [
     {
         "name": "get_available_slots",
         "description": (
-            "Consulta los horarios disponibles para agendar una cita en una o varias fechas "
-            "(máximo 7 por llamada). Usa esta herramienta cuando el paciente quiera saber qué "
-            "horarios hay disponibles o cuando necesites verificar disponibilidad antes de "
-            "agendar. Si el paciente pregunta algo abierto ('¿qué día tienes espacio?'), "
-            "consulta varios días en una sola llamada. Si dice 'mañana', un día de la semana, "
-            "o una fecha, calcula la(s) fecha(s) en formato YYYY-MM-DD antes de llamar."
+            "Consulta los horarios libres en una o varias fechas (máximo 7 por llamada). Cada "
+            "horario trae un slot_id (lo que usas para reservar) y un label (lo que le muestras "
+            "al paciente, tal cual). Si ningún día consultado tiene lugar, el resultado incluye "
+            "next_available con el siguiente día que sí tiene. Para una pregunta abierta "
+            "('¿qué día tienes?') consulta varios días en una sola llamada."
         ),
         "input_schema": {
             "type": "object",
@@ -76,7 +85,15 @@ TOOL_DEFINITIONS = [
                 "dates": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Fechas a consultar en formato YYYY-MM-DD (1 a 7).",
+                    "description": (
+                        "Fechas a consultar en formato YYYY-MM-DD (1 a 7), tomadas del "
+                        "CALENDARIO DE REFERENCIA."
+                    ),
+                },
+                "part_of_day": {
+                    "type": "string",
+                    "enum": ["mañana", "tarde"],
+                    "description": "Solo si el paciente pidió específicamente mañana o tarde.",
                 },
             },
             "required": ["dates"],
@@ -85,9 +102,9 @@ TOOL_DEFINITIONS = [
     {
         "name": "get_patient_appointments",
         "description": (
-            "Obtiene las citas próximas del paciente. Usa esta herramienta cuando el paciente "
-            "quiera cancelar, reagendar, confirmar asistencia, o preguntar sobre sus citas. "
-            "No requiere parámetros — el paciente se identifica automáticamente."
+            "Obtiene las citas próximas del paciente, incluidas las que agendó para otras "
+            "personas. Úsala cuando quiera cancelar, reagendar, confirmar asistencia o "
+            "preguntar por sus citas. El paciente se identifica automáticamente."
         ),
         "input_schema": {
             "type": "object",
@@ -95,124 +112,128 @@ TOOL_DEFINITIONS = [
         },
     },
     {
-        "name": "create_appointment",
+        "name": "prepare_booking",
         "description": (
-            "Crea una nueva cita. Llámala una vez que el paciente confirme un resumen con los datos "
-            "de la cita (nombre, fecha, hora, motivo). Al crearla, la cita queda agendada y lista. "
-            "No la llames sin esa confirmación de los datos de la cita. "
-            "La cita es para quien escribe, a menos que se indique patient_phone: en ese caso la cita "
-            "se agenda a nombre de esa otra persona (familiar/tercero), buscándola por teléfono y "
-            "registrándola automáticamente si aún no existe."
+            "Prepara una cita nueva o un cambio de horario y verifica en ese momento que el "
+            "horario siga libre. NO agenda nada: guarda un borrador y te devuelve el resumen "
+            "exacto para el paciente. La cita se agenda solo cuando el paciente acepta ese "
+            "resumen y llamas confirm_booking. Si el paciente cambia algún dato, vuelve a "
+            "llamarla (reemplaza el borrador). Para reagendar pasa replaces_appointment_id: se "
+            "conservan el paciente y el motivo de la cita original."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
+                "slot_id": {
+                    "type": "string",
+                    "description": (
+                        "Horario elegido, exactamente como lo devolvió get_available_slots "
+                        "(YYYY-MM-DDTHH:MM). Solo se pueden reservar horarios que ofrece el "
+                        "consultorio: si el paciente pidió otra hora, la herramienta te devuelve "
+                        "los horarios disponibles más cercanos de ese día."
+                    ),
+                },
+                "for_self": {
+                    "type": "boolean",
+                    "description": (
+                        "true si la cita es para quien escribe; false si es para otra persona "
+                        "(familiar, pareja, amigo). Pregúntalo si no está claro. Al reagendar "
+                        "se ignora."
+                    ),
+                },
                 "patient_name": {
                     "type": "string",
                     "description": (
-                        "Nombre completo de la persona que será atendida. Si la cita es para un "
-                        "familiar/tercero, es el nombre de ese familiar, no el de quien escribe."
+                        "Nombre completo de quien será atendido. Si la cita es para quien "
+                        "escribe y su nombre ya aparece en PACIENTE ACTUAL, puedes omitirlo."
                     ),
-                },
-                "date": {
-                    "type": "string",
-                    "description": "Fecha en formato YYYY-MM-DD.",
-                },
-                "time": {
-                    "type": "string",
-                    "description": "Hora en formato HH:MM (24 horas).",
-                },
-                "reason": {
-                    "type": "string",
-                    "description": "Motivo de la consulta.",
                 },
                 "patient_phone": {
                     "type": "string",
                     "description": (
-                        "Teléfono de contacto (10 dígitos) de la persona que será atendida. "
-                        "Pídelo siempre. Si la cita es para un familiar/tercero, es el teléfono de "
-                        "esa persona, no el de quien escribe."
+                        "Solo cuando for_self=false: teléfono (10 dígitos) de la persona que "
+                        "será atendida, no el de quien escribe."
                     ),
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Motivo de la consulta. No hace falta al reagendar.",
                 },
                 "intake_notes": {
                     "type": "string",
                     "description": (
                         "Lo que el paciente respondió a las preguntas de la sección ANTES DE "
                         "AGENDAR, en una o dos líneas (ej: 'Molestia desde hace 3 días. Toma "
-                        "losartán.'). El doctor lo lee antes de la consulta. Omítelo si el "
-                        "consultorio no configuró preguntas o el paciente no quiso contestar."
+                        "losartán.'). El doctor lo lee antes de la consulta. Omítelo si no hay "
+                        "preguntas configuradas o el paciente no quiso contestar."
+                    ),
+                },
+                "replaces_appointment_id": {
+                    "type": "string",
+                    "description": (
+                        "Solo para reagendar: ID de la cita que se mueve (de "
+                        "get_patient_appointments o del ESTADO DE LA CONVERSACIÓN)."
                     ),
                 },
                 "confirm_second_same_day": {
                     "type": "boolean",
                     "description": (
-                        "Usa true SOLO cuando el paciente ya fue avisado de que tiene otra cita "
-                        "ese mismo día y confirmó que aun así quiere una segunda."
+                        "true SOLO cuando el paciente ya fue avisado de que tiene otra cita ese "
+                        "mismo día y confirmó que aun así quiere una segunda."
                     ),
                 },
             },
-            "required": ["patient_name", "patient_phone", "date", "time", "reason"],
+            "required": ["slot_id", "for_self"],
+        },
+    },
+    {
+        "name": "confirm_booking",
+        "description": (
+            "Agenda (o reagenda) la cita preparada con prepare_booking, exactamente como quedó "
+            "en el borrador. Llámala solo cuando el paciente haya aceptado ese resumen."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {},
         },
     },
     {
         "name": "cancel_appointment",
         "description": (
             "Cancela una cita existente. El paciente debe haber identificado cuál cita "
-            "cancelar y proporcionado un motivo de cancelación."
+            "cancelar y dado un motivo. Cancelar libera el horario."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "appointment_id": {
                     "type": "string",
-                    "description": "ID de la cita a cancelar (obtenido de get_patient_appointments).",
+                    "description": (
+                        "ID de la cita a cancelar (de get_patient_appointments o del ESTADO DE "
+                        "LA CONVERSACIÓN)."
+                    ),
                 },
                 "reason": {
                     "type": "string",
-                    "description": "Motivo de la cancelación proporcionado por el paciente.",
+                    "description": "Motivo de la cancelación que dio el paciente.",
                 },
             },
             "required": ["appointment_id", "reason"],
         },
     },
     {
-        "name": "reschedule_appointment",
+        "name": "confirm_attendance",
         "description": (
-            "Reagenda una cita existente a un nuevo horario. Cancela la cita anterior "
-            "y crea una nueva. El paciente debe haber confirmado el nuevo horario."
+            "Registra que el paciente confirma que asistirá, en respuesta a la solicitud de "
+            "confirmación o recordatorio que el consultorio le envió. Una cita recién agendada "
+            "ya queda lista y no necesita este paso."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "appointment_id": {
                     "type": "string",
-                    "description": "ID de la cita original a reagendar.",
-                },
-                "new_date": {
-                    "type": "string",
-                    "description": "Nueva fecha en formato YYYY-MM-DD.",
-                },
-                "new_time": {
-                    "type": "string",
-                    "description": "Nueva hora en formato HH:MM (24 horas).",
-                },
-            },
-            "required": ["appointment_id", "new_date", "new_time"],
-        },
-    },
-    {
-        "name": "confirm_appointment",
-        "description": (
-            "Registra que el paciente confirma su asistencia, en respuesta a una solicitud de "
-            "confirmación o recordatorio que el consultorio le envió previamente. Una cita recién "
-            "agendada ya queda lista y no necesita este paso."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "appointment_id": {
-                    "type": "string",
-                    "description": "ID de la cita a confirmar.",
+                    "description": "ID de la cita, tomado del bloque CONFIRMACIÓN PENDIENTE.",
                 },
             },
             "required": ["appointment_id"],
@@ -258,12 +279,11 @@ TOOL_DEFINITIONS = [
             "atendido lo antes posible o antes de los horarios disponibles. NO agenda la cita: "
             "avisa al doctor para que la apruebe, porque una urgencia puede requerir sobreagenda y "
             "solo el doctor puede autorizarla. Úsala solo cuando el paciente realmente indique "
-            "urgencia; para una cita normal usa create_appointment. Antes de llamarla pregunta el "
+            "urgencia; para una cita normal usa prepare_booking. Antes de llamarla pregunta el "
             "motivo de la urgencia. "
             "Este es también el único canal para llegar al doctor: si el paciente pide hablar con "
             "él o dice que se siente mal, pregúntale si es una emergencia — si lo es, úsala; si no, "
-            "ofrécele agendar. No existe una forma de comunicarlo en vivo con el doctor, así que no "
-            "se la prometas."
+            "ofrécele agendar. No existe una forma de comunicarlo en vivo con el doctor."
         ),
         "input_schema": {
             "type": "object",
@@ -305,6 +325,8 @@ class ToolContext:
         patient_id: Optional[uuid.UUID],
         whatsapp_id: str,
         redis_client=None,
+        state: Optional[ConversationState] = None,
+        turn_started_at: Optional[datetime] = None,
     ):
         self.db = db
         self.office = office
@@ -312,6 +334,12 @@ class ToolContext:
         self.whatsapp_id = whatsapp_id
         # Optional: enables slot locking + availability-cache invalidation.
         self.redis_client = redis_client
+        # The conversation's working memory (offered slots, draft, actions);
+        # persisted with the session by the manager.
+        self.state = state if state is not None else ConversationState()
+        # A draft prepared at or after this moment was never shown to the
+        # patient, so confirm_booking must not execute it (see there).
+        self.turn_started_at = turn_started_at or now_mx()
 
 
 def _booking_error(error: str) -> dict:
@@ -354,7 +382,10 @@ async def _release_slot(ctx, start_dt: datetime) -> None:
 
 
 async def _find_same_day_appointment(
-    ctx, patient_id: uuid.UUID, start_dt: datetime
+    ctx,
+    patient_id: uuid.UUID,
+    start_dt: datetime,
+    exclude_id: Optional[uuid.UUID] = None,
 ) -> Optional[Appointment]:
     """An active appointment this patient already has on the same MX day, if any.
 
@@ -365,19 +396,40 @@ async def _find_same_day_appointment(
     day_start = datetime.combine(day, time.min, tzinfo=MX_TIMEZONE)
     day_end = datetime.combine(day, time.max, tzinfo=MX_TIMEZONE)
 
+    conditions = (
+        (Appointment.office_id == ctx.office.id)
+        & (Appointment.patient_id == patient_id)
+        & (Appointment.status.in_(["scheduled", "confirmed"]))
+        & (Appointment.start_datetime >= day_start)
+        & (Appointment.start_datetime <= day_end)
+    )
+    if exclude_id is not None:
+        conditions = conditions & (Appointment.id != exclude_id)
+
     result = await ctx.db.execute(
-        select(Appointment)
-        .where(
-            (Appointment.office_id == ctx.office.id)
-            & (Appointment.patient_id == patient_id)
-            & (Appointment.status.in_(["scheduled", "confirmed"]))
-            & (Appointment.start_datetime >= day_start)
-            & (Appointment.start_datetime <= day_end)
-        )
-        .order_by(Appointment.start_datetime)
-        .limit(1)
+        select(Appointment).where(conditions).order_by(Appointment.start_datetime).limit(1)
     )
     return result.scalars().first()
+
+
+async def _find_patient_by_phone(ctx, phone: str) -> Optional[Patient]:
+    """This office's patient registered under any form of `phone`."""
+    variants = phone_match_variants(phone)
+    result = await ctx.db.execute(
+        select(Patient).where(
+            (Patient.office_id == ctx.office.id)
+            & (Patient.whatsapp_id.in_(variants) | Patient.phone.in_(variants))
+        ).limit(1)
+    )
+    return result.scalars().first()
+
+
+def _writer_contact_phone(ctx) -> str:
+    """The writer's own number, normalized when possible."""
+    try:
+        return normalize_phone(ctx.whatsapp_id)
+    except ValueError:
+        return ctx.whatsapp_id
 
 
 # ---------------------------------------------------------------------------
@@ -386,17 +438,30 @@ async def _find_same_day_appointment(
 
 # Tools that change state. The conversation manager will not run the same one
 # twice with the same arguments inside a single turn: the model can emit
-# parallel tool calls, and two identical `create_appointment` calls used to book
-# once and then hit the "ya tienes una cita ese día" guard on the second — which
-# the model relayed as if the patient already had the appointment.
+# parallel tool calls, and two identical booking calls used to book once and
+# then hit the "ya tienes una cita ese día" guard on the second — which the
+# model relayed as if the patient already had the appointment. Every write here
+# is also recorded in ConversationState.recent_actions by the tool loop.
 MUTATING_TOOLS = frozenset({
-    "create_appointment",
+    "confirm_booking",
     "cancel_appointment",
-    "reschedule_appointment",
-    "confirm_appointment",
+    "confirm_attendance",
     "report_arrival",
     "request_urgent_appointment",
 })
+
+# What a successful call of each write lets the assistant truthfully say it did.
+# The reply validator (conversation/grounding.py) rejects a reply that claims an
+# action no tool backs. A new write tool declares its claims here.
+TOOL_CLAIMS: dict[str, frozenset[str]] = {
+    # A lookup that found appointments backs stating that they exist.
+    "get_patient_appointments": frozenset({"book"}),
+    "confirm_booking": frozenset({"book", "reschedule"}),
+    "cancel_appointment": frozenset({"cancel"}),
+    "confirm_attendance": frozenset({"confirm_attendance"}),
+    "report_arrival": frozenset({"notify_doctor"}),
+    "request_urgent_appointment": frozenset({"notify_doctor"}),
+}
 
 _HANDLERS: dict[str, Any] = {}
 
@@ -457,163 +522,336 @@ async def _handle_get_available_slots(args: dict, ctx: ToolContext) -> dict:
     duration_min, _ = await resolve_appointment_duration(
         ctx.db, ctx.office, ctx.patient_id
     )
-    return await availability_for_dates(
-        ctx.office.id, dates, ctx.db, slot_minutes=duration_min
+    result = await availability_for_dates(
+        ctx.office.id,
+        dates,
+        ctx.db,
+        slot_minutes=duration_min,
+        part_of_day=args.get("part_of_day"),
     )
+    if "error" not in result:
+        ctx.state.remember_slots(offered_slots_from(result))
+    return result
 
 
 @_handler("get_patient_appointments")
 async def _handle_get_patient_appointments(args: dict, ctx: ToolContext) -> dict:
     if not ctx.patient_id:
+        ctx.state.remember_appointments([])
         return {"appointments": [], "message": "No se encontró registro del paciente."}
 
     now = now_mx()
     stmt = (
-        select(Appointment)
+        select(Appointment, Patient.name)
+        .join(Patient, Patient.id == Appointment.patient_id, isouter=True)
         .where(
-            (Appointment.patient_id == ctx.patient_id)
+            # Their own appointments and the ones they booked for someone else —
+            # they may act on both (see appointment_access_error), so they must
+            # be able to see both.
+            ((Appointment.patient_id == ctx.patient_id)
+             | (Appointment.booked_by_patient_id == ctx.patient_id))
             & (Appointment.office_id == ctx.office.id)
             & (Appointment.status.in_(["scheduled", "confirmed"]))
             & (Appointment.start_datetime >= now)
         )
         .order_by(Appointment.start_datetime)
     )
-    result = await ctx.db.execute(stmt)
-    appointments = result.scalars().all()
+    rows = (await ctx.db.execute(stmt)).all()
 
-    if not appointments:
+    if not rows:
+        ctx.state.remember_appointments([])
         return {"appointments": [], "message": "El paciente no tiene citas próximas."}
 
     appt_list = []
-    for appt in appointments:
-        dt = localize_mx(appt.start_datetime)
-        appt_list.append({
+    known = []
+    for appt, name in rows:
+        label = format_appointment_dt(appt.start_datetime)
+        for_other = appt.patient_id != ctx.patient_id
+        entry = {
             "id": str(appt.id),
-            "date": dt.strftime("%Y-%m-%d"),
-            "time": dt.strftime("%H:%M"),
-            "day_name": DAYS_ES[dt.weekday()],
-            "formatted": format_appointment_dt(appt.start_datetime),
+            "label": label,
+            "slot_id": slot_id_for(appt.start_datetime),
             "reason": appt.consultation_reason or "Consulta",
             "status": appt.status,
-        })
+        }
+        if for_other:
+            entry["patient_name"] = name or ""
+        appt_list.append(entry)
+        known.append(
+            KnownAppointment(
+                id=str(appt.id),
+                label=label,
+                status=appt.status,
+                patient_name=(name or None) if for_other else None,
+            )
+        )
 
+    ctx.state.remember_appointments(known)
     return {"appointments": appt_list}
 
 
-@_handler("create_appointment")
-async def _handle_create_appointment(args: dict, ctx: ToolContext) -> dict:
-    patient_name = args.get("patient_name", "").strip()
-    date_str = args.get("date", "")
-    time_str = args.get("time", "")
-    reason = args.get("reason", "Consulta")
-    patient_phone = (args.get("patient_phone") or "").strip()
+@_handler("prepare_booking")
+async def _handle_prepare_booking(args: dict, ctx: ToolContext) -> dict:
+    """Validate a booking (or a move) now and store it as a draft.
+
+    Nothing is written to the appointments table. The point is the order of
+    events: the slot is checked *before* the patient is told "te confirmo", and
+    the exact data the patient approves is what confirm_booking later writes.
+    """
+    start_dt = parse_slot_id(args.get("slot_id", ""))
+    if isinstance(start_dt, dict):
+        return start_dt
+    if start_dt <= now_mx():
+        return {"error": "Ese horario ya pasó. Ofrécele al paciente un horario futuro."}
+
+    replaces_id = (args.get("replaces_appointment_id") or "").strip() or None
+    confirm_second = bool(args.get("confirm_second_same_day"))
     intake_notes = (args.get("intake_notes") or "").strip() or None
 
-    if not all([patient_name, patient_phone, date_str, time_str, reason]):
-        return {"error": "Faltan datos para crear la cita. Se requiere: nombre, teléfono, fecha, hora y motivo."}
+    if replaces_id:
+        # A move: patient, reason and duration come from the appointment itself.
+        appointment, error = await _load_actionable_appointment(replaces_id, ctx)
+        if error:
+            return error
+        if localize_mx(appointment.start_datetime) == start_dt:
+            return {"error": "Ese es el mismo horario que ya tiene la cita."}
+        patient = await ctx.db.get(Patient, appointment.patient_id) if appointment.patient_id else None
+        patient_name = (patient.name if patient else None) or ""
+        reason = appointment.consultation_reason or "Consulta"
+        duration_min = appointment.duration_minutes or 30
+        for_self = appointment.patient_id == ctx.patient_id
+        patient_phone = None
+        checked_patient_id = appointment.patient_id
+        exclude_id = appointment.id
+        replaces_id = str(appointment.id)  # the live one, after following any reschedule chain
+        old_label = format_appointment_dt(appointment.start_datetime)
+    else:
+        reason = (args.get("reason") or "").strip()
+        if not reason:
+            return {"error": "Falta el motivo de la consulta. Pregúntaselo al paciente."}
+        for_self = bool(args.get("for_self", True))
+        patient_name = (args.get("patient_name") or "").strip()
+        patient_phone = (args.get("patient_phone") or "").strip() or None
+        exclude_id = None
+        old_label = None
 
-    try:
-        start_dt = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M").replace(tzinfo=MX_TIMEZONE)
-    except ValueError:
-        return {"error": f"Fecha u hora inválida: {date_str} {time_str}"}
+        if not for_self:
+            if not patient_name or not patient_phone:
+                return {
+                    "error": (
+                        "Para agendar a otra persona necesito su nombre completo y su "
+                        "teléfono (10 dígitos)."
+                    )
+                }
+            try:
+                third_core = phone_core_digits(patient_phone)
+            except ValueError:
+                return {
+                    "error": (
+                        f"El teléfono '{patient_phone}' no es válido. Pídele al paciente un "
+                        "número de 10 dígitos."
+                    )
+                }
+            try:
+                writer_core = phone_core_digits(ctx.whatsapp_id)
+            except ValueError:
+                writer_core = None
+            if third_core == writer_core:
+                # Same number as the writer: the system can only register one
+                # patient per number, so this is booked as the writer's own.
+                for_self = True
+                patient_phone = None
 
-    # Is this booking for a third party (a family member), or for whoever writes?
-    # It's third-party only when a phone is given that differs from the writer's own.
-    try:
-        writer_core = phone_core_digits(ctx.whatsapp_id)
-    except ValueError:
-        writer_core = None
+        if for_self:
+            registered = await ctx.db.get(Patient, ctx.patient_id) if ctx.patient_id else None
+            patient_name = patient_name or ((registered.name or "") if registered else "")
+            if not patient_name:
+                return {"error": "Falta el nombre completo del paciente. Pídeselo."}
+            checked_patient_id = ctx.patient_id
+        else:
+            existing = await _find_patient_by_phone(ctx, patient_phone)
+            checked_patient_id = existing.id if existing else None
 
-    booking_for_third_party = False
-    if patient_phone:
-        try:
-            booking_for_third_party = phone_core_digits(patient_phone) != writer_core
-        except ValueError:
+        duration_min, _ = await resolve_appointment_duration(
+            ctx.db, ctx.office, checked_patient_id
+        )
+
+    # Same patient, same day: could be a second appointment they really want, or
+    # the patient forgetting they already have one. Ask instead of guessing.
+    if checked_patient_id is not None and not confirm_second:
+        same_day = await _find_same_day_appointment(
+            ctx, checked_patient_id, start_dt, exclude_id=exclude_id
+        )
+        if same_day is not None:
             return {
-                "error": (
-                    f"El teléfono '{patient_phone}' no es válido. Pídele al paciente un número "
-                    "de 10 dígitos."
-                )
+                "existing_appointment": {
+                    "appointment_id": str(same_day.id),
+                    "label": format_appointment_dt(same_day.start_datetime),
+                    "status": same_day.status,
+                },
+                "next_step": (
+                    "Este paciente ya tiene una cita ese mismo día. Pregúntale si quiere "
+                    "mover la que ya tiene (prepare_booking con replaces_appointment_id) o si "
+                    "de verdad necesita una segunda cita el mismo día — no lo asumas. Si "
+                    "confirma que quiere las dos, vuelve a llamar prepare_booking con "
+                    "confirm_second_same_day=true."
+                ),
             }
 
-    is_new_patient = False
-    if booking_for_third_party:
-        # Resolve the third party by phone; register them if not found.
-        variants = phone_match_variants(patient_phone)
-        result = await ctx.db.execute(
-            select(Patient).where(
-                (Patient.office_id == ctx.office.id)
-                & (
-                    Patient.whatsapp_id.in_(variants)
-                    | Patient.phone.in_(variants)
-                )
-            ).limit(1)
+    # Patients book only what the availability engine offers — the office's
+    # grid, with its buffers — not any free minute. "Free" is not enough: a
+    # 10:00 squeezed between the 9:50 and 10:40 slots kills the 9:50 and the
+    # buffer, and whether that happened depended on which model was answering.
+    # (The doctor, who may overbook, keeps free times in his own tools.)
+    try:
+        offered = await slots_on_day(
+            ctx.office.id, start_dt.date(), ctx.db, slot_minutes=duration_min
         )
-        patient = result.scalars().first()
+    except Exception as e:
+        logger.warning("tool_prepare_booking_check_failed", error=str(e))
+        return {
+            "error": "No pude verificar la agenda del doctor en este momento (falla técnica).",
+            "error_kind": "calendar_unavailable",
+        }
+    requested = slot_id_for(start_dt)
+    if requested not in {s["slot_id"] for s in offered}:
+        nearest = sorted(
+            offered,
+            key=lambda s: abs(
+                (parse_slot_id(s["slot_id"]) - start_dt).total_seconds()
+            ),
+        )[:3]
+        return {
+            "error": f"El {format_appointment_dt(start_dt)} no es un horario disponible.",
+            "nearest_slots": sorted(nearest, key=lambda s: s["slot_id"]),
+            "next_step": (
+                "Ofrécele al paciente los horarios disponibles más cercanos (nearest_slots) "
+                "y usa el slot_id del que elija."
+                if nearest
+                else "Ese día no quedan horarios; consulta get_available_slots para ofrecerle otro día."
+            ),
+        }
+
+    label = format_appointment_dt(start_dt)
+    # The summary is rendered into later prompts (ESTADO DE LA CONVERSACIÓN), and
+    # name and reason are the patient's free text.
+    safe_name = sanitize_for_prompt(patient_name)
+    if old_label:
+        summary = f"Cambio de cita de {safe_name or 'el paciente'}: del {old_label} al {label}."
+    else:
+        summary = f"Cita para {safe_name}: {label}. Motivo: {sanitize_for_prompt(reason)}."
+        if not for_self and patient_phone:
+            summary += f" Teléfono de contacto: {display_or_raw(patient_phone)}."
+
+    ctx.state.draft = BookingDraft(
+        slot_id=slot_id_for(start_dt),
+        label=label,
+        summary=summary,
+        patient_name=patient_name,
+        patient_phone=patient_phone,
+        for_self=for_self,
+        reason=reason,
+        intake_notes=intake_notes,
+        replaces_appointment_id=replaces_id,
+        confirm_second_same_day=confirm_second,
+        created_at=now_mx().isoformat(),
+    )
+    logger.info(
+        "tool_booking_prepared",
+        office_id=str(ctx.office.id),
+        slot_id=ctx.state.draft.slot_id,
+        reschedule=bool(replaces_id),
+    )
+    return {
+        "prepared": True,
+        "summary": summary,
+        "next_step": (
+            "Muéstrale este resumen al paciente y pregúntale si lo confirma. La cita NO está "
+            "agendada todavía: se agenda cuando acepte y llames confirm_booking."
+        ),
+    }
+
+
+@_handler("confirm_booking")
+async def _handle_confirm_booking(args: dict, ctx: ToolContext) -> dict:
+    draft = ctx.state.draft
+    if draft is None:
+        return {
+            "error": (
+                "No hay ninguna cita preparada. Usa prepare_booking con los datos que el "
+                "paciente aceptó."
+            )
+        }
+
+    # The patient approves a summary they have read — which means one prepared
+    # in an earlier turn. Without this, a model that wrongly announced "quedó
+    # agendada" right after prepare_booking could be corrected into confirming
+    # a booking the patient never saw.
+    if datetime.fromisoformat(draft.created_at) >= ctx.turn_started_at:
+        return {
+            "error": (
+                "El paciente todavía no ha visto este resumen. Muéstraselo y espera a que "
+                "lo acepte antes de confirmar."
+            )
+        }
+
+    start_dt = parse_slot_id(draft.slot_id)
+    if isinstance(start_dt, dict) or start_dt <= now_mx():
+        ctx.state.draft = None
+        return {"error": "El horario preparado ya pasó. Ofrécele otro horario al paciente."}
+
+    if draft.replaces_appointment_id:
+        result = await _execute_reschedule(ctx, draft.replaces_appointment_id, start_dt)
+    else:
+        result = await _execute_booking(ctx, draft, start_dt)
+
+    # A failed booking means the draft no longer matches reality (typically the
+    # slot was taken in between): drop it so the model re-prepares.
+    ctx.state.draft = None
+    return result
+
+
+async def _execute_booking(ctx: ToolContext, draft: BookingDraft, start_dt: datetime) -> dict:
+    """Write a new appointment from an approved draft."""
+    is_new_patient = False
+    if not draft.for_self:
+        # Resolve the third party by phone; register them if not found.
+        patient = await _find_patient_by_phone(ctx, draft.patient_phone)
         if not patient:
             patient = Patient(
                 id=uuid.uuid4(),
                 office_id=ctx.office.id,
-                whatsapp_id=to_whatsapp_id(patient_phone),
-                phone=normalize_phone(patient_phone),
-                name=patient_name,
+                whatsapp_id=to_whatsapp_id(draft.patient_phone),
+                phone=normalize_phone(draft.patient_phone),
+                name=draft.patient_name,
             )
             ctx.db.add(patient)
             await ctx.db.flush()
             is_new_patient = True
         elif not patient.name:
-            patient.name = patient_name
+            patient.name = draft.patient_name
         # Do NOT touch ctx.patient_id: the session still belongs to the writer.
     else:
         # Booking for whoever is writing — use (or create) their own record.
-        # patient_phone is the contact number they gave (already validated above);
-        # store it normalized. whatsapp_id stays the raw Meta id (used to match
-        # incoming messages).
-        contact_phone = normalize_phone(patient_phone)
-        patient = None
-        if ctx.patient_id:
-            patient = await ctx.db.get(Patient, ctx.patient_id)
+        # whatsapp_id stays the raw Meta id (used to match incoming messages).
+        patient = await ctx.db.get(Patient, ctx.patient_id) if ctx.patient_id else None
         if not patient:
             patient = Patient(
                 id=uuid.uuid4(),
                 office_id=ctx.office.id,
                 whatsapp_id=ctx.whatsapp_id,
-                phone=contact_phone,
-                name=patient_name,
+                phone=_writer_contact_phone(ctx),
+                name=draft.patient_name,
             )
             ctx.db.add(patient)
             await ctx.db.flush()
             ctx.patient_id = patient.id
             is_new_patient = True
         else:
-            patient.phone = contact_phone
+            if not patient.phone:
+                patient.phone = _writer_contact_phone(ctx)
             if not patient.name:
-                patient.name = patient_name
-
-    # Same patient, same day: could be a second appointment they really want, or
-    # the patient forgetting they already have one. The model can't tell, and
-    # booking silently is the wrong guess — hand back the existing appointment
-    # and let it ask.
-    same_day = (
-        None
-        if args.get("confirm_second_same_day")
-        else await _find_same_day_appointment(ctx, patient.id, start_dt)
-    )
-    if same_day is not None:
-        return {
-            "existing_appointment": {
-                "appointment_id": str(same_day.id),
-                "formatted": format_appointment_dt(same_day.start_datetime),
-                "status": same_day.status,
-            },
-            "next_step": (
-                "Este paciente ya tiene una cita ese mismo día. Antes de agendar, "
-                "pregúntale si quiere mover la que ya tiene (reschedule_appointment) "
-                "o si de verdad necesita una segunda cita el mismo día — no lo asumas. "
-                "Si confirma que quiere las dos, vuelve a llamar create_appointment "
-                "con confirm_second_same_day=true."
-            ),
-        }
+                patient.name = draft.patient_name
 
     # Duration and type from the shared resolver — the same one that laid out
     # the slots this patient was offered.
@@ -627,17 +865,17 @@ async def _handle_create_appointment(args: dict, ctx: ToolContext) -> dict:
         patient_id=patient.id,
         start_dt=start_dt,
         duration_min=duration_min,
-        reason=reason,
+        reason=draft.reason,
         appt_type=appt_type,
-        gcal_title=f"Cita: {patient_name}",
+        gcal_title=f"Cita: {draft.patient_name}",
         gcal_description=(
-            f"Motivo: {reason}\n"
+            f"Motivo: {draft.reason}\n"
             f"Teléfono: {display_or_raw(patient.phone)}\n"
             f"Agendada por WhatsApp"
         ),
         redis_client=ctx.redis_client,
         booked_by_patient_id=ctx.patient_id,
-        intake_notes=intake_notes,
+        intake_notes=draft.intake_notes,
     )
     if outcome.error:
         return _booking_error(outcome.error)
@@ -662,140 +900,39 @@ async def _handle_create_appointment(args: dict, ctx: ToolContext) -> dict:
         patient_id=patient.id,
     )
 
-    day_name = DAYS_ES[start_dt.weekday()]
+    label = format_appointment_dt(start_dt)
+    ctx.state.known_appointments.append(
+        KnownAppointment(
+            id=str(appointment.id),
+            label=label,
+            status="scheduled",
+            patient_name=None if draft.for_self else draft.patient_name,
+        )
+    )
     logger.info("tool_appointment_created", appointment_id=str(appointment.id), office_id=str(ctx.office.id))
 
     return {
         "success": True,
+        "summary": f"Cita agendada: {draft.patient_name}, {label}",
         "appointment_id": str(appointment.id),
-        "patient_name": patient_name,
-        "date": date_str,
-        "time": time_str,
-        "day_name": day_name,
-        "formatted_date": f"{day_name} {start_dt.strftime('%d/%m/%Y')}",
-        "reason": reason,
+        "label": label,
+        "patient_name": draft.patient_name,
+        "reason": draft.reason,
         "duration_minutes": duration_min,
         "office_name": ctx.office.name,
         "office_address": ctx.office.address or "",
     }
 
 
-async def _load_actionable_appointment(
-    appt_id_str: str, ctx: ToolContext
-) -> tuple[Optional[Appointment], Optional[dict]]:
-    """Resolve an appointment id the patient flow is about to act on.
-
-    Returns (appointment, None) when the caller may proceed, or (None, error)
-    when it may not. Handles the three ways an id goes wrong: malformed, not
-    this office's or not this patient's, and — the common one — stale because
-    the appointment was rescheduled during the same conversation, in which case
-    the chain is followed forward to whatever is live now.
-    """
-    try:
-        appt_id = uuid.UUID(appt_id_str)
-    except ValueError:
-        return None, {"error": f"ID de cita inválido: {appt_id_str}"}
-
-    appointment = await ctx.db.get(Appointment, appt_id)
-    if not appointment or appointment.office_id != ctx.office.id:
-        return None, {"error": "No se encontró la cita."}
-
-    live = await resolve_active_appointment(ctx.db, appointment)
-    if live is None:
-        return None, {
-            "error": "Esa cita ya fue cancelada y no hay una que la reemplace.",
-            "next_step": (
-                "Consulta get_patient_appointments para ver qué citas tiene "
-                "realmente el paciente antes de responderle."
-            ),
-        }
-
-    access_error = appointment_access_error(live, ctx)
-    if access_error:
-        return None, {"error": access_error}
-
-    return live, None
-
-
-@_handler("cancel_appointment")
-async def _handle_cancel_appointment(args: dict, ctx: ToolContext) -> dict:
-    reason = args.get("reason", "")
-
-    appointment, error = await _load_actionable_appointment(
-        args.get("appointment_id", ""), ctx
-    )
+async def _execute_reschedule(ctx: ToolContext, appointment_id: str, new_start: datetime) -> dict:
+    """Move an appointment to `new_start` (book the new slot, then cancel the old)."""
+    appointment, error = await _load_actionable_appointment(appointment_id, ctx)
     if error:
         return error
     appt_id = appointment.id
     appt_id_str = str(appt_id)
 
-    # Format before cancelling
-    dt = localize_mx(appointment.start_datetime)
-    formatted = format_appointment_dt(appointment.start_datetime)
-
-    # Cancel
-    appointment.status = "cancelled"
-    appointment.cancelled_by = "patient"
-    appointment.cancellation_reason = reason
-
-    await _invalidate_avail(ctx, dt.date())
-    await _release_slot(ctx, appointment.start_datetime)
-
-    # Notify the doctor of the patient cancellation (configurable per office).
-    enqueue_cancellation_notification(appointment.id)
-
-    # Google Calendar
-    try:
-        await cancel_appointment_in_calendar(appt_id, ctx.office.id, ctx.db)
-    except Exception as e:
-        logger.warning("tool_cancel_gcal_failed", error=str(e))
-
-    # Rule 12: a cancellation that leaves the calendar event standing is worse
-    # than a failed cancellation — the slot looks taken and the patient thinks
-    # they're free.
-    enqueue_write_audit(appointment.id, "cancel", status="cancelled")
-
-    # Rule 13: if the doctor had cancelled a cita and asked this patient to
-    # rebook, and they cancelled instead, the doctor has to hear how it actually
-    # ended — otherwise they keep holding a slot for someone who isn't coming.
-    pending = await find_pending_doctor_cancellation(
-        ctx.db,
-        ctx.office.id,
-        appointment.patient_id,
-        exclude_appointment_id=appointment.id,
-    )
-    if pending is not None:
-        enqueue_abandoned_reschedule_notification(pending.id)
-
-    logger.info("tool_appointment_cancelled", appointment_id=appt_id_str)
-
-    return {
-        "success": True,
-        "appointment_id": appt_id_str,
-        "formatted": formatted,
-        "reason": reason,
-    }
-
-
-@_handler("reschedule_appointment")
-async def _handle_reschedule_appointment(args: dict, ctx: ToolContext) -> dict:
-    new_date = args.get("new_date", "")
-    new_time = args.get("new_time", "")
-
-    appointment, error = await _load_actionable_appointment(
-        args.get("appointment_id", ""), ctx
-    )
-    if error:
-        return error
-    appt_id = appointment.id
-    appt_id_str = str(appt_id)
-
-    try:
-        new_start = datetime.strptime(f"{new_date} {new_time}", "%Y-%m-%d %H:%M").replace(tzinfo=MX_TIMEZONE)
-    except ValueError:
-        return {"error": f"Fecha u hora inválida: {new_date} {new_time}"}
-
-    old_formatted = format_appointment_dt(appointment.start_datetime)
+    old_label = format_appointment_dt(appointment.start_datetime)
     old_date = localize_mx(appointment.start_datetime).date()
     reason = appointment.consultation_reason or "Consulta"
 
@@ -861,25 +998,138 @@ async def _handle_reschedule_appointment(args: dict, ctx: ToolContext) -> dict:
     )
     enqueue_write_audit(appointment.id, "cancel", status="cancelled")
 
-    new_day_name = DAYS_ES[new_start.weekday()]
+    new_label = format_appointment_dt(new_start)
+    ctx.state.known_appointments = [
+        a for a in ctx.state.known_appointments if a.id != appt_id_str
+    ] + [
+        KnownAppointment(
+            id=str(new_appointment.id),
+            label=new_label,
+            status="scheduled",
+            patient_name=patient_name if appointment.patient_id != ctx.patient_id else None,
+        )
+    ]
     logger.info("tool_appointment_rescheduled", old_id=appt_id_str, new_id=str(new_appointment.id))
 
     return {
         "success": True,
+        "summary": f"Cita reagendada: del {old_label} al {new_label}",
         "old_appointment_id": appt_id_str,
-        "old_formatted": old_formatted,
+        "old_label": old_label,
         "new_appointment_id": str(new_appointment.id),
-        "new_date": new_date,
-        "new_time": new_time,
-        "new_day_name": new_day_name,
-        "new_formatted": format_appointment_dt(new_start),
+        "new_label": new_label,
         "reason": reason,
         "patient_name": patient_name,
     }
 
 
-@_handler("confirm_appointment")
-async def _handle_confirm_appointment(args: dict, ctx: ToolContext) -> dict:
+async def _load_actionable_appointment(
+    appt_id_str: str, ctx: ToolContext
+) -> tuple[Optional[Appointment], Optional[dict]]:
+    """Resolve an appointment id the patient flow is about to act on.
+
+    Returns (appointment, None) when the caller may proceed, or (None, error)
+    when it may not. Handles the three ways an id goes wrong: malformed, not
+    this office's or not this patient's, and — the common one — stale because
+    the appointment was rescheduled during the same conversation, in which case
+    the chain is followed forward to whatever is live now.
+    """
+    try:
+        appt_id = uuid.UUID(appt_id_str)
+    except ValueError:
+        return None, {"error": f"ID de cita inválido: {appt_id_str}"}
+
+    appointment = await ctx.db.get(Appointment, appt_id)
+    if not appointment or appointment.office_id != ctx.office.id:
+        return None, {"error": "No se encontró la cita."}
+
+    live = await resolve_active_appointment(ctx.db, appointment)
+    if live is None:
+        return None, {
+            "error": "Esa cita ya fue cancelada y no hay una que la reemplace.",
+            "next_step": (
+                "Consulta get_patient_appointments para ver qué citas tiene "
+                "realmente el paciente antes de responderle."
+            ),
+        }
+
+    access_error = appointment_access_error(live, ctx)
+    if access_error:
+        return None, {"error": access_error}
+
+    return live, None
+
+
+@_handler("cancel_appointment")
+async def _handle_cancel_appointment(args: dict, ctx: ToolContext) -> dict:
+    reason = args.get("reason", "")
+
+    appointment, error = await _load_actionable_appointment(
+        args.get("appointment_id", ""), ctx
+    )
+    if error:
+        return error
+    appt_id = appointment.id
+    appt_id_str = str(appt_id)
+
+    # Format before cancelling
+    dt = localize_mx(appointment.start_datetime)
+    label = format_appointment_dt(appointment.start_datetime)
+
+    # Cancel
+    appointment.status = "cancelled"
+    appointment.cancelled_by = "patient"
+    appointment.cancellation_reason = reason
+
+    await _invalidate_avail(ctx, dt.date())
+    await _release_slot(ctx, appointment.start_datetime)
+
+    # Notify the doctor of the patient cancellation (configurable per office).
+    enqueue_cancellation_notification(appointment.id)
+
+    # Google Calendar
+    try:
+        await cancel_appointment_in_calendar(appt_id, ctx.office.id, ctx.db)
+    except Exception as e:
+        logger.warning("tool_cancel_gcal_failed", error=str(e))
+
+    # Rule 12: a cancellation that leaves the calendar event standing is worse
+    # than a failed cancellation — the slot looks taken and the patient thinks
+    # they're free.
+    enqueue_write_audit(appointment.id, "cancel", status="cancelled")
+
+    # Rule 13: if the doctor had cancelled a cita and asked this patient to
+    # rebook, and they cancelled instead, the doctor has to hear how it actually
+    # ended — otherwise they keep holding a slot for someone who isn't coming.
+    pending = await find_pending_doctor_cancellation(
+        ctx.db,
+        ctx.office.id,
+        appointment.patient_id,
+        exclude_appointment_id=appointment.id,
+    )
+    if pending is not None:
+        enqueue_abandoned_reschedule_notification(pending.id)
+
+    for known in ctx.state.known_appointments:
+        if known.id == appt_id_str:
+            known.status = "cancelled"
+    # A draft that was going to move this appointment is moot now.
+    if ctx.state.draft and ctx.state.draft.replaces_appointment_id == appt_id_str:
+        ctx.state.draft = None
+
+    logger.info("tool_appointment_cancelled", appointment_id=appt_id_str)
+
+    return {
+        "success": True,
+        "summary": f"Cita cancelada: {label}",
+        "appointment_id": appt_id_str,
+        "label": label,
+        "reason": reason,
+    }
+
+
+@_handler("confirm_attendance")
+async def _handle_confirm_attendance(args: dict, ctx: ToolContext) -> dict:
     appointment, error = await _load_actionable_appointment(
         args.get("appointment_id", ""), ctx
     )
@@ -896,12 +1146,18 @@ async def _handle_confirm_appointment(args: dict, ctx: ToolContext) -> dict:
         except Exception as e:
             logger.warning("tool_confirm_gcal_color_failed", error=str(e))
 
+    label = format_appointment_dt(appointment.start_datetime)
+    for known in ctx.state.known_appointments:
+        if known.id == appt_id_str:
+            known.status = "confirmed"
+
     logger.info("tool_appointment_confirmed", appointment_id=appt_id_str)
 
     return {
         "success": True,
+        "summary": f"Asistencia confirmada: {label}",
         "appointment_id": appt_id_str,
-        "formatted": format_appointment_dt(appointment.start_datetime),
+        "label": label,
         "office_name": ctx.office.name,
         "office_address": ctx.office.address or "",
     }
@@ -951,8 +1207,10 @@ async def _handle_report_arrival(args: dict, ctx: ToolContext) -> dict:
         eta_minutes=eta_minutes,
     )
 
+    state_label = "ya llegó" if status == ArrivalStatus.ARRIVED.value else "viene en camino"
     return {
         "success": True,
+        "summary": f"Se avisó al doctor que el paciente {state_label}",
         "appointment_id": appt_id_str,
         "status": status,
         "eta_minutes": eta_minutes,
@@ -967,16 +1225,16 @@ async def _handle_request_urgent_appointment(args: dict, ctx: ToolContext) -> di
     from app.modules.urgencies.service import create_urgency_request
     from app.modules.urgencies.tasks import enqueue_urgency_flow
 
-    reason = args.get("reason", "").strip()
+    reason = (args.get("reason") or "").strip()
     if not reason:
         return {"error": "Necesito el motivo de la urgencia antes de avisar al doctor."}
 
-    patient_name = args.get("patient_name", "").strip()
+    patient_name = (args.get("patient_name") or "").strip()
 
     # Optional preferred date+time — both required to build a concrete datetime.
     preferred_time = None
-    pdate = args.get("preferred_date", "").strip()
-    ptime = args.get("preferred_time", "").strip()
+    pdate = (args.get("preferred_date") or "").strip()
+    ptime = (args.get("preferred_time") or "").strip()
     if pdate and ptime:
         try:
             preferred_time = datetime.strptime(f"{pdate} {ptime}", "%Y-%m-%d %H:%M").replace(tzinfo=MX_TIMEZONE)
@@ -1014,8 +1272,11 @@ async def _handle_request_urgent_appointment(args: dict, ctx: ToolContext) -> di
     logger.info("tool_urgency_requested", request_id=str(request.id), office_id=str(ctx.office.id))
     return {
         "success": True,
+        "summary": f"Se avisó al doctor de la urgencia: {reason}",
         "next_step": (
             "Dile al paciente que estás consultando con el doctor para conseguirle un espacio "
-            "urgente y que le avisarás en cuanto el doctor responda. No prometas un horario todavía."
+            "urgente y que le avisarás en cuanto el doctor responda. No prometas un horario todavía. "
+            "Si lo que describe puede ser grave (un síntoma de alarma, algo intenso o que empeora), "
+            "dile también que no espere la respuesta: que llame al 911 o acuda a urgencias."
         ),
     }

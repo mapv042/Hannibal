@@ -36,6 +36,13 @@ class Settings(BaseSettings):
     # alongside function tools, and the whole conversation flow is tool-use —
     # real reasoning + tools would require migrating to /v1/responses.
     open_ai_reasoning_effort: str = "none"
+    # Strict function calling on OpenAI: arguments are guaranteed to match each
+    # tool's schema. Kept as a switch only so it can be turned off without a
+    # redeploy if a model rejects the strict dialect.
+    openai_strict_tools: bool = True
+    # How long the webhook waits for the rest of a message burst before
+    # answering it as one turn (see whatsapp/router.INBOX_KEY). 0 disables it.
+    message_coalesce_seconds: float = 2.5
 
     # Meta/WhatsApp
     # "meta" sends through the Cloud API; "fake" records outbound messages in
@@ -150,6 +157,9 @@ class Settings(BaseSettings):
     model_config = {
         "env_file": ".env",
         "case_sensitive": False,
+        # The same .env also carries tooling variables the app doesn't read
+        # (SIM_URL / SIM_PASSWORD for tests/evals); they must not stop the boot.
+        "extra": "ignore",
     }
 
 

@@ -7,6 +7,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
+from app.modules.conversation.state import ConversationState
 from app.utils.dates import now_mx
 
 
@@ -57,6 +58,14 @@ class SessionContext(BaseModel):
     # Appointment tracking (if applicable)
     active_appointment_id: Optional[UUID] = Field(
         None, description="ID of active appointment being discussed"
+    )
+    state: ConversationState = Field(
+        default_factory=ConversationState,
+        description=(
+            "Facts the tools established (offered slots, known appointments, "
+            "pending booking draft, executed writes), rendered into every turn's "
+            "prompt — see app/modules/conversation/state.py"
+        ),
     )
 
     class Config:

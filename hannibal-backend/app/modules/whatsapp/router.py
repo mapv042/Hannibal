@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import hmac
+import json
+from contextlib import asynccontextmanager
 import time
 import uuid as uuid_module
 from typing import Optional, Dict, Any
@@ -55,27 +57,20 @@ MESSAGE_DEDUP_TTL = 86400
 # not run concurrently (they read-modify-write the same Redis session).
 CONV_LOCK_KEY = "conv_lock:{office_id}:{sender}"
 CONV_LOCK_TTL = 120  # safety bound; normal turns finish well under this
-CONV_LOCK_WAIT_SECONDS = 90
+# A waiter outlasts the lock's TTL, so a holder that died mid-turn is always
+# replaced before anyone gives up on the queued messages.
+CONV_LOCK_WAIT_SECONDS = CONV_LOCK_TTL + 15
 CONV_LOCK_POLL_SECONDS = 0.5
 
-
-async def _acquire_conversation_lock(
-    redis_client: redis.Redis, key: str, token: str
-) -> bool:
-    """Wait for the per-conversation lock so turns process in arrival order.
-
-    Returns False after CONV_LOCK_WAIT_SECONDS (the previous turn is stuck or
-    the TTL is about to reap it) — callers proceed anyway rather than drop the
-    patient's message, which is the lesser evil.
-    """
-    deadline = time.monotonic() + CONV_LOCK_WAIT_SECONDS
-    while time.monotonic() < deadline:
-        acquired = await redis_client.set(key, token, nx=True, ex=CONV_LOCK_TTL)
-        if acquired:
-            return True
-        await asyncio.sleep(CONV_LOCK_POLL_SECONDS)
-    logger.warning("conversation_lock_timeout", key=key)
-    return False
+# Burst coalescing. People write "hola" / "quiero una cita" / "mañana en la
+# tarde" as three messages; answered one by one, the bot replied to the first
+# before reading the third and the answers contradicted each other. Every
+# message is queued in this inbox; whoever holds the conversation lock waits a
+# short window, then answers everything queued as ONE turn — and keeps
+# draining until the inbox is empty, so a message that lands mid-turn is
+# answered next instead of racing the session.
+INBOX_KEY = "inbox:{office_id}:{sender}"
+INBOX_TTL = 600
 
 
 async def _release_conversation_lock(
@@ -323,18 +318,13 @@ async def _process_message(
                 )
                 return
 
-        # Serialize turns per sender: a second message from the same person
-        # waits for the previous one instead of racing it on the session.
-        lock_key = CONV_LOCK_KEY.format(office_id=office.id, sender=from_id)
-        lock_token = uuid_module.uuid4().hex
-        lock_acquired = await _acquire_conversation_lock(
-            redis_client, lock_key, lock_token
-        )
-        try:
-            await _route_message(message, office, db, redis_client)
-        finally:
-            if lock_acquired:
-                await _release_conversation_lock(redis_client, lock_key, lock_token)
+        # Queue the message and, if nobody is answering this sender yet, answer
+        # everything queued. If another task holds the lock, it will pick this
+        # message up before it lets go.
+        inbox_key = INBOX_KEY.format(office_id=office.id, sender=from_id)
+        await redis_client.rpush(inbox_key, json.dumps(message))
+        await redis_client.expire(inbox_key, INBOX_TTL)
+        await _drain_inbox(inbox_key, office, from_id, db, redis_client)
 
     except Exception as e:
         logger.error(
@@ -345,15 +335,109 @@ async def _process_message(
         )
 
 
+async def _drain_inbox(
+    inbox_key: str,
+    office,
+    sender: str,
+    db: AsyncSession,
+    redis_client: redis.Redis,
+) -> None:
+    """Answer everything queued for this sender, one coalesced turn at a time.
+
+    Only the task that wins the conversation lock answers. A task that loses
+    waits until either its message has been taken by the holder (inbox empty —
+    nothing left to do) or the lock frees up, which also covers a holder that
+    died mid-turn: its lock expires and the queued messages are still answered.
+    After releasing, the winner looks once more: a message queued between its
+    last drain and the release may have been left to it.
+    """
+    # Plain value: `office` belongs to the caller's session, and each batch
+    # below runs in a session of its own.
+    office_id = office.id
+    lock_key = CONV_LOCK_KEY.format(office_id=office_id, sender=sender)
+    while True:
+        lock_token = uuid_module.uuid4().hex
+        deadline = time.monotonic() + CONV_LOCK_WAIT_SECONDS
+        acquired = False
+        while time.monotonic() < deadline:
+            acquired = await redis_client.set(
+                lock_key, lock_token, nx=True, ex=CONV_LOCK_TTL
+            )
+            if acquired or not await redis_client.llen(inbox_key):
+                break
+            await asyncio.sleep(CONV_LOCK_POLL_SECONDS)
+        if not acquired:
+            if await redis_client.llen(inbox_key):
+                logger.warning("conversation_lock_timeout", key=lock_key)
+            return
+        try:
+            while True:
+                # Let the rest of a burst arrive before answering it.
+                await asyncio.sleep(settings.message_coalesce_seconds)
+                batch = await _pop_all(redis_client, inbox_key)
+                if not batch:
+                    break
+                # Each turn gets a fresh lock lease.
+                await redis_client.expire(lock_key, CONV_LOCK_TTL)
+                if len(batch) > 1:
+                    logger.info(
+                        "webhook_burst_coalesced",
+                        office_id=str(office_id),
+                        count=len(batch),
+                    )
+                try:
+                    # One session per turn: a turn that fails leaves its session
+                    # rolled back with every loaded row expired, and reusing it
+                    # made each later batch in this loop fail too — its messages
+                    # popped from the inbox and never answered.
+                    async with _batch_scope(office_id) as (batch_office, batch_db):
+                        await _route_message(batch, batch_office, batch_db, redis_client)
+                except Exception as e:
+                    logger.error(
+                        "process_message_error",
+                        message_ids=[m.get("id") for m in batch],
+                        error=str(e),
+                        exc_info=True,
+                    )
+        finally:
+            await _release_conversation_lock(redis_client, lock_key, lock_token)
+        if not await redis_client.llen(inbox_key):
+            return
+
+
+@asynccontextmanager
+async def _batch_scope(office_id):
+    """A fresh DB session and the office loaded in it, for one turn."""
+    from app.db.models import Office
+
+    async with get_async_session_maker()() as batch_db:
+        yield await batch_db.get(Office, office_id), batch_db
+
+
+async def _pop_all(redis_client: redis.Redis, key: str) -> list[Dict[str, Any]]:
+    """Atomically take every queued message (oldest first)."""
+    async with redis_client.pipeline(transaction=True) as pipe:
+        pipe.lrange(key, 0, -1)
+        pipe.delete(key)
+        raw, _ = await pipe.execute()
+    out = []
+    for item in raw or []:
+        try:
+            out.append(json.loads(item))
+        except (TypeError, ValueError):
+            logger.warning("inbox_item_unreadable", key=key)
+    return out
+
+
 async def _route_message(
-    message: Dict[str, Any],
+    messages: list[Dict[str, Any]],
     office,
     db: AsyncSession,
     redis_client: redis.Redis,
 ) -> None:
-    """Route a deduplicated, lock-protected message to the right manager."""
-    message_id = message.get("id")
-    from_id = message.get("from")
+    """Route a lock-protected batch (one sender) to the right manager."""
+    message_id = messages[-1].get("id")
+    from_id = messages[0].get("from")
 
     # Check if sender is on the doctor channel (routed before the pause check so
     # the doctor always gets through). An office may register a second number —
@@ -381,7 +465,7 @@ async def _route_message(
         )
         meta_client = get_meta_client()
         doctor_manager = DoctorConversationManager(meta_client, redis_client)
-        await doctor_manager.process(office, message, db)
+        await doctor_manager.process(office, messages, db)
         return
 
     # Check if bot is paused (single source of truth: Redis, set by pause_bot)
@@ -394,14 +478,15 @@ async def _route_message(
         )
         # The bot stays silent, but the message must still show up in the
         # dashboard conversation history.
-        await _persist_incoming_while_paused(message, office, db)
+        for message in messages:
+            await _persist_incoming_while_paused(message, office, db)
         return
 
     # Route to the tool-use conversation manager
     session_store = SessionStore(redis_client)
     meta_client = get_meta_client()
     manager = ConversationManager(session_store, meta_client)
-    await manager.process(office, message, db)
+    await manager.process(office, messages, db)
 
 
 async def _persist_incoming_while_paused(

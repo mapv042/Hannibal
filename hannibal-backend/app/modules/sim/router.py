@@ -33,6 +33,7 @@ from app.config import settings
 from app.core.dependencies import get_db, get_redis
 from app.db.models import Office
 from app.modules.sim.auth import require_sim_auth
+from app.modules.sim import gcal as sim_gcal
 from app.modules.sim import seed as sim_seed
 from app.modules.sim.runner import (
     CLOCK_KEY,
@@ -333,6 +334,15 @@ async def sim_reset(
     disposable, which is the whole premise of the environment; the package it
     lives in refuses to load anywhere else.
     """
+    # Google doesn't reset with the database: delete the events this scenario
+    # created first, or their busy periods haunt the next run (see sim/gcal.py).
+    previous = (await db.execute(select(Office))).scalars().first()
+    gcal_cleanup = (
+        await sim_gcal.delete_simulator_events(db, redis_client, previous)
+        if previous is not None
+        else {"deleted": 0}
+    )
+
     office = await sim_seed.reset(db)
 
     await redis_client.delete(CLOCK_KEY)
@@ -340,7 +350,9 @@ async def sim_reset(
 
     # Sessions and locks would otherwise outlive the office they belonged to.
     for pattern in (f"session:*:{office.id}", f"avail_cache:{office.id}:*",
-                    f"slot_lock:{office.id}:*", f"conv_lock:{office.id}:*"):
+                    f"slot_lock:{office.id}:*", f"conv_lock:{office.id}:*",
+                    f"inbox:{office.id}:*", f"doctor_state:{office.id}",
+                    f"doctor_session:{office.id}"):
         keys = [k async for k in redis_client.scan_iter(match=pattern, count=500)]
         if keys:
             await redis_client.delete(*keys)
@@ -352,6 +364,271 @@ async def sim_reset(
         "name": office.name,
         "clock": "reset to real time",
         "outbox": "cleared",
+        "google_calendar": gcal_cleanup,
+    }
+
+
+@router.get("/appointments")
+async def sim_appointments(db: AsyncSession = Depends(get_db)) -> dict:
+    """Every appointment in the simulator, for scenario assertions (tests/evals).
+
+    Times are Mexico City wall time, the form a scenario is written in.
+    """
+    from app.db.models import Appointment, Patient
+    from app.core.constants import MX_TIMEZONE
+
+    office = await _the_office(db)
+    rows = (await db.execute(
+        select(Appointment, Patient)
+        .join(Patient, Patient.id == Appointment.patient_id, isouter=True)
+        .where(Appointment.office_id == office.id)
+        .order_by(Appointment.created_at)
+    )).all()
+    return {
+        "appointments": [
+            {
+                "id": str(a.id),
+                "start": a.start_datetime.astimezone(MX_TIMEZONE).strftime("%Y-%m-%dT%H:%M"),
+                "duration_minutes": a.duration_minutes,
+                "status": a.status,
+                "type": a.type,
+                "reason": a.consultation_reason,
+                "patient_name": p.name if p else None,
+                "patient_whatsapp_id": p.whatsapp_id if p else None,
+                "booked_by_patient_id": str(a.booked_by_patient_id) if a.booked_by_patient_id else None,
+                "google_event_id": a.google_event_id,
+                "arrival_status": a.arrival_status,
+            }
+            for a, p in rows
+        ]
+    }
+
+
+class FixtureAppointment(BaseModel):
+    """An appointment a scenario needs to exist before it starts."""
+
+    start: str  # "YYYY-MM-DDTHH:MM", Mexico City time
+    patient_whatsapp_id: str = "5215550000001"
+    patient_name: str = "Juan Pérez"
+    reason: str = "Consulta"
+    duration_minutes: int = 30
+    status: Literal["scheduled", "confirmed"] = "scheduled"
+
+
+class FixtureBlock(BaseModel):
+    """A time block a scenario needs (e.g. to make a day full)."""
+
+    start: str  # "YYYY-MM-DDTHH:MM"
+    end: str
+    reason: str = "Bloqueo de prueba"
+
+
+@router.post("/fixtures/appointment")
+async def sim_fixture_appointment(
+    body: FixtureAppointment,
+    db: AsyncSession = Depends(get_db),
+    redis_client: aioredis.Redis = Depends(get_redis),
+) -> dict:
+    """Create a scenario precondition through the one real booking path."""
+    from datetime import datetime as dt_cls
+
+    from app.core.constants import MX_TIMEZONE
+    from app.db.models import Patient
+    from app.modules.scheduling.booking import book_appointment
+
+    office = await _the_office(db)
+    await load_offset_into_context()
+    patient = (await db.execute(
+        select(Patient).where(
+            (Patient.office_id == office.id)
+            & (Patient.whatsapp_id == body.patient_whatsapp_id)
+        )
+    )).scalars().first()
+    if patient is None:
+        patient = Patient(
+            office_id=office.id,
+            whatsapp_id=body.patient_whatsapp_id,
+            phone=body.patient_whatsapp_id,
+            name=body.patient_name,
+        )
+        db.add(patient)
+        await db.flush()
+
+    start = dt_cls.strptime(body.start, "%Y-%m-%dT%H:%M").replace(tzinfo=MX_TIMEZONE)
+    outcome = await book_appointment(
+        db,
+        office,
+        patient_id=patient.id,
+        start_dt=start,
+        duration_min=body.duration_minutes,
+        reason=body.reason,
+        appt_type="follow_up",
+        gcal_title=f"Cita: {patient.name}",
+        gcal_description="Fixture del simulador",
+        redis_client=redis_client,
+    )
+    if outcome.error:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=outcome.error)
+    outcome.appointment.status = body.status
+    await db.commit()
+    # A fixture is not a turn: its lock must not block the scenario's booking.
+    from app.modules.scheduling.availability import release_slot_lock
+    await release_slot_lock(office.id, start, redis_client)
+    return {"id": str(outcome.appointment.id), "start": body.start}
+
+
+@router.post("/fixtures/block")
+async def sim_fixture_block(
+    body: FixtureBlock,
+    db: AsyncSession = Depends(get_db),
+    redis_client: aioredis.Redis = Depends(get_redis),
+) -> dict:
+    """Block part of the agenda, as the doctor would from the dashboard."""
+    from datetime import datetime as dt_cls
+
+    from app.core.constants import MX_TIMEZONE
+    from app.modules.scheduling.blocks_service import create_block
+
+    office = await _the_office(db)
+    start = dt_cls.strptime(body.start, "%Y-%m-%dT%H:%M").replace(tzinfo=MX_TIMEZONE)
+    end = dt_cls.strptime(body.end, "%Y-%m-%dT%H:%M").replace(tzinfo=MX_TIMEZONE)
+    block = await create_block(office.id, start, end, body.reason, False, db, redis_client)
+    return {"id": str(block.id)}
+
+
+class FixtureGcalEvent(BaseModel):
+    """A busy event straight in Google Calendar (the doctor's own agenda)."""
+
+    start: str  # "YYYY-MM-DDTHH:MM", Mexico City time
+    end: str
+    title: str = "Junta (evento personal de prueba)"
+
+
+@router.post("/fixtures/gcal_event")
+async def sim_fixture_gcal_event(
+    body: FixtureGcalEvent,
+    db: AsyncSession = Depends(get_db),
+    redis_client: aioredis.Redis = Depends(get_redis),
+) -> dict:
+    """Put an event in the connected calendar, as if the doctor had added it.
+
+    Deleted by the next reset. 409 when no calendar is connected.
+    """
+    from datetime import datetime as dt_cls
+
+    from app.core.constants import MX_TIMEZONE
+
+    office = await _the_office(db)
+    if not sim_gcal.calendar_connected(office):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="no calendar connected")
+    start = dt_cls.strptime(body.start, "%Y-%m-%dT%H:%M").replace(tzinfo=MX_TIMEZONE)
+    end = dt_cls.strptime(body.end, "%Y-%m-%dT%H:%M").replace(tzinfo=MX_TIMEZONE)
+    event_id = await sim_gcal.create_personal_event(db, redis_client, office, start, end, body.title)
+    # Availability is cached per day; a new busy period must be seen at once.
+    from app.modules.scheduling.availability import invalidate_availability_cache
+    await invalidate_availability_cache(office.id, start.date(), redis_client)
+    return {"id": event_id}
+
+
+@router.get("/gcal/events")
+async def sim_gcal_events(
+    start: str,
+    end: str,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Events in the connected calendar between two dates (YYYY-MM-DD), for
+    scenario assertions: times in Mexico City wall time."""
+    from datetime import datetime as dt_cls, time as time_cls
+
+    from app.core.constants import MX_TIMEZONE
+
+    office = await _the_office(db)
+    if not sim_gcal.calendar_connected(office):
+        return {"connected": False, "events": []}
+
+    def local(value: dict) -> Optional[str]:
+        raw = value.get("dateTime")
+        if not raw:
+            return value.get("date")
+        return dt_cls.fromisoformat(raw.replace("Z", "+00:00")).astimezone(MX_TIMEZONE).strftime("%Y-%m-%dT%H:%M")
+
+    time_min = dt_cls.combine(dt_cls.fromisoformat(start).date(), time_cls.min, tzinfo=MX_TIMEZONE)
+    time_max = dt_cls.combine(dt_cls.fromisoformat(end).date(), time_cls.max, tzinfo=MX_TIMEZONE)
+    events = await sim_gcal.list_events(db, office, time_min, time_max)
+    return {
+        "connected": True,
+        "events": [
+            {
+                "id": e.get("id"),
+                "summary": e.get("summary"),
+                "start": local(e.get("start") or {}),
+                "end": local(e.get("end") or {}),
+                "status": e.get("status"),
+                # "transparent" = does not block the slot (how cancellations look)
+                "transparency": e.get("transparency", "opaque"),
+                "color_id": e.get("colorId"),
+            }
+            for e in events
+        ],
+    }
+
+
+class PurgeRequest(BaseModel):
+    days_back: int = Field(default=30, ge=0, le=365)
+    days_ahead: int = Field(default=90, ge=0, le=365)
+
+
+@router.post("/gcal/purge")
+async def sim_gcal_purge(body: PurgeRequest, db: AsyncSession = Depends(get_db)) -> dict:
+    """One-off: delete events the app created in the test calendar, in a window.
+
+    For leftovers from before resets cleaned up after themselves. Only events
+    whose description carries an app marker are touched.
+    """
+    from datetime import timedelta
+
+    office = await _the_office(db)
+    if not sim_gcal.calendar_connected(office):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="no calendar connected")
+    now = now_mx()
+    return await sim_gcal.purge_marked_events(
+        db, office, now - timedelta(days=body.days_back), now + timedelta(days=body.days_ahead)
+    )
+
+
+@router.get("/traces")
+async def sim_traces(limit: int = 50, db: AsyncSession = Depends(get_db)) -> dict:
+    """The latest assistant turn traces (ai_turn_traces), newest first."""
+    from app.db.models import AiTurnTrace
+
+    office = await _the_office(db)
+    rows = (await db.execute(
+        select(AiTurnTrace)
+        .where(AiTurnTrace.office_id == office.id)
+        .order_by(AiTurnTrace.created_at.desc())
+        .limit(min(limit, 500))
+    )).scalars().all()
+    return {
+        "traces": [
+            {
+                "created_at": t.created_at.isoformat() if t.created_at else None,
+                "channel": t.channel,
+                "whatsapp_id": t.whatsapp_id,
+                "model": t.model,
+                "reasoning_effort": t.reasoning_effort,
+                "user_text": t.user_text,
+                "tool_calls": t.tool_calls or [],
+                "grounding_violations": t.grounding_violations or [],
+                "reply": t.reply,
+                "outcome": t.outcome,
+                "error": t.error,
+                "llm_calls": t.llm_calls,
+                "tokens_input": t.tokens_input,
+                "tokens_output": t.tokens_output,
+                "latency_ms": t.latency_ms,
+            }
+            for t in rows
+        ]
     }
 
 

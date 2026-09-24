@@ -43,6 +43,9 @@ class ChatResponse:
     tool_calls: list[ToolCall] = field(default_factory=list)
     stop_reason: str = "end_turn"
     raw_message: Any = None  # Provider-specific message for appending to history
+    # Token usage for this call, for the per-turn trace (ai_turn_traces).
+    tokens_input: int = 0
+    tokens_output: int = 0
 
 
 class BaseAIService(ABC):
@@ -76,11 +79,14 @@ class BaseAIService(ABC):
         max_tokens: int,
         temperature: float,
         tool_choice: Optional[str] = None,
+        parallel_tool_calls: Optional[bool] = None,
     ) -> ChatResponse:
         """SDK-specific chat call with tool definitions. No retry logic.
 
         tool_choice="none" forces a text-only reply (used to close a turn
         gracefully when the tool-iteration budget is exhausted).
+        parallel_tool_calls=False asks for at most one tool call per response;
+        None leaves the provider default.
         """
         ...
 
@@ -110,6 +116,16 @@ class BaseAIService(ABC):
             except AIServiceError:
                 raise
             except Exception as e:
+                # A bad key, a malformed request or an unknown model fails the
+                # same way every time: retrying only makes the patient wait.
+                status = getattr(e, "status_code", None)
+                if status is not None and 400 <= status < 500 and status not in (408, 409, 429):
+                    logger.error(
+                        f"{operation_name}_rejected",
+                        error=str(e),
+                        status_code=status,
+                    )
+                    raise AIServiceError(f"LLM API rejected the request: {str(e)}") from e
                 logger.warning(
                     f"{operation_name}_error",
                     error=str(e),
@@ -147,14 +163,18 @@ class BaseAIService(ABC):
         messages: list[dict],
         tools: list[dict],
         max_tokens: Optional[int] = None,
-        temperature: float = 0.5,
+        # Low on purpose: a tool-use turn wants the same tool call for the same
+        # facts, not variety. Only models that take a temperature see it.
+        temperature: float = 0.2,
         tool_choice: Optional[str] = None,
+        parallel_tool_calls: Optional[bool] = None,
     ) -> ChatResponse:
         """Send a conversation with tool definitions and get a response that may include tool calls."""
         budget = max_tokens or settings.ai_max_output_tokens
         return await self._with_retries(
             lambda: self._raw_chat_with_tools(
-                system_prompt, messages, tools, budget, temperature, tool_choice
+                system_prompt, messages, tools, budget, temperature, tool_choice,
+                parallel_tool_calls,
             ),
             "llm_chat_with_tools",
         )

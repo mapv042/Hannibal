@@ -887,6 +887,62 @@ class GoogleCalendarEvent(Base):
         return f"<GoogleCalendarEvent(id={self.id}, google_event_id={self.google_event_id})>"
 
 
+class AiTurnTrace(Base):
+    """
+    What the assistant did in one conversation turn, for diagnosis.
+
+    One row per turn of either flow: the model and effort that answered, every
+    tool call with its arguments and (truncated) result, the reply-validator
+    findings, the final reply, latency and tokens. It is what turns "the bot
+    said there were no slots" into a one-query answer about *why*. Stored here
+    rather than in logs because it holds patient data, and scoped by office_id
+    like everything else. Pruned after TRACE_RETENTION_DAYS by a beat task.
+    """
+
+    __tablename__ = "ai_turn_traces"
+    __table_args__ = (
+        Index("ix_ai_turn_traces_office_created", "office_id", "created_at"),
+        Index("ix_ai_turn_traces_conversation", "conversation_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    office_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("offices.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    # Patient conversations only; the doctor channel has no Conversation row.
+    conversation_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), nullable=True
+    )
+    channel: Mapped[str] = mapped_column(String(20), nullable=False)  # patient|doctor
+    whatsapp_id: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    provider: Mapped[Optional[str]] = mapped_column(String(30), nullable=True)
+    model: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    reasoning_effort: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    user_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # [{name, arguments, result, duration_ms, duplicate}]
+    tool_calls: Mapped[Optional[list]] = mapped_column(JSONB, nullable=True)
+    # [{kind, detail, attempt}] from conversation/grounding.py
+    grounding_violations: Mapped[Optional[list]] = mapped_column(JSONB, nullable=True)
+    reply: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # "ok" | "fallback" (validator gave up) | "error" (the turn raised)
+    outcome: Mapped[str] = mapped_column(String(20), default="ok", nullable=False)
+    error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    llm_calls: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    tokens_input: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    tokens_output: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    latency_ms: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=func.now(), nullable=False
+    )
+
+    def __repr__(self) -> str:
+        return f"<AiTurnTrace(id={self.id}, channel={self.channel}, outcome={self.outcome})>"
+
+
 # Create indexes for common queries
 __all__ = [
     "Office",
@@ -897,4 +953,5 @@ __all__ = [
     "Conversation",
     "Message",
     "GoogleCalendarEvent",
+    "AiTurnTrace",
 ]

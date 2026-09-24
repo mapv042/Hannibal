@@ -230,10 +230,21 @@ async def compute_day_availability(
 
     now = now_mx()
     available: List[AvailableSlot] = []
+    # Why each candidate was dropped. A false "no hay espacios" is otherwise
+    # undiagnosable: this says whether an appointment, a block or a Google
+    # event (often an all-day one marked busy) ate the day.
+    removed = {"past": 0, BUSY_APPOINTMENT: 0, BUSY_TIME_BLOCK: 0, BUSY_GOOGLE: 0}
     for start, end in candidates:
         if only_future and start <= now:
+            removed["past"] += 1
             continue
-        if any(not (end <= b.start or start >= b.end) for b in busy):
+        overlapping = [b for b in busy if not (end <= b.start or start >= b.end)]
+        if overlapping:
+            kinds = {b.kind for b in overlapping}
+            for kind in (BUSY_TIME_BLOCK, BUSY_APPOINTMENT, BUSY_GOOGLE):
+                if kind in kinds:
+                    removed[kind] += 1
+                    break
             continue
         available.append(AvailableSlot(start_time=start, end_time=end))
 
@@ -247,7 +258,17 @@ async def compute_day_availability(
         except Exception as e:
             logger.warning("cache_write_error", error=str(e))
 
-    logger.info("availability_generated", office_id=str(office_id), date=str(date_), slots_count=len(available))
+    logger.info(
+        "availability_generated",
+        office_id=str(office_id),
+        date=str(date_),
+        candidates=len(candidates),
+        slots_count=len(available),
+        removed_past=removed["past"],
+        removed_by_appointment=removed[BUSY_APPOINTMENT],
+        removed_by_time_block=removed[BUSY_TIME_BLOCK],
+        removed_by_google=removed[BUSY_GOOGLE],
+    )
     return DayAvailability(available, has_schedule=True)
 
 

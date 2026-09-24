@@ -16,6 +16,7 @@ from app.modules.ai.base_service import (
     ToolCall,
     join_system_prompt,
 )
+from app.modules.ai.tool_schema import drop_null_arguments, to_strict_schema
 
 logger = get_logger(__name__)
 
@@ -124,6 +125,7 @@ class OpenAIService(BaseAIService):
         max_tokens: int,
         temperature: float,
         tool_choice: str | None = None,
+        parallel_tool_calls: bool | None = None,
     ) -> ChatResponse:
         # (static, dynamic) prompts are joined static-first: OpenAI's automatic
         # prompt caching keys on a stable request prefix, so the per-turn date
@@ -132,13 +134,19 @@ class OpenAIService(BaseAIService):
         openai_messages.extend(messages)
 
         # Convert tools to OpenAI function-calling format
+        strict = settings.openai_strict_tools
         openai_tools = [
             {
                 "type": "function",
                 "function": {
                     "name": tool["name"],
                     "description": tool.get("description", ""),
-                    "parameters": tool.get("input_schema", {}),
+                    "parameters": (
+                        to_strict_schema(tool.get("input_schema"))
+                        if strict
+                        else tool.get("input_schema", {})
+                    ),
+                    **({"strict": True} if strict else {}),
                 },
             }
             for tool in tools
@@ -161,6 +169,8 @@ class OpenAIService(BaseAIService):
         self._apply_sampling_params(request_kwargs, temperature)
         if tool_choice is not None:
             request_kwargs["tool_choice"] = tool_choice
+        if parallel_tool_calls is not None and tool_choice != "none":
+            request_kwargs["parallel_tool_calls"] = parallel_tool_calls
 
         response = await self.client.chat.completions.create(**request_kwargs)
 
@@ -181,7 +191,7 @@ class OpenAIService(BaseAIService):
                 tool_calls.append(ToolCall(
                     id=tc.id,
                     name=tc.function.name,
-                    arguments=json.loads(tc.function.arguments),
+                    arguments=drop_null_arguments(json.loads(tc.function.arguments or "{}")),
                 ))
 
         # Build raw message for history (OpenAI format)
@@ -201,6 +211,8 @@ class OpenAIService(BaseAIService):
             tool_calls=tool_calls,
             stop_reason=choice.finish_reason or "stop",
             raw_message=raw,
+            tokens_input=response.usage.prompt_tokens if response.usage else 0,
+            tokens_output=response.usage.completion_tokens if response.usage else 0,
         )
 
     def build_tool_result_messages(

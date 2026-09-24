@@ -181,3 +181,7 @@ MX_TIMEZONE = ZoneInfo("America/Mexico_City")
 
 # Spanish day names (Monday=0 … Sunday=6, matching datetime.weekday())
 DAYS_ES = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
+MONTHS_ES = [
+    "enero", "febrero", "marzo", "abril", "mayo", "junio",
+    "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre",
+]

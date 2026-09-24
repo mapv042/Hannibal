@@ -125,14 +125,16 @@ async def notify_patient_reschedule(
         return "not_found"
     appointment, office, patient = loaded
 
-    from app.modules.ai.tool_helpers import format_appointment_dt, localize_mx
+    from app.modules.ai.tool_helpers import localize_mx
+    from app.utils.dates import long_date_label, time_label
 
     local = localize_mx(appointment.start_datetime)
     text = appointment_confirmation(
         {
             "patient_name": patient.name or "paciente",
-            "date": format_appointment_dt(appointment.start_datetime),
-            "time": local.strftime("%H:%M"),
+            # Date and time go in separate lines of this template.
+            "date": long_date_label(local.date()),
+            "time": time_label(local),
             "office_name": office.name,
             "assistant_name": office.assistant_name,
         },

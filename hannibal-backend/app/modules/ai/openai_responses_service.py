@@ -27,6 +27,7 @@ from app.modules.ai.base_service import (
     ToolCall,
     join_system_prompt,
 )
+from app.modules.ai.tool_schema import drop_null_arguments, to_strict_schema
 
 logger = get_logger(__name__)
 
@@ -104,7 +105,9 @@ class OpenAIResponsesService(BaseAIService):
                 tool_calls.append(ToolCall(
                     id=item.call_id,
                     name=item.name,
-                    arguments=json.loads(item.arguments) if item.arguments else {},
+                    arguments=drop_null_arguments(
+                        json.loads(item.arguments) if item.arguments else {}
+                    ),
                 ))
             elif item_type == "message":
                 for block in item.content or []:
@@ -141,6 +144,8 @@ class OpenAIResponsesService(BaseAIService):
             tool_calls=tool_calls,
             stop_reason=response.status or "completed",
             raw_message=replay,
+            tokens_input=usage.input_tokens if usage else 0,
+            tokens_output=usage.output_tokens if usage else 0,
         )
 
     # ------------------------------------------------------------------
@@ -175,15 +180,22 @@ class OpenAIResponsesService(BaseAIService):
         max_tokens: int,
         temperature: float,
         tool_choice: str | None = None,
+        parallel_tool_calls: bool | None = None,
     ) -> ChatResponse:
         # Responses tools are "internally tagged": name/description/parameters
         # sit at the top level, not nested under a "function" key.
+        strict = settings.openai_strict_tools
         responses_tools = [
             {
                 "type": "function",
                 "name": tool["name"],
                 "description": tool.get("description", ""),
-                "parameters": tool.get("input_schema", {}),
+                "parameters": (
+                    to_strict_schema(tool.get("input_schema"))
+                    if strict
+                    else tool.get("input_schema", {})
+                ),
+                "strict": strict,
             }
             for tool in tools
         ]
@@ -193,6 +205,8 @@ class OpenAIResponsesService(BaseAIService):
         kwargs["tools"] = responses_tools
         if tool_choice is not None:
             kwargs["tool_choice"] = tool_choice
+        if parallel_tool_calls is not None and tool_choice != "none":
+            kwargs["parallel_tool_calls"] = parallel_tool_calls
 
         logger.debug(
             "llm_chat_with_tools_request",

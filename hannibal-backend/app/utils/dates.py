@@ -5,10 +5,14 @@ from typing import Optional
 from zoneinfo import ZoneInfo
 
 from app.core.clock import clock_offset
-from app.core.constants import DAYS_ES, MX_TIMEZONE as MX_TZ
+from app.core.constants import DAYS_ES, MONTHS_ES, MX_TIMEZONE as MX_TZ
 
 # How many days the reference calendar injected into the LLM prompts spans.
-DATE_REFERENCE_DAYS = 30
+# Two weeks covers "el próximo martes" and "la otra semana"; anything further is
+# looked up through the availability tool, which answers with real weekdays, and
+# bookings are made from the slot ids it returns — so the model never has to do
+# date arithmetic to get a booking right.
+DATE_REFERENCE_DAYS = 14
 
 # Relative labels for the first days of the reference calendar.
 _RELATIVE_LABELS = {0: "hoy", 1: "mañana", 2: "pasado mañana"}
@@ -26,25 +30,49 @@ def build_date_reference_block(now: datetime, days: int = DATE_REFERENCE_DAYS) -
     """
     today = now.date()
     lines = [
-        f"FECHA Y HORA ACTUAL: {today.isoformat()} ({DAYS_ES[today.weekday()]}), {now.strftime('%H:%M')} hrs",
+        f"FECHA Y HORA ACTUAL: {long_date_label(today, today)} ({today.isoformat()}), {time_label(now)}",
         "ZONA HORARIA: Centro de México (CST)",
         "",
         f"CALENDARIO DE REFERENCIA (próximos {days} días — usa estas fechas tal cual, NO las recalcules):",
     ]
     for i in range(days):
         day = today + timedelta(days=i)
-        weekday = DAYS_ES[day.weekday()]
         label = _RELATIVE_LABELS.get(i)
         prefix = f"{label}: " if label else ""
-        lines.append(f"- {prefix}{weekday} {day.isoformat()}")
+        lines.append(f"- {prefix}{long_date_label(day, today)} = {day.isoformat()}")
     lines.append("")
     lines.append(
         'Para un día de la semana sin más detalle (ej. "el lunes"), usa su próxima ocurrencia '
-        "en la lista. Para fechas más allá del calendario, calcula a partir de HOY. Siempre "
-        "verifica la fecha con la herramienta de disponibilidad: te devuelve el día de la semana "
-        "real, así confirmas que elegiste el día correcto."
+        "en la lista. Para fechas más allá del calendario, calcula a partir de HOY. La "
+        "herramienta de disponibilidad te devuelve el día de la semana real de cada fecha."
     )
     return "\n".join(lines)
+
+
+def long_date_label(target_date: date_cls, today: Optional[date_cls] = None) -> str:
+    """'jueves 24 de septiembre' (plus the year when it isn't the current one).
+
+    The one way dates are written to patients and to the model. Month names
+    instead of 24/09 because a numeric date is read day-first by some people and
+    month-first by others, and because the model copies whatever form it is
+    shown — so what it is shown must already be the unambiguous one.
+    """
+    label = f"{DAYS_ES[target_date.weekday()]} {target_date.day} de {MONTHS_ES[target_date.month - 1]}"
+    reference_year = (today or now_mx().date()).year
+    if target_date.year != reference_year:
+        label += f" de {target_date.year}"
+    return label
+
+
+def time_label(dt) -> str:
+    """'4:00 PM' — 12-hour clock, the form patients use and the prompts ask for.
+
+    Accepts a datetime or a time. The model is never asked to convert between
+    24- and 12-hour forms itself: that conversion is where "las 4" became 04:00.
+    """
+    hour = dt.hour % 12 or 12
+    suffix = "AM" if dt.hour < 12 else "PM"
+    return f"{hour}:{dt.minute:02d} {suffix}"
 
 
 def relative_day_label(target_date: date_cls, today: date_cls) -> Optional[str]:
@@ -62,8 +90,8 @@ def relative_day_label(target_date: date_cls, today: date_cls) -> Optional[str]:
 
 
 def spanish_date_label(target_date: date_cls, today: date_cls) -> str:
-    """'mañana (miércoles 17/06/2026)' or 'jueves 18/06/2026' if not hoy/mañana."""
-    absolute = f"{DAYS_ES[target_date.weekday()]} {target_date.strftime('%d/%m/%Y')}"
+    """'mañana (miércoles 17 de junio)' or 'jueves 18 de junio' if not hoy/mañana."""
+    absolute = long_date_label(target_date, today)
     relative = relative_day_label(target_date, today)
     return f"{relative} ({absolute})" if relative else absolute
 

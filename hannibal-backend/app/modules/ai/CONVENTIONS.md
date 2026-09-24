@@ -78,7 +78,8 @@ Static part, in this order:
 Dynamic part (appended after the static part in the final prompt):
 
 9. `FECHA Y HORA ACTUAL: …` / `ZONA HORARIA: …` + the reference-calendar block
-10. Gated per-turn context (e.g. `CONFIRMACIÓN PENDIENTE`, `URGENCIAS PENDIENTES`)
+10. `ESTADO DE LA CONVERSACIÓN` — `ConversationState.render()` (see below)
+11. Gated per-turn context (e.g. `CONFIRMACIÓN PENDIENTE`, `URGENCIAS PENDIENTES`)
 
 Inject office config (tone, names, custom prompt) via f-string params, never hardcode.
 
@@ -89,7 +90,40 @@ Inject office config (tone, names, custom prompt) via f-string params, never har
 - Handlers are `async def _handle_<action>(args, ctx)` and return a **JSON-serializable dict**.
 - **Errors** are returned (not raised) as `{"error": "<mensaje en español>"}` so the model can relay them naturally. The dispatcher catches unexpected exceptions and logs them.
 - Every meaningful outcome and failure branch should **log** (see below).
-- **Shared logic lives in shared modules, not copy-pasted between the two flows:** booking goes through `scheduling/booking.book_appointment` (validation, slot lock, GCal event, cache invalidation, reminders — one place); presentation helpers (Spanish datetime formatting, the availability payload) live in `ai/tool_helpers.py`. If you find yourself writing the same handler body in both files, extract it.
+- **Shared logic lives in shared modules, not copy-pasted between the two flows:** booking goes through `scheduling/booking.book_appointment` (validation, slot lock, GCal event, cache invalidation — one place); presentation helpers (Spanish datetime formatting, the availability payload) live in `ai/tool_helpers.py`. If you find yourself writing the same handler body in both files, extract it.
+- **The model copies, it never converts.** Dates and times reach the model already written the way it must write them (`label`: "jueves 24 de septiembre", "4:00 PM") next to the exact value it must send back (`slot_id`: "2026-09-24T16:00"). Never make the model turn a 12-hour time into 24-hour, or a weekday into a date, to call a tool — that conversion is where "las 4" became 04:00. Use `tool_helpers.format_appointment_dt` / `slot_id_for` / `parse_slot_id` and `utils.dates.long_date_label` / `time_label`.
+- **A tool that can come back empty says what to do instead.** An empty result is a dead end the model fills with "no hay espacios"; `availability_for_dates` searches forward itself (`next_available`). And a *technical* failure is never shaped like an empty result: it carries `error_kind` (e.g. `calendar_unavailable`) so the model can't read "I couldn't check" as "there's nothing".
+
+## What the tools established survives the turn — `ConversationState`
+
+Persisted history is plain text (provider-agnostic), so a tool's result dies with its turn. Anything a later turn needs to *rely on* goes in `conversation/state.py`'s `ConversationState`, which the managers keep in the session and render into the dynamic prompt every turn:
+
+| Field | Written by | Why |
+|---|---|---|
+| `offered_slots` | `get_available_slots` (both flows) | "la opción 2" / "la de las 4" map to an exact `slot_id` next turn, without re-deriving it from the model's own prose |
+| `known_appointments` | `get_patient_appointments`, booking/cancel handlers | ids and labels of the patient's appointments |
+| `draft` | `prepare_booking` | the exact booking the patient is being asked to approve |
+| `recent_actions` | **the tool loop, automatically**, for every tool in `MUTATING_TOOLS` | a code-written record of what really happened — the model's own "listo, quedó agendada" is not evidence |
+
+It is memory, not a state machine: handlers record facts, the model reads them. Don't add fields that encode "what to do next".
+
+## Writes that need the patient's yes: draft → confirm
+
+A patient-facing write the patient must approve is two tools: one that **validates now and stores a draft** (returning a code-written `summary` and a `next_step` to show it), and one with **no arguments** that executes the draft. `prepare_booking` / `confirm_booking` is the reference (same shape as the doctor's `send_message_to_patient` / `confirm_send_messages`). This guarantees the order "check availability → tell the patient → write", and that what's written is exactly what was approved.
+
+## What a reply may claim — `TOOL_CLAIMS` and the reply validator
+
+`conversation/grounding.py` checks every final reply before it's sent: an action it claims ("quedó agendada", "cancelé", "ya le avisé al doctor") must be backed by a successful tool call; every clock time it mentions must appear in the evidence (tool results, state, prompt, the user's words); "jueves 24" must be a Thursday. A violation gets one corrective pass; a false claim that survives it is replaced by a safe fallback. Every turn and its violations land in `ai_turn_traces`.
+
+Each tools module declares what its tools back in `TOOL_CLAIMS` / `DOCTOR_TOOL_CLAIMS` (claim kinds: `book`, `cancel`, `reschedule`, `confirm_attendance`, `notify_doctor`, `message_sent`, …). A new check is one function appended to `grounding.CHECKS`.
+
+## Adding a capability (the recipe)
+
+1. Handler + definition in `tools.py` / `doctor_tools.py` (description = when and how; params = what and where from).
+2. If it writes: add it to `MUTATING_TOOLS` (dedupe + `recent_actions` for free) and declare its claims in `TOOL_CLAIMS`. If the validator must recognize a new kind of claim in replies, add its patterns to `grounding._CLAIM_PATTERNS`.
+3. If the patient must approve it: draft → confirm.
+4. If it makes the system do something *on its own* later (a reminder, a notice), make `prompts/base.build_capabilities_section` list it from the same configuration that drives it — that section is the only list of things the assistant may promise.
+5. Add a scenario to `tests/evals/scenarios.py` and run the suite (`python -m tests.evals.run`); add unit tests for any pure logic.
 
 ## Language
 
@@ -106,3 +140,7 @@ Inject office config (tone, names, custom prompt) via f-string params, never har
 - [ ] Do both flows still follow the same structure and conventions?
 - [ ] Tool/param descriptions in Spanish; logs in English?
 - [ ] Errors returned as `{"error": …}`, not raised to the user?
+- [ ] Does the model have to convert a date/time to call the tool? → return `label` + `slot_id` instead.
+- [ ] Does a later turn need this result? → record it in `ConversationState`.
+- [ ] New write tool? → `MUTATING_TOOLS` + `TOOL_CLAIMS`.
+- [ ] Ran `pytest tests/unit` and the evals (`python -m tests.evals.run`)?

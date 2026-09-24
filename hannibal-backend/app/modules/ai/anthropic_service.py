@@ -100,6 +100,7 @@ class AnthropicService(BaseAIService):
         max_tokens: int,
         temperature: float,
         tool_choice: str | None = None,
+        parallel_tool_calls: bool | None = None,
     ) -> ChatResponse:
         logger.debug(
             "llm_chat_with_tools_request",
@@ -119,6 +120,11 @@ class AnthropicService(BaseAIService):
         }
         if tool_choice is not None:
             request_kwargs["tool_choice"] = {"type": tool_choice}
+        if parallel_tool_calls is False and tool_choice != "none":
+            request_kwargs["tool_choice"] = {
+                **request_kwargs.get("tool_choice", {"type": "auto"}),
+                "disable_parallel_tool_use": True,
+            }
 
         response = await self.client.messages.create(**request_kwargs)
 
@@ -149,6 +155,8 @@ class AnthropicService(BaseAIService):
             stop_reason=response.stop_reason,
             # Store the raw content blocks for history (Anthropic format)
             raw_message={"role": "assistant", "content": [b.model_dump() for b in response.content]},
+            tokens_input=response.usage.input_tokens,
+            tokens_output=response.usage.output_tokens,
         )
 
     def build_tool_result_messages(
