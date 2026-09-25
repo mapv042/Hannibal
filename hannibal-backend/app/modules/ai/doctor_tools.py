@@ -44,7 +44,7 @@ from app.modules.reminders.wa_templates import (
     TEMPLATE_OFFICE_MESSAGE,
     build_office_message_params,
 )
-from app.utils.dates import now_mx
+from app.utils.dates import long_date_label, now_mx, time_label
 from app.utils.logger import get_logger
 from app.utils.phone import display_or_raw, normalize_phone, to_whatsapp_id
 
@@ -121,7 +121,12 @@ DOCTOR_TOOL_DEFINITIONS = [
     },
     {
         "name": "resume_bot",
-        "description": "Reanuda el bot inmediatamente (termina la pausa antes de tiempo).",
+        "description": (
+            "Reanuda el bot en este momento, terminando la pausa antes de tiempo. No la uses si "
+            "el doctor quiere que se reanude más tarde: la pausa termina sola al cumplirse su "
+            "duración (pause_bot te dice a qué hora). Para cambiar esa hora, vuelve a llamar "
+            "pause_bot con los minutos nuevos."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {},
@@ -294,9 +299,11 @@ DOCTOR_TOOL_DEFINITIONS = [
     {
         "name": "get_available_slots",
         "description": (
-            "Consulta los horarios disponibles para agendar una cita en una o varias fechas "
-            "(máximo 7 por llamada). Usa esta herramienta para verificar disponibilidad antes "
-            "de crear o reagendar citas, o cuando el doctor pregunte qué espacios tiene libres. "
+            "Consulta los horarios disponibles en una o varias fechas (máximo 7 por llamada), "
+            "cuando el doctor pregunte qué espacios tiene o te pida sugerir uno. Muestra la "
+            "cuadrícula del consultorio, pero el doctor puede agendar también fuera de ella: "
+            "si te da una hora exacta, no la busques aquí — create_appointment y "
+            "reschedule_appointment validan esa hora y te dicen si hay conflicto. "
             "Cada horario trae un label para mostrar y un slot_id (YYYY-MM-DDTHH:MM): al crear o "
             "reagendar usa esa fecha y esa hora tal cual. Si ningún día tiene lugar, el resultado "
             "incluye next_available. Si el doctor nombra el día con palabras, pásalas en `when` "
@@ -324,7 +331,8 @@ DOCTOR_TOOL_DEFINITIONS = [
     {
         "name": "create_appointment",
         "description": (
-            "Crea una nueva cita para un paciente. Identifica al paciente por nombre. "
+            "Crea una nueva cita para un paciente a la hora que diga el doctor (puede ser fuera "
+            "de la cuadrícula de horarios). Identifica al paciente por nombre. "
             "Si el paciente no existe en el sistema, se crea automáticamente (en ese caso "
             "se requiere su teléfono). El doctor no necesita confirmación extra — ejecuta directamente. "
             "Valida que el horario esté libre; si está ocupado o fuera de horario devuelve el "
@@ -680,14 +688,14 @@ async def _handle_get_appointments(args: dict, ctx: DoctorToolContext) -> dict:
                 "start_date": start_date.isoformat(),
                 "end_date": end_date.isoformat(),
                 "appointments": [],
-                "message": f"No hay citas del {start_date.strftime('%d/%m/%Y')} al {end_date.strftime('%d/%m/%Y')}.",
+                "message": f"No hay citas del {long_date_label(start_date)} al {long_date_label(end_date)}.",
             }
         day_name = DAYS_ES[start_date.weekday()]
         return {
             "date": start_date.isoformat(),
             "day_name": day_name,
             "appointments": [],
-            "message": f"No hay citas para {day_name} {start_date.strftime('%d/%m/%Y')}.",
+            "message": f"No hay citas el {long_date_label(start_date)}.",
         }
 
     appt_list = []
@@ -702,9 +710,10 @@ async def _handle_get_appointments(args: dict, ctx: DoctorToolContext) -> dict:
 
         entry = {
             "id": str(appt.id),
-            "date": dt.strftime("%Y-%m-%d"),
-            "day_name": DAYS_ES[dt.weekday()],
-            "time": dt.strftime("%H:%M"),
+            # label is what to show; slot_id carries the exact date/time for
+            # reschedule_appointment (the part before T is the date).
+            "label": format_appointment_dt(appt.start_datetime),
+            "slot_id": dt.strftime("%Y-%m-%dT%H:%M"),
             "patient_name": patient_name,
             "reason": appt.consultation_reason or "Consulta",
             "status": appt.status,
@@ -799,10 +808,16 @@ async def _handle_pause_bot(args: dict, ctx: DoctorToolContext) -> dict:
 
     success = await pause_bot(ctx.office.id, minutes, ctx.redis_client)
     if success:
+        resumes_at = time_label(now_mx() + timedelta(minutes=minutes))
         return {
             "success": True,
             "minutes": minutes,
-            "message": f"Bot pausado por {minutes} minutos. Los pacientes no recibirán respuestas automáticas.",
+            "resumes_at": resumes_at,
+            "summary": f"Bot pausado hasta las {resumes_at}",
+            "message": (
+                f"Bot pausado por {minutes} minutos: se reanuda solo a las {resumes_at}. "
+                "Mientras tanto los pacientes no recibirán respuestas automáticas."
+            ),
         }
     return {"error": "No se pudo pausar el bot."}
 
@@ -1258,6 +1273,7 @@ async def _handle_confirm_send_messages(args: dict, ctx: DoctorToolContext) -> d
 
     sent_to: list[str] = []
     failed: list[str] = []
+    already_sent: list[str] = []
     for patient_id_str, draft in drafts.items():
         try:
             patient = await ctx.db.get(Patient, uuid.UUID(patient_id_str))
@@ -1266,8 +1282,16 @@ async def _handle_confirm_send_messages(args: dict, ctx: DoctorToolContext) -> d
         if not patient or patient.office_id != ctx.office.id or not patient.whatsapp_id:
             failed.append(draft["patient_name"])
             continue
+        # The same text to the same patient twice is never what the doctor
+        # means: a "sí, mándalo" repeated after the message already went out
+        # used to send it again.
+        sent_key = _sent_message_key(ctx.office.id, patient.id, draft["message"])
+        if await ctx.redis_client.get(sent_key):
+            already_sent.append(patient.name)
+            continue
         try:
             await _send_patient_message(ctx, patient, draft["message"])
+            await ctx.redis_client.setex(sent_key, SENT_MESSAGE_DEDUP_TTL, "1")
             sent_to.append(patient.name)
         except Exception as e:
             logger.error(
@@ -1282,6 +1306,14 @@ async def _handle_confirm_send_messages(args: dict, ctx: DoctorToolContext) -> d
 
     await _clear_message_drafts(ctx)
 
+    if already_sent and not sent_to and not failed:
+        return {
+            "already_sent": already_sent,
+            "next_step": (
+                "Ese mismo mensaje ya se le había enviado hace poco; no se envió de nuevo. "
+                "Díselo al doctor."
+            ),
+        }
     if not sent_to:
         return {"error": "No se pudo enviar ningún mensaje. Intenta de nuevo."}
 
@@ -1295,7 +1327,20 @@ async def _handle_confirm_send_messages(args: dict, ctx: DoctorToolContext) -> d
     }
     if failed:
         result["failed"] = failed
+    if already_sent:
+        result["already_sent"] = already_sent
     return result
+
+
+# An identical message to the same patient within this window is a duplicate.
+SENT_MESSAGE_DEDUP_TTL = 1800
+
+
+def _sent_message_key(office_id, patient_id, message: str) -> str:
+    import hashlib
+
+    digest = hashlib.sha1(" ".join(message.lower().split()).encode()).hexdigest()[:16]
+    return f"doctor_msg_sent:{office_id}:{patient_id}:{digest}"
 
 
 @_handler("check_message_delivery")

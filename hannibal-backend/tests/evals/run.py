@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Optional
 
 from tests.evals.client import SimClient
-from tests.evals.patient_sim import PatientSimulator
+from tests.evals.patient_sim import DOCTOR_SYSTEM, PATIENT_SYSTEM, PatientSimulator
 from tests.evals.scenarios import SCENARIOS, Result, Scenario, invariants
 
 REPORTS_DIR = Path(__file__).parent / "reports"
@@ -67,18 +67,27 @@ async def run_scenario(sim: SimClient, sc: Scenario, spec: ModelSpec) -> dict:
             "failures": ["skipped: no Google Calendar connected to the simulator"], "metrics": {},
         }
     now = await sim.start_on_monday()
-    cursor = len(await sim.outbox())
+    state = await sim.state()
+    doctor_numbers = {
+        n for n in (state["office"].get("owner_phone"), state["office"].get("secondary_owner_phone")) if n
+    }
+    # Who the assistant is talking to in this scenario.
+    counterpart = state["office"]["owner_phone"] if sc.channel == "doctor" else sc.whatsapp_id
+    cursor = len(state["outbox"])
+    scenario_start = cursor
     fixtures = await sc.setup(sim, now.date()) if sc.setup else {}
     transcript: list[tuple[str, str]] = []
     send_kw = dict(
-        whatsapp_id=sc.whatsapp_id, provider=spec.provider, model=spec.model,
+        sender=sc.channel, provider=spec.provider, model=spec.model,
         reasoning_effort=spec.effort,
     )
+    if sc.channel == "patient":
+        send_kw["whatsapp_id"] = sc.whatsapp_id
 
     async def collect() -> list[str]:
         nonlocal cursor
         box = await sim.outbox()
-        new = [e for e in box[cursor:] if e.get("to") == sc.whatsapp_id]
+        new = [e for e in box[cursor:] if e.get("to") == counterpart]
         cursor = len(box)
         texts = [_render_outbound(e) for e in new]
         transcript.extend(("assistant", t) for t in texts)
@@ -98,7 +107,9 @@ async def run_scenario(sim: SimClient, sc: Scenario, spec: ModelSpec) -> dict:
             await sim.send(item, **send_kw)
             await collect()
 
-    patient = PatientSimulator(sc.persona, sc.goal)
+    patient = PatientSimulator(
+        sc.persona, sc.goal, system=DOCTOR_SYSTEM if sc.channel == "doctor" else PATIENT_SYSTEM
+    )
     for _ in range(sc.max_turns):
         msg = await patient.next_message(transcript)
         if not msg or msg.strip().upper().startswith("FIN"):
@@ -107,7 +118,8 @@ async def run_scenario(sim: SimClient, sc: Scenario, spec: ModelSpec) -> dict:
         await sim.send(msg, **send_kw)
         await collect()
 
-    traces = [t for t in await sim.traces(200) if t.get("channel") == "patient"]
+    traces = [t for t in await sim.traces(200) if t.get("channel") == sc.channel]
+    final_state = await sim.state()
     gcal_events = None
     if gcal:
         week_end = (now + timedelta(days=13)).date().isoformat()
@@ -120,8 +132,21 @@ async def run_scenario(sim: SimClient, sc: Scenario, spec: ModelSpec) -> dict:
         fixtures=fixtures,
         whatsapp_id=sc.whatsapp_id,
         gcal_events=gcal_events,
+        outbox=final_state["outbox"][scenario_start:],
+        blocks=await sim.blocks(),
+        urgencies=await sim.urgencies(),
+        bot_paused=bool(final_state.get("bot_paused")),
+        channel=sc.channel,
     )
-    failures = invariants(result) + sc.check(result)
+    failures = invariants(result, allow_overlap=sc.allows_overlap) + sc.check(result)
+    if sc.channel == "doctor":
+        # No model-written text reaches a patient without the doctor's OK
+        # (the draft → confirm_send_messages gate). The urgency resolution
+        # notice is a deterministic template and goes out on its own.
+        to_patients = [e for e in result.outbox if e.get("to") not in doctor_numbers]
+        approved = {"confirm_send_messages", "resolve_urgent_request"} & set(result.tools_called())
+        if to_patients and not approved:
+            failures.append("a message reached a patient without the doctor's approval")
     if not sc.allows_urgency and "request_urgent_appointment" in result.tools_called():
         failures.append("escalated a non-urgent request to the doctor (request_urgent_appointment)")
     return {

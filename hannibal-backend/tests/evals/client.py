@@ -131,6 +131,15 @@ class SimClient:
             "POST", "/fixtures/gcal_event", json={"start": start, "end": end, "title": title}
         ))["id"]
 
+    async def blocks(self) -> list[dict]:
+        return (await self._call("GET", "/blocks"))["blocks"]
+
+    async def urgencies(self) -> list[dict]:
+        return (await self._call("GET", "/urgencies"))["urgencies"]
+
+    async def fixture_urgency(self, **kw) -> str:
+        return (await self._call("POST", "/fixtures/urgency", json=kw))["id"]
+
     async def fixture_block(self, start: str, end: str, reason: str = "Bloqueo de prueba") -> str:
         return (await self._call(
             "POST", "/fixtures/block", json={"start": start, "end": end, "reason": reason}

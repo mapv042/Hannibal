@@ -181,8 +181,10 @@ async def sim_state(
     await load_offset_into_context()
 
     upcoming = await next_event_at(office.id)
+    from app.modules.whatsapp.coexistence import check_pause
 
     return {
+        "bot_paused": await check_pause(office.id, redis_client),
         "office": {
             "id": str(office.id),
             "name": office.name,
@@ -594,6 +596,97 @@ async def sim_gcal_purge(body: PurgeRequest, db: AsyncSession = Depends(get_db))
     return await sim_gcal.purge_marked_events(
         db, office, now - timedelta(days=body.days_back), now + timedelta(days=body.days_ahead)
     )
+
+
+class FixtureUrgency(BaseModel):
+    """A pending urgent-appointment request awaiting the doctor (no LLM involved)."""
+
+    patient_whatsapp_id: str = "5215550000001"
+    patient_name: str = "Juan Pérez"
+    reason: str = "Dolor abdominal fuerte desde la mañana"
+
+
+@router.post("/fixtures/urgency")
+async def sim_fixture_urgency(
+    body: FixtureUrgency,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Create a pending UrgencyRequest, as the patient tool would.
+
+    The doctor notification and the expiry timer are NOT enqueued: the request
+    reaches the doctor through the URGENCIAS PENDIENTES prompt block, and a
+    scenario must not have it expire under its feet.
+    """
+    from app.db.models import Patient
+    from app.modules.urgencies.service import create_urgency_request
+
+    office = await _the_office(db)
+    patient = (await db.execute(
+        select(Patient).where(
+            (Patient.office_id == office.id)
+            & (Patient.whatsapp_id == body.patient_whatsapp_id)
+        )
+    )).scalars().first()
+    if patient is None:
+        patient = Patient(
+            office_id=office.id, whatsapp_id=body.patient_whatsapp_id,
+            phone=body.patient_whatsapp_id, name=body.patient_name,
+        )
+        db.add(patient)
+        await db.flush()
+    request = await create_urgency_request(
+        db, office.id, patient.id, body.patient_whatsapp_id, body.reason, None
+    )
+    await db.commit()
+    return {"id": str(request.id)}
+
+
+@router.get("/urgencies")
+async def sim_urgencies(db: AsyncSession = Depends(get_db)) -> dict:
+    """Urgent-appointment requests and how they ended, for assertions."""
+    from app.db.models import UrgencyRequest
+
+    office = await _the_office(db)
+    rows = (await db.execute(
+        select(UrgencyRequest).where(UrgencyRequest.office_id == office.id)
+    )).scalars().all()
+    return {
+        "urgencies": [
+            {
+                "id": str(u.id),
+                "status": u.status,
+                "patient_whatsapp_id": u.patient_whatsapp_id,
+                "appointment_id": str(u.appointment_id) if u.appointment_id else None,
+            }
+            for u in rows
+        ]
+    }
+
+
+@router.get("/blocks")
+async def sim_blocks(db: AsyncSession = Depends(get_db)) -> dict:
+    """Time blocks (manual/Google/holiday), Mexico City wall time."""
+    from app.core.constants import MX_TIMEZONE
+    from app.db.models import TimeBlock
+
+    office = await _the_office(db)
+    rows = (await db.execute(
+        select(TimeBlock).where(TimeBlock.office_id == office.id).order_by(TimeBlock.start_date)
+    )).scalars().all()
+    fmt = "%Y-%m-%dT%H:%M"
+    return {
+        "blocks": [
+            {
+                "id": str(b.id),
+                "start": b.start_date.astimezone(MX_TIMEZONE).strftime(fmt),
+                "end": b.end_date.astimezone(MX_TIMEZONE).strftime(fmt),
+                "reason": b.reason,
+                "all_day": b.is_all_day,
+                "origin": b.origin,
+            }
+            for b in rows
+        ]
+    }
 
 
 @router.get("/traces")

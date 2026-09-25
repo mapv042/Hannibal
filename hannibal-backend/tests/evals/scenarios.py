@@ -41,6 +41,25 @@ class Result:
     # Events in the connected Google Calendar for the scenario's week, or None
     # when the simulator has no calendar (the Google checks are then skipped).
     gcal_events: Optional[list[dict]] = None
+    # Every WhatsApp message the office sent during the scenario (all recipients).
+    outbox: list[dict] = field(default_factory=list)
+    blocks: list[dict] = field(default_factory=list)
+    urgencies: list[dict] = field(default_factory=list)
+    bot_paused: bool = False
+    channel: str = "patient"
+
+    def sent_to(self, whatsapp_id: str) -> list[str]:
+        """Texts actually delivered to one number (templates rendered as their params)."""
+        out = []
+        for e in self.outbox:
+            if e.get("to") == whatsapp_id:
+                out.append(e.get("body") or " ".join(
+                    str(p.get("text", p)) for p in (e.get("params") or [])
+                ))
+        return out
+
+    def manual_blocks(self) -> list[dict]:
+        return [b for b in self.blocks if b.get("origin") == "manual"]
 
     # --- helpers for checks -------------------------------------------------
 
@@ -74,6 +93,10 @@ class Scenario:
     tags: list[str] = field(default_factory=list)
     # Needs a Google Calendar connected to the simulator; skipped otherwise.
     requires_gcal: bool = False
+    # Who talks to the assistant: "patient", or "doctor" (the owner's number).
+    channel: str = "patient"
+    # Doctor scenarios that end in a deliberate overbook.
+    allows_overlap: bool = False
     # Whether escalating to the doctor is an acceptable outcome here. Everywhere
     # else an urgency request is a failure: it leaves the patient without the
     # appointment they asked for and sends the doctor a false alarm.
@@ -101,7 +124,7 @@ def expect(cond: bool, message: str) -> list[str]:
 # Global invariants — checked on every scenario
 # ---------------------------------------------------------------------------
 
-def invariants(r: Result) -> list[str]:
+def invariants(r: Result, allow_overlap: bool = False) -> list[str]:
     failures = []
     active = r.active()
     for a in active:
@@ -113,9 +136,12 @@ def invariants(r: Result) -> list[str]:
         if not in_hours:
             failures.append(f"appointment outside working hours: {a['start']}")
     spans = sorted(
-        (datetime.strptime(a["start"], "%Y-%m-%dT%H:%M"), a) for a in active
+        ((datetime.strptime(a["start"], "%Y-%m-%dT%H:%M"), a) for a in active),
+        key=lambda pair: pair[0],
     )
     for (s1, a1), (s2, _) in zip(spans, spans[1:]):
+        if allow_overlap:
+            break
         if s1 + timedelta(minutes=a1["duration_minutes"] or 30) > s2:
             failures.append(f"overlapping appointments at {a1['start']}")
     for t in r.traces:
@@ -626,5 +652,236 @@ SCENARIOS: list[Scenario] = [
         persona=JUAN + "\nCuando te pidan confirmar, contesta 'sí sí, confírmala' y luego otra vez 'sí'.",
         goal="Agendar el jueves a las 9.",
         check=_check_no_duplicate_booking,
+    ),
+]
+
+
+# ---------------------------------------------------------------------------
+# Doctor channel
+# ---------------------------------------------------------------------------
+#
+# The doctor writes from the office's owner number. The simulated doctor gives
+# one instruction and answers whatever the assistant asks (approve a draft,
+# confirm an overbook). Checks read what actually changed — appointments,
+# blocks, urgencies, the pause — and what actually went out to patients.
+
+ANA = "5215550000002"
+DOCTOR = "Eres la doctora Elena Ruiz, médico general. Tu consultorio atiende de lunes a viernes."
+
+
+def _day_iso(monday: date, offset: int) -> str:
+    return (monday + timedelta(days=offset)).isoformat()
+
+
+async def _doc_today_two(sim, monday: date) -> dict:
+    d = _day_iso(monday, 0)
+    return {
+        "juan": await sim.fixture_appointment(f"{d}T11:30", reason="Dolor de espalda"),
+        "ana": await sim.fixture_appointment(f"{d}T16:00", patient_whatsapp_id=ANA, patient_name="Ana López", reason="Chequeo"),
+    }
+
+
+async def _doc_juan_tomorrow(sim, monday: date) -> dict:
+    return {"juan": await sim.fixture_appointment(f"{_day_iso(monday, 1)}T10:40", reason="Dolor de espalda")}
+
+
+async def _doc_juan_tomorrow_9(sim, monday: date) -> dict:
+    return {"juan": await sim.fixture_appointment(f"{_day_iso(monday, 1)}T09:00", reason="Revisión")}
+
+
+async def _doc_thursday_two(sim, monday: date) -> dict:
+    d = _day_iso(monday, 3)
+    return {
+        "juan": await sim.fixture_appointment(f"{d}T09:00", reason="Dolor de espalda"),
+        "ana": await sim.fixture_appointment(f"{d}T09:50", patient_whatsapp_id=ANA, patient_name="Ana López", reason="Chequeo"),
+    }
+
+
+async def _doc_juan_wednesday_9(sim, monday: date) -> dict:
+    return {"juan": await sim.fixture_appointment(f"{_day_iso(monday, 2)}T09:00", reason="Dolor de espalda")}
+
+
+async def _doc_pending_urgency(sim, monday: date) -> dict:
+    return {"urgency": await sim.fixture_urgency(reason="Dolor abdominal fuerte desde la mañana")}
+
+
+def _by_id(r: Result, appt_id: str) -> Optional[dict]:
+    return next((a for a in r.appointments if a["id"] == appt_id), None)
+
+
+def _active_for(r: Result, whatsapp_id: str) -> list[dict]:
+    return [a for a in r.active() if a["patient_whatsapp_id"] == whatsapp_id]
+
+
+def _check_doc_agenda(r: Result) -> list[str]:
+    text = " ".join(r.replies())
+    return (
+        expect("get_appointments_by_date" in r.tools_called(), "answered without looking at the agenda")
+        + expect("Juan" in text and "Ana" in text, "didn't list both patients")
+        + expect("11:30" in text and ("4:00 PM" in text or "4:00 p" in text.lower()), "wrong or missing times")
+        + expect(len(r.active()) == 2, "the agenda changed while only being read")
+    )
+
+
+def _check_doc_empty_saturday(r: Result) -> list[str]:
+    invented = [t for t in r.replies() if re.search(r"\b\d{1,2}:\d{2}\b", t)]
+    return (
+        expect(not r.active(), "something got booked")
+        + expect(not invented, f"quoted times for an empty day: {invented[:1]}")
+    )
+
+
+def _check_doc_cancel_notice(r: Result) -> list[str]:
+    appt = _by_id(r, r.fixtures["juan"])
+    notices = r.sent_to(DEFAULT_PATIENT)
+    return (
+        expect(appt is not None and appt["status"] == "cancelled", "the appointment wasn't cancelled")
+        + expect(len(notices) >= 1, "the patient was never told")
+        + expect("confirm_send_messages" in r.tools_called(), "the notice went out without the approve step")
+    )
+
+
+def _check_doc_batch_move(r: Result) -> list[str]:
+    failures = []
+    for key, wid in (("juan", DEFAULT_PATIENT), ("ana", ANA)):
+        old = _by_id(r, r.fixtures[key])
+        moved = [a for a in _active_for(r, wid) if a["start"].startswith(r.day(4).isoformat()) and _afternoon(a)]
+        failures += expect(old is not None and old["status"] == "cancelled", f"{key}'s Thursday cita is still active")
+        failures += expect(len(moved) == 1, f"{key} wasn't moved to Friday afternoon")
+        failures += expect(bool(r.sent_to(wid)), f"{key} wasn't notified")
+    return failures
+
+
+def _check_doc_block(r: Result) -> list[str]:
+    tue = r.day(1).isoformat()
+    covering = [
+        b for b in r.manual_blocks()
+        if b["start"] <= f"{tue}T16:00" and b["end"] >= f"{tue}T19:00"
+    ]
+    too_wide = [b for b in covering if b["start"] < f"{tue}T15:00" or b["end"] > f"{tue}T19:30"]
+    return (
+        expect(len(covering) == 1, f"expected one block covering Tuesday 4-7 PM, got {r.manual_blocks()}")
+        + expect(not too_wide, "blocked much more than 4-7 PM")
+    )
+
+
+def _check_doc_new_patient(r: Result) -> list[str]:
+    maria = [a for a in r.active() if (a["patient_name"] or "").startswith("María")]
+    return (
+        expect(len(maria) == 1, "María López's appointment wasn't created")
+        + expect(bool(maria) and maria[0]["start"] == f"{r.day(2).isoformat()}T11:30", "wrong day/time for María")
+        + expect(bool(maria) and maria[0]["patient_whatsapp_id"] == "5215512345678", "María registered under the wrong phone")
+    )
+
+
+def _check_doc_overbook(r: Result) -> list[str]:
+    wed9 = f"{r.day(2).isoformat()}T09:00"
+    pedro = [a for a in r.active() if (a["patient_name"] or "").startswith("Pedro") and a["start"] == wed9]
+    juan = _by_id(r, r.fixtures["juan"])
+    creates = [c for t in r.traces for c in (t.get("tool_calls") or []) if c["name"] == "create_appointment"]
+    asked_first = any("error" in str(c.get("result")) for c in creates)
+    return (
+        expect(len(pedro) == 1, "Pedro wasn't booked at 9:00")
+        + expect(juan is not None and juan["status"] == "scheduled", "Juan's cita was touched")
+        + expect(asked_first, "overbooked without surfacing the conflict first")
+    )
+
+
+def _check_doc_urgency(r: Result) -> list[str]:
+    urgency = next((u for u in r.urgencies if u["id"] == r.fixtures["urgency"]), None)
+    today12 = f"{r.day(0).isoformat()}T12:00"
+    booked = [a for a in _active_for(r, DEFAULT_PATIENT) if a["start"] == today12]
+    return (
+        expect(urgency is not None and urgency["status"] == "approved", "the urgency wasn't approved")
+        + expect(len(booked) == 1, "no urgent appointment today at 12:00")
+        + expect(bool(r.sent_to(DEFAULT_PATIENT)), "the patient wasn't told")
+    )
+
+
+def _check_doc_message_edit(r: Result) -> list[str]:
+    sent = r.sent_to(DEFAULT_PATIENT)
+    return (
+        expect(len(sent) == 1, f"expected exactly one message to Juan, got {len(sent)}")
+        + expect(bool(sent) and "estudio" in sent[0].lower(), "the message lost the studies request")
+        + expect(bool(sent) and re.search(r"10 min", sent[0].lower()), "the doctor's edit didn't make it in")
+    )
+
+
+def _check_doc_pause(r: Result) -> list[str]:
+    return expect(r.bot_paused, "the bot isn't paused")
+
+
+SCENARIOS += [
+    Scenario(
+        name="doc_agenda_today", channel="doctor", tags=["doctor", "read"],
+        setup=_doc_today_two,
+        opening=["¿Qué citas tengo hoy?"],
+        persona=DOCTOR, goal="Saber qué citas tienes hoy.",
+        check=_check_doc_agenda, max_turns=2,
+    ),
+    Scenario(
+        name="doc_empty_saturday_no_invention", channel="doctor", tags=["doctor", "read"],
+        opening=["¿Qué tengo el sábado?"],
+        persona=DOCTOR, goal="Saber si tienes citas el sábado.",
+        check=_check_doc_empty_saturday, max_turns=2,
+    ),
+    Scenario(
+        name="doc_cancel_with_notice", channel="doctor", tags=["doctor", "cancel"],
+        setup=_doc_juan_tomorrow,
+        opening=["Cancela la cita de Juan Pérez de mañana, tengo una emergencia familiar"],
+        persona=DOCTOR + "\nSi te muestran un aviso para el paciente, apruébalo tal cual.",
+        goal="Que la cita quede cancelada y Juan avisado.",
+        check=_check_doc_cancel_notice,
+    ),
+    Scenario(
+        name="doc_batch_reschedule", channel="doctor", tags=["doctor", "reschedule", "batch"],
+        setup=_doc_thursday_two,
+        opening=["Pasa las dos citas del jueves en la mañana al viernes en la tarde"],
+        persona=DOCTOR + "\nCualquier horario de la tarde del viernes te sirve. Aprueba los avisos a los pacientes.",
+        goal="Que Juan y Ana queden el viernes en la tarde y sepan del cambio.",
+        check=_check_doc_batch_move,
+    ),
+    Scenario(
+        name="doc_block_afternoon", channel="doctor", tags=["doctor", "block"],
+        opening=["Bloquea el martes de 4 a 7 de la tarde, tengo junta en el hospital"],
+        persona=DOCTOR, goal="Que el martes de 4 a 7 PM nadie pueda agendar.",
+        check=_check_doc_block,
+    ),
+    Scenario(
+        name="doc_create_new_patient", channel="doctor", tags=["doctor", "book"],
+        opening=["Agéndame a María López el miércoles a las 11:30, es primera vez, su cel es 55 1234 5678, motivo revisión general"],
+        persona=DOCTOR, goal="Que María quede agendada el miércoles a las 11:30.",
+        check=_check_doc_new_patient,
+    ),
+    Scenario(
+        name="doc_overbook_after_confirming", channel="doctor", tags=["doctor", "book", "overbook"],
+        allows_overlap=True,
+        setup=_doc_juan_wednesday_9,
+        opening=["Agenda a Pedro Ramírez el miércoles a las 9, cel 55 8765 4321, motivo dolor de rodilla"],
+        persona=DOCTOR + "\nSi te dicen que a esa hora ya hay alguien, contesta que sí, que lo encimes.",
+        goal="Que Pedro quede el miércoles a las 9 aunque haya otra cita.",
+        check=_check_doc_overbook,
+    ),
+    Scenario(
+        name="doc_approve_urgency", channel="doctor", tags=["doctor", "urgency"],
+        setup=_doc_pending_urgency,
+        opening=["¿Tengo algo pendiente?"],
+        persona=DOCTOR + "\nSi hay una urgencia de Juan Pérez, apruébala para hoy a las 12:00.",
+        goal="Resolver lo pendiente.",
+        check=_check_doc_urgency,
+    ),
+    Scenario(
+        name="doc_message_with_edit", channel="doctor", tags=["doctor", "messages"],
+        setup=_doc_juan_tomorrow_9,
+        opening=["Dile a Juan Pérez que traiga sus estudios de sangre a la cita"],
+        persona=DOCTOR + "\nCuando te muestre el borrador, pide que también le diga que llegue 10 minutos antes. Luego apruébalo.",
+        goal="Que Juan reciba un solo mensaje con ambas indicaciones.",
+        check=_check_doc_message_edit,
+    ),
+    Scenario(
+        name="doc_pause_bot", channel="doctor", tags=["doctor", "pause"],
+        opening=["Pausa el bot una hora, voy a contestar yo"],
+        persona=DOCTOR, goal="Que el bot deje de contestar a los pacientes por una hora.",
+        check=_check_doc_pause, max_turns=2,
     ),
 ]

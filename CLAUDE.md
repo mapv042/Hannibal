@@ -166,6 +166,7 @@ spent, escalate to the doctor: a notice that silently fails is the outcome Rule 
 - `doctor_last_inbound:{office_id}` — doctor's last inbound timestamp (TTL 24h), for the doctor service-window check
 - `doctor_state:{office_id}` — the doctor conversation's `ConversationState` (TTL 24h); the patient's lives inside `session:*`
 - `inbox:{office_id}:{sender}` — queued incoming messages (TTL 10min). Whoever holds `conv_lock` waits `MESSAGE_COALESCE_SECONDS` (2.5s), then answers everything queued as one turn, and keeps draining until empty
+- `doctor_msg_sent:{office_id}:{patient_id}:{hash}` — an approved doctor→patient message already sent (TTL 30min); the same text to the same patient is not sent twice (a repeated "sí, mándalo" used to resend it)
 - `audit_alert:{appointment_id}:{kind}` — write-audit alert dedup (TTL 24h); a persistent divergence is reported once a day, not on every write
 
 ## Common commands

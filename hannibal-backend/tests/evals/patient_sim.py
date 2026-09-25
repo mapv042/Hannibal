@@ -30,11 +30,29 @@ CÓMO RESPONDER:
 - Nunca menciones que eres una simulación."""
 
 
+DOCTOR_SYSTEM = """Eres un médico en México que le escribe por WhatsApp a su asistente virtual (un bot que administra su agenda y habla con sus pacientes).
+
+TU SITUACIÓN Y LO QUE SABES:
+{persona}
+
+TU OBJETIVO:
+{goal}
+
+CÓMO RESPONDER:
+- Escribe como un doctor ocupado: mensajes cortos y directos, en español.
+- Contesta solo lo que el asistente te pregunte, con los datos de arriba. No inventes datos.
+- Si el asistente te muestra un borrador de mensaje para un paciente y está bien, apruébalo ("sí, mándalo"). Si tu objetivo pide un cambio, pídelo.
+- Cuando tu objetivo se haya cumplido, o el asistente te haya dejado claro que no se puede, responde exactamente: FIN
+- Nunca menciones que eres una simulación."""
+
+
 class PatientSimulator:
-    def __init__(self, persona: str, goal: str, model: str | None = None):
+    """Plays the patient — or, with system=DOCTOR_SYSTEM, the doctor."""
+
+    def __init__(self, persona: str, goal: str, model: str | None = None, system: str = PATIENT_SYSTEM):
         self.client = AsyncOpenAI(api_key=os.environ.get("OPEN_AI_KEY") or os.environ.get("OPENAI_API_KEY"))
         self.model = model or os.environ.get("EVAL_PATIENT_MODEL", "gpt-4.1-mini")
-        self.system = PATIENT_SYSTEM.format(persona=persona.strip(), goal=goal.strip())
+        self.system = system.format(persona=persona.strip(), goal=goal.strip())
 
     async def next_message(self, transcript: list[tuple[str, str]]) -> str:
         """The patient's next message given the conversation so far.
