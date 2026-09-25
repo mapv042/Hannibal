@@ -17,8 +17,8 @@ from app.modules.ai.tool_helpers import (
     format_appointment_dt,
     localize_mx,
     offered_slots_from,
-    parse_requested_dates,
     parse_slot_id,
+    resolve_requested_days,
     resolve_active_appointment,
     resolve_appointment_duration,
     slot_id_for,
@@ -73,30 +73,43 @@ TOOL_DEFINITIONS = [
     {
         "name": "get_available_slots",
         "description": (
-            "Consulta los horarios libres en una o varias fechas (máximo 7 por llamada). Cada "
-            "horario trae un slot_id (lo que usas para reservar) y un label (lo que le muestras "
-            "al paciente, tal cual). Si ningún día consultado tiene lugar, el resultado incluye "
-            "next_available con el siguiente día que sí tiene. Para una pregunta abierta "
-            "('¿qué día tienes?') consulta varios días en una sola llamada."
+            "Consulta los horarios libres de uno o varios días. Cuando el paciente nombra el día "
+            "con palabras, pásalas tal cual en `when` y el sistema calcula la fecha exacta; si "
+            "esas palabras tienen dos lecturas, te devuelve las opciones para que le preguntes. "
+            "Cada horario trae un slot_id (lo que usas para reservar) y un label (lo que le "
+            "muestras al paciente, tal cual). Si ningún día consultado tiene lugar, el resultado "
+            "incluye next_available con el siguiente día que sí tiene."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
+                "when": {
+                    "type": "string",
+                    "description": (
+                        "El día como lo dijo el paciente, con sus palabras: 'mañana', 'el "
+                        "miércoles', 'el próximo martes', 'el jueves en la tarde', 'el 5', '5 "
+                        "de octubre', 'la otra semana'. No lo conviertas tú a fecha."
+                    ),
+                },
                 "dates": {
                     "type": "array",
                     "items": {"type": "string"},
                     "description": (
-                        "Fechas a consultar en formato YYYY-MM-DD (1 a 7), tomadas del "
-                        "CALENDARIO DE REFERENCIA."
+                        "Solo si ya tienes fechas exactas (de un resultado anterior o de las "
+                        "opciones que eligió el paciente), o para revisar varios días ante una "
+                        "pregunta abierta: YYYY-MM-DD, de 1 a 7."
                     ),
                 },
                 "part_of_day": {
                     "type": "string",
                     "enum": ["mañana", "tarde"],
-                    "description": "Solo si el paciente pidió específicamente mañana o tarde.",
+                    "description": (
+                        "Solo si el paciente pidió mañana (antes de 12:00) o tarde (desde 12:00) "
+                        "y no lo dijo ya dentro de `when`."
+                    ),
                 },
             },
-            "required": ["dates"],
+            "required": [],
         },
     },
     {
@@ -513,9 +526,9 @@ async def execute_tool(
 
 @_handler("get_available_slots")
 async def _handle_get_available_slots(args: dict, ctx: ToolContext) -> dict:
-    dates = parse_requested_dates(args)
-    if isinstance(dates, dict):
-        return dates
+    dates, part_of_day, early = resolve_requested_days(args)
+    if early is not None:
+        return early
     # Lay the grid out in the slot length this patient's appointment will take,
     # so we never offer a 30-minute gap and then reserve 45 on top of the next
     # appointment.
@@ -527,10 +540,13 @@ async def _handle_get_available_slots(args: dict, ctx: ToolContext) -> dict:
         dates,
         ctx.db,
         slot_minutes=duration_min,
-        part_of_day=args.get("part_of_day"),
+        part_of_day=part_of_day,
     )
     if "error" not in result:
         ctx.state.remember_slots(offered_slots_from(result))
+        if args.get("when"):
+            # Show the model how the patient's words were read.
+            result["interpreted"] = {"when": args["when"], "dates": dates, "part_of_day": part_of_day}
     return result
 
 

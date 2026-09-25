@@ -20,7 +20,7 @@ from app.modules.ai.tool_helpers import (
     format_appointment_dt,
     localize_mx,
     offered_slots_from,
-    parse_requested_dates,
+    resolve_requested_days,
 )
 from app.modules.conversation.state import ConversationState
 from app.modules.scheduling.availability import (
@@ -295,18 +295,26 @@ DOCTOR_TOOL_DEFINITIONS = [
             "de crear o reagendar citas, o cuando el doctor pregunte qué espacios tiene libres. "
             "Cada horario trae un label para mostrar y un slot_id (YYYY-MM-DDTHH:MM): al crear o "
             "reagendar usa esa fecha y esa hora tal cual. Si ningún día tiene lugar, el resultado "
-            "incluye next_available."
+            "incluye next_available. Si el doctor nombra el día con palabras, pásalas en `when` "
+            "y el sistema calcula la fecha."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
+                "when": {
+                    "type": "string",
+                    "description": (
+                        "El día como lo dijo el doctor ('mañana', 'el jueves', 'el próximo "
+                        "martes', 'el 5'). No lo conviertas tú a fecha."
+                    ),
+                },
                 "dates": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Fechas a consultar en formato YYYY-MM-DD (1 a 7).",
+                    "description": "Fechas exactas YYYY-MM-DD (1 a 7), si ya las tienes.",
                 },
             },
-            "required": ["dates"],
+            "required": [],
         },
     },
     {
@@ -1430,10 +1438,12 @@ async def _handle_add_note(args: dict, ctx: DoctorToolContext) -> dict:
 
 @_handler("get_available_slots")
 async def _handle_get_available_slots(args: dict, ctx: DoctorToolContext) -> dict:
-    dates = parse_requested_dates(args)
-    if isinstance(dates, dict):
-        return dates
-    result = await availability_for_dates(ctx.office.id, dates, ctx.db)
+    dates, part_of_day, early = resolve_requested_days(args)
+    if early is not None:
+        return early
+    result = await availability_for_dates(
+        ctx.office.id, dates, ctx.db, part_of_day=part_of_day
+    )
     if "error" not in result:
         ctx.state.remember_slots(offered_slots_from(result))
     return result

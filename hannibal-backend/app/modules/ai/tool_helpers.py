@@ -184,6 +184,54 @@ def offered_slots_from(result: dict) -> list[OfferedSlot]:
     return out
 
 
+def resolve_requested_days(args: dict) -> tuple[list[str], Optional[str], Optional[dict]]:
+    """Dates to look up, from the patient's words (`when`) or exact `dates`.
+
+    Returns (dates, part_of_day, early_result). `early_result` is set when the
+    tool must answer without looking anything up: the words can't be read, or
+    they have two readings — then the model gets both options to ask about,
+    never a guess (see ai/date_expressions.py).
+    """
+    from app.modules.ai.date_expressions import resolve_day_expression
+
+    part_of_day = args.get("part_of_day")
+    when = (args.get("when") or "").strip()
+    if not when:
+        dates = parse_requested_dates(args)
+        if isinstance(dates, dict):
+            return [], part_of_day, dates
+        return dates, part_of_day, None
+
+    today = now_mx().date()
+    resolution = resolve_day_expression(when, today)
+    if resolution is None:
+        return [], part_of_day, {
+            "error": f"No pude interpretar «{when}» como un día.",
+            "next_step": (
+                "Pregúntale al paciente qué día quiere. Si ya tienes la fecha exacta, "
+                "pásala en dates (YYYY-MM-DD)."
+            ),
+        }
+    if resolution.ambiguous:
+        return [], part_of_day, {
+            "ambiguous_date": when,
+            "options": [
+                {"date": d.isoformat(), "date_label": long_date_label(d, today)}
+                for d in resolution.dates
+            ],
+            "reason": resolution.note,
+            "next_step": (
+                "Lo que dijo el paciente tiene más de una lectura. Pregúntale cuál de estas "
+                "fechas quiso decir — no la elijas tú."
+            ),
+        }
+    return (
+        [d.isoformat() for d in resolution.dates][:MAX_DATES_PER_QUERY],
+        part_of_day or resolution.part_of_day,
+        None,
+    )
+
+
 def parse_requested_dates(args: dict) -> list[str] | dict:
     """Extract the requested date list from tool args.
 

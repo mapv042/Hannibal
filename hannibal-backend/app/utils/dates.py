@@ -42,9 +42,10 @@ def build_date_reference_block(now: datetime, days: int = DATE_REFERENCE_DAYS) -
         lines.append(f"- {prefix}{long_date_label(day, today)} = {day.isoformat()}")
     lines.append("")
     lines.append(
-        'Para un día de la semana sin más detalle (ej. "el lunes"), usa su próxima ocurrencia '
-        "en la lista. Para fechas más allá del calendario, calcula a partir de HOY. La "
-        "herramienta de disponibilidad te devuelve el día de la semana real de cada fecha."
+        "Cuando te pidan un día con palabras (\"el miércoles\", \"el próximo martes\", "
+        "\"el 5\"), no lo conviertas tú: pásalo tal cual a la herramienta de disponibilidad "
+        "(when), que calcula la fecha exacta y te avisa si es ambigua. Este calendario es "
+        "para ubicarte y para leer las fechas que te devuelven las herramientas."
     )
     return "\n".join(lines)
 

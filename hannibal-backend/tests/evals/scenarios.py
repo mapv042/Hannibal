@@ -396,6 +396,26 @@ def _check_gcal_away_day(r: Result) -> list[str]:
     )
 
 
+def _check_proximo_asks_then_next_week(r: Result) -> list[str]:
+    # The patient only says which Wednesday when asked, so a booking on the
+    # right one means the assistant asked instead of assuming.
+    return (
+        expect("ambiguous_date" in _tool_result_text(r), "the tool never flagged 'el próximo miércoles' as ambiguous")
+        + expect(len(r.active_on(9)) == 1, "expected the Wednesday of NEXT week (the one the patient chose)")
+        + expect(not r.active_on(2), "booked this week's Wednesday without asking")
+    )
+
+
+def _check_day_number(r: Result) -> list[str]:
+    target = r.day(4)  # the scenario asks for this day by its number
+    booked = [a for a in r.active() if a["start"].startswith(target.isoformat())]
+    return expect(len(booked) == 1, f"expected an appointment on the {target.day} ({target.isoformat()})")
+
+
+def _tool_result_text(r: Result) -> str:
+    return " ".join(str(c.get("result")) for t in r.traces for c in (t.get("tool_calls") or []))
+
+
 def _check_no_duplicate_booking(r: Result) -> list[str]:
     return expect(len(r.active()) == 1, f"expected exactly 1 appointment, got {len(r.active())}")
 
@@ -581,6 +601,23 @@ SCENARIOS: list[Scenario] = [
         persona=JUAN + "\nSi mañana no se puede, aceptas el primer horario del siguiente día que te ofrezcan.",
         goal="Conseguir una cita lo antes posible.",
         check=_check_gcal_away_day,
+    ),
+    Scenario(
+        name="proximo_miercoles_is_asked",
+        tags=["dates", "ambiguity"],
+        opening=["¿Tienes cita el próximo miércoles?"],
+        persona=JUAN + "\nSi te preguntan cuál miércoles, es el de la semana que entra (no el de esta semana). Si te dan opciones de hora, elige la primera.",
+        goal="Agendar el miércoles de la semana que entra.",
+        check=_check_proximo_asks_then_next_week,
+    ),
+    Scenario(
+        name="day_by_number",
+        tags=["dates"],
+        # Friday of the scenario's week, named only by its day number.
+        opening=[lambda monday: f"Quiero cita el día {(monday + timedelta(days=4)).day} en la mañana"],
+        persona=JUAN + "\nSi te dan opciones, elige la primera.",
+        goal="Agendar ese día por la mañana.",
+        check=_check_day_number,
     ),
     Scenario(
         name="double_yes_books_once",

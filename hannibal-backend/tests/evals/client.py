@@ -28,6 +28,9 @@ class SimClient:
         password: Optional[str] = None,
     ):
         base = (base_url or os.environ["SIM_URL"]).rstrip("/")
+        # Accept the backend's base URL or the simulator's own (…/api/sim).
+        if base.endswith("/api/sim"):
+            base = base[: -len("/api/sim")]
         self.http = httpx.AsyncClient(
             base_url=f"{base}/api/sim",
             auth=(user or os.environ.get("SIM_USER", "argos"), password or os.environ["SIM_PASSWORD"]),

@@ -87,6 +87,8 @@ async def run_scenario(sim: SimClient, sc: Scenario, spec: ModelSpec) -> dict:
     await collect()  # anything the setup sent the patient (e.g. a reminder)
 
     for item in sc.opening:
+        if callable(item):  # openings that depend on the scenario's dates
+            item = item(now.date())
         if isinstance(item, list):
             transcript.extend(("patient", t) for t in item)
             await sim.send_burst(item, **send_kw)

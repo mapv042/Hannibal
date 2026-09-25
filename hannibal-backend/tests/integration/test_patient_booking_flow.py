@@ -305,3 +305,37 @@ async def test_off_grid_time_is_refused_with_nearest_slots(env):
     reply = await turn("el viernes a las 10")
     assert reply == "9:00 AM, 9:50 AM, 10:40 AM"
     assert (await env["session"]()).state.draft is None
+
+
+async def test_patient_words_are_resolved_by_code(env):
+    from app.modules.ai.tools import ToolContext, execute_tool
+    from app.modules.conversation.state import ConversationState
+
+    async with get_async_session_maker()() as db:
+        office = await db.get(type(env["office"]), env["office"].id)
+        ctx = ToolContext(db=db, office=office, patient_id=None, whatsapp_id=PATIENT,
+                          redis_client=None, state=ConversationState())
+        # "el miércoles" is always the next Wednesday — never the one after.
+        result = await execute_tool("get_available_slots", {"when": "el miércoles en la mañana"}, ctx)
+        wed = next_weekday(2)
+        assert result["interpreted"]["dates"] == [wed.isoformat()]
+        assert result["interpreted"]["part_of_day"] == "mañana"
+        assert all(s["period"] == "mañana" for s in result["days"][0]["slots"])
+
+        # Unreadable words: ask, don't guess.
+        result = await execute_tool("get_available_slots", {"when": "cuando se pueda"}, ctx)
+        assert "error" in result and "Pregúntale" in result["next_step"]
+
+
+async def test_ambiguous_words_return_options(env):
+    from app.modules.ai.tools import ToolContext, execute_tool
+    from app.modules.conversation.state import ConversationState
+
+    today_name = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"][now_mx().weekday()]
+    async with get_async_session_maker()() as db:
+        office = await db.get(type(env["office"]), env["office"].id)
+        ctx = ToolContext(db=db, office=office, patient_id=None, whatsapp_id=PATIENT,
+                          redis_client=None, state=ConversationState())
+        result = await execute_tool("get_available_slots", {"when": f"el {today_name}"}, ctx)
+    assert result["ambiguous_date"] == f"el {today_name}"
+    assert len(result["options"]) == 2
