@@ -23,7 +23,10 @@ from app.modules.scheduling.booking import book_appointment
 from app.core.exceptions import NotFoundError, SlotNotAvailableError
 from app.modules.audit.tasks import enqueue_write_audit
 from app.modules.google_calendar.service import update_calendar_event
-from app.modules.google_calendar.sync import cancel_appointment_in_calendar
+from app.modules.google_calendar.sync import (
+    calendar_cancellation_note,
+    cancel_appointment_in_calendar,
+)
 from app.modules.scheduling.tasks import (
     enqueue_patient_cancellation_notice,
     enqueue_patient_reschedule_notice,
@@ -137,7 +140,15 @@ async def cancel_appointment(
     # itself must go through, and the write audit below catches a calendar left
     # holding the slot.
     try:
-        await cancel_appointment_in_calendar(appointment_id, office_id, db)
+        await cancel_appointment_in_calendar(
+            appointment_id, office_id, db,
+            note=calendar_cancellation_note(
+                "el paciente (registrado desde el dashboard)"
+                if cancelled_by == "patient"
+                else "el consultorio (desde el dashboard)",
+                reason=reason,
+            ),
+        )
     except Exception as e:
         logger.error(
             "dashboard_cancel_gcal_failed",

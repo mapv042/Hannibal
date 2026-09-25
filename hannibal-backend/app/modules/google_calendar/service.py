@@ -320,18 +320,53 @@ async def update_event_color(
         raise
 
 
+# Google answers these transiently (rate limit, backend hiccup); worth a retry.
+_RETRYABLE_STATUS = {429, 500, 502, 503, 504}
+
+
+async def _request_with_retry(client, method: str, url: str, attempts: int = 3, **kwargs):
+    """One Google Calendar request, retried with backoff on transient failures.
+
+    Returns the last response; raises only if every attempt failed to connect.
+    """
+    import asyncio
+
+    last_exc: Optional[Exception] = None
+    for attempt in range(attempts):
+        try:
+            response = await client.request(method, url, **kwargs)
+        except httpx.TransportError as e:  # timeouts, dropped connections
+            last_exc = e
+        else:
+            if response.status_code not in _RETRYABLE_STATUS:
+                return response
+            last_exc = None
+            if attempt == attempts - 1:
+                return response
+        if attempt < attempts - 1:
+            await asyncio.sleep(0.5 * 2 ** attempt)
+    raise last_exc  # type: ignore[misc]
+
+
 async def mark_event_cancelled(
     office_id: UUID,
     google_event_id: str,
     db: AsyncSession,
+    note: Optional[str] = None,
 ) -> None:
     """
     Mark a Google Calendar event as cancelled: red color + transparent (frees the slot).
+
+    The event stays on the doctor's calendar on purpose — red, titled
+    "[CANCELADA] …" and shown as "Disponible" — so the doctor sees at a glance
+    that a cita was cancelled there. `note` (who cancelled and why, or where the
+    cita moved) is appended to the event description, once.
 
     Args:
         office_id: Office ID
         google_event_id: Google Calendar event ID
         db: Database session
+        note: Spanish line for the doctor, from calendar_cancellation_note()
     """
     try:
         access_token = await get_valid_google_token(office_id, db)
@@ -341,9 +376,11 @@ async def mark_event_cancelled(
         office = await db.get(Office, office_id)
         calendar_id = office.google_calendar_id or "primary"
 
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=15) as client:
             # First get the current event to preserve title
-            get_response = await client.get(
+            get_response = await _request_with_retry(
+                client,
+                "GET",
                 f"https://www.googleapis.com/calendar/v3/calendars/{calendar_id}/events/{google_event_id}",
                 headers={"Authorization": f"Bearer {access_token}"},
             )
@@ -357,15 +394,23 @@ async def mark_event_cancelled(
 
             event = get_response.json()
             original_title = event.get("summary", "Cita")
+            if original_title.startswith("[CANCELADA] "):
+                original_title = original_title[len("[CANCELADA] "):]  # idempotent
 
             # PATCH: red color (11), transparent (frees the time), update title
-            response = await client.patch(
+            patch = {
+                "colorId": "11",  # Red = Tomato in Google Calendar
+                "transparency": "transparent",  # Frees the time slot
+                "summary": f"[CANCELADA] {original_title}",
+            }
+            description = event.get("description") or ""
+            if note and note not in description:  # idempotent: a retry adds nothing
+                patch["description"] = f"{description}\n\n{note}".strip()
+            response = await _request_with_retry(
+                client,
+                "PATCH",
                 f"https://www.googleapis.com/calendar/v3/calendars/{calendar_id}/events/{google_event_id}",
-                json={
-                    "colorId": "11",  # Red = Tomato in Google Calendar
-                    "transparency": "transparent",  # Frees the time slot
-                    "summary": f"[CANCELADA] {original_title}",
-                },
+                json=patch,
                 headers={"Authorization": f"Bearer {access_token}"},
             )
 

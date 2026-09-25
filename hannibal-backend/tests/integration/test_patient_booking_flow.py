@@ -339,3 +339,35 @@ async def test_ambiguous_words_return_options(env):
         result = await execute_tool("get_available_slots", {"when": f"el {today_name}"}, ctx)
     assert result["ambiguous_date"] == f"el {today_name}"
     assert len(result["options"]) == 2
+
+
+async def test_reschedule_accepts_the_grid_the_patient_was_offered(env):
+    """A 30-min appointment moved by a first-visit patient (offered a 40+10 grid):
+    4:50 PM is on the offered grid, not on the 30-min one, and must be accepted."""
+    from app.modules.scheduling.booking import book_appointment
+    from app.db.models import Patient
+    from app.core.constants import MX_TIMEZONE
+    from datetime import datetime
+
+    thu = next_weekday(3)
+    async with get_async_session_maker()() as db:
+        office = await db.get(type(env["office"]), env["office"].id)
+        patient = (await db.execute(
+            select(Patient).where(Patient.office_id == office.id, Patient.whatsapp_id == PATIENT)
+        )).scalars().first()
+        outcome = await book_appointment(
+            db, office, patient_id=patient.id,
+            start_dt=datetime.combine(thu, datetime.min.time(), tzinfo=MX_TIMEZONE).replace(hour=9),
+            duration_min=30, reason="Chequeo", appt_type="follow_up",
+            gcal_title="x", gcal_description="x",
+        )
+        await db.commit()
+        original_id = str(outcome.appointment.id)
+
+    ai, turn = env["ai"], env["turn"]
+    ai.then(
+        call("prepare_booking", slot_id=f"{thu.isoformat()}T16:50", for_self=True,
+             replaces_appointment_id=original_id),
+        lambda results: say("ok" if results[0].get("prepared") else f"rechazado: {results[0]}"),
+    )
+    assert await turn("muévela a las 4:50") == "ok"

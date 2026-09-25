@@ -122,10 +122,44 @@ async def sync_appointment(
         )
 
 
+# Patient free text goes into the doctor's calendar; keep it to a readable line.
+_MAX_REASON_CHARS = 200
+
+
+def calendar_cancellation_note(
+    by: str,
+    *,
+    reason: Optional[str] = None,
+    moved_to: Optional[datetime] = None,
+) -> str:
+    """The line written on a cancelled event: who, when, and why or where to.
+
+    Examples:
+        "Cancelada por el paciente el 24/09/2026 a las 10:15 AM. Motivo: le surgió trabajo."
+        "Reagendada por el doctor el 24/09/2026 a las 10:15 AM al jueves 1 de octubre a las 4:50 PM."
+    """
+    from app.utils.dates import long_date_label, now_mx, time_label
+
+    now = now_mx()
+    stamp = f"el {now.strftime('%d/%m/%Y')} a las {time_label(now)}"
+    if moved_to is not None:
+        local = moved_to.astimezone(MX_TIMEZONE)
+        return (
+            f"Reagendada por {by} {stamp} al {long_date_label(local.date())} "
+            f"a las {time_label(local)}."
+        )
+    note = f"Cancelada por {by} {stamp}."
+    reason = " ".join((reason or "").split())[:_MAX_REASON_CHARS]
+    if reason:
+        note += f" Motivo: {reason}"
+    return note
+
+
 async def cancel_appointment_in_calendar(
     appointment_id: UUID,
     office_id: UUID,
     db: AsyncSession,
+    note: Optional[str] = None,
 ) -> None:
     """
     Mark an appointment's Google Calendar event as cancelled (red + transparent).
@@ -166,6 +200,7 @@ async def cancel_appointment_in_calendar(
             office_id=office_id,
             google_event_id=google_event_id,
             db=db,
+            note=note,
         )
 
         logger.info(

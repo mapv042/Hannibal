@@ -31,7 +31,11 @@ from app.modules.scheduling.availability import (
 from app.modules.scheduling.booking import book_appointment
 from app.modules.audit.tasks import enqueue_write_audit
 from app.modules.notifications.tasks import enqueue_reschedule_notification
-from app.modules.google_calendar.sync import cancel_appointment_in_calendar, sync_time_block
+from app.modules.google_calendar.sync import (
+    calendar_cancellation_note,
+    cancel_appointment_in_calendar,
+    sync_time_block,
+)
 from app.modules.whatsapp.coexistence import pause_bot, resume_bot, check_pause
 from app.modules.whatsapp.transport import WhatsAppClient
 from app.modules.whatsapp.window import service_window_open
@@ -741,7 +745,10 @@ async def _handle_cancel_appointment(args: dict, ctx: DoctorToolContext) -> dict
     # Google Calendar first — if it fails, don't touch the DB
     if ctx.office.google_calendar_token:
         try:
-            await cancel_appointment_in_calendar(appt_id, ctx.office.id, ctx.db)
+            await cancel_appointment_in_calendar(
+                appt_id, ctx.office.id, ctx.db,
+                note=calendar_cancellation_note("el doctor", reason=args.get("reason")),
+            )
         except Exception as e:
             logger.error("doctor_cancel_gcal_failed", error=str(e))
             return {"error": "No se pudo cancelar en Google Calendar. La cita no fue modificada. Intenta de nuevo."}
@@ -1656,7 +1663,10 @@ async def _handle_reschedule_appointment(args: dict, ctx: DoctorToolContext) -> 
     # Cancel old appointment in Google Calendar
     if ctx.office.google_calendar_token:
         try:
-            await cancel_appointment_in_calendar(appt_id, ctx.office.id, ctx.db)
+            await cancel_appointment_in_calendar(
+                appt_id, ctx.office.id, ctx.db,
+                note=calendar_cancellation_note("el doctor", moved_to=new_start),
+            )
         except Exception as e:
             logger.error("doctor_reschedule_cancel_gcal_failed", error=str(e))
 

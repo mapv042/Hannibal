@@ -28,7 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.constants import MX_TIMEZONE
 from app.db.models import Appointment, Office, Patient
 from app.modules.audit import templates
-from app.modules.google_calendar.service import get_calendar_event
+from app.modules.google_calendar.service import get_calendar_event, mark_event_cancelled
 from app.modules.reminders.wa_templates import (
     TEMPLATE_DOCTOR_SYNC_WARNING,
     build_doctor_sync_warning_params,
@@ -130,13 +130,50 @@ async def _check_calendar(
                 )
         return None
 
-    # Cancellation: the event should no longer occupy the slot.
-    if event is not None and event.get("status") != "cancelled":
+    # Cancellation: the event should no longer occupy the slot. The app does
+    # not delete it — mark_event_cancelled keeps it visible (red, "[CANCELADA]")
+    # and makes it transparent, which is what frees the slot. Checking only for
+    # a deleted event flagged every correct cancellation as a divergence and
+    # sent the doctor a false alarm each time.
+    if event_blocks_slot(event):
         return Divergence(
             KIND_CALENDAR_STALE,
             "la cita se canceló pero su evento sigue ocupando el horario en Google Calendar",
         )
     return None
+
+
+def event_blocks_slot(event: Optional[dict]) -> bool:
+    """Whether a Google event still makes its time busy."""
+    if event is None or event.get("status") == "cancelled":
+        return False
+    return event.get("transparency", "opaque") != "transparent"
+
+
+async def _repair_cancelled_event(
+    db: AsyncSession, office: Office, appointment: Appointment
+) -> bool:
+    """Free the slot of a cancelled appointment whose event still blocks it.
+
+    The cancel path swallows Google errors on purpose (the patient's
+    cancellation must not fail because Google hiccuped), so a failed marking
+    left the slot busy until someone noticed. The audit notices; it should
+    also fix what it can fix safely — marking the event cancelled is
+    idempotent. Returns True when the slot is free afterwards.
+    """
+    try:
+        await mark_event_cancelled(office.id, appointment.google_event_id, db)
+        event = await get_calendar_event(office.id, appointment.google_event_id, db)
+    except Exception as e:
+        logger.warning(
+            "audit_repair_failed", appointment_id=str(appointment.id), error=str(e)
+        )
+        return False
+    repaired = not event_blocks_slot(event)
+    logger.info(
+        "audit_repair_attempted", appointment_id=str(appointment.id), repaired=repaired
+    )
+    return repaired
 
 
 def _check_row(appointment: Appointment, expectation: dict) -> Optional[Divergence]:
@@ -223,6 +260,16 @@ async def verify_appointment_write(
         divergence = await _check_calendar(
             db, office, appointment, expected_present=action != "cancel"
         )
+        if (
+            divergence is not None
+            and action == "cancel"
+            and divergence.kind == KIND_CALENDAR_STALE
+            and await _repair_cancelled_event(db, office, appointment)
+        ):
+            logger.warning(
+                "audit_write_repaired", appointment_id=str(appointment_id), action=action
+            )
+            return "ok"
 
     if divergence is None:
         logger.info(

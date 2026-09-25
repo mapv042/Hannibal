@@ -30,7 +30,10 @@ from app.modules.conversation.state import (
     KnownAppointment,
 )
 from app.modules.google_calendar.service import update_event_color
-from app.modules.google_calendar.sync import cancel_appointment_in_calendar
+from app.modules.google_calendar.sync import (
+    calendar_cancellation_note,
+    cancel_appointment_in_calendar,
+)
 from app.modules.scheduling.availability import (
     invalidate_availability_cache,
     release_slot_lock,
@@ -719,10 +722,26 @@ async def _handle_prepare_booking(args: dict, ctx: ToolContext) -> dict:
     # 10:00 squeezed between the 9:50 and 10:40 slots kills the 9:50 and the
     # buffer, and whether that happened depended on which model was answering.
     # (The doctor, who may overbook, keeps free times in his own tools.)
-    try:
-        offered = await slots_on_day(
-            ctx.office.id, start_dt.date(), ctx.db, slot_minutes=duration_min
+    # A move keeps its own duration, but the patient was offered the grid of
+    # get_available_slots (their current first-visit/follow-up length). Both
+    # grids are valid here: a slot from either is free for this appointment
+    # (a longer slot is free for a shorter one; a slot of its own length is
+    # free by construction). Checking only one rejected the very time the
+    # assistant had just offered.
+    grid_lengths = {duration_min}
+    if replaces_id:
+        offered_length, _ = await resolve_appointment_duration(
+            ctx.db, ctx.office, ctx.patient_id
         )
+        if offered_length >= duration_min:
+            grid_lengths.add(offered_length)
+    try:
+        offered = []
+        for length in sorted(grid_lengths):
+            offered += await slots_on_day(
+                ctx.office.id, start_dt.date(), ctx.db, slot_minutes=length
+            )
+        offered = list({s["slot_id"]: s for s in offered}.values())
     except Exception as e:
         logger.warning("tool_prepare_booking_check_failed", error=str(e))
         return {
@@ -991,7 +1010,10 @@ async def _execute_reschedule(ctx: ToolContext, appointment_id: str, new_start: 
     appointment.cancellation_reason = "Reagendada por el paciente"
 
     try:
-        await cancel_appointment_in_calendar(appt_id, ctx.office.id, ctx.db)
+        await cancel_appointment_in_calendar(
+            appt_id, ctx.office.id, ctx.db,
+            note=calendar_cancellation_note("el paciente", moved_to=new_start),
+        )
     except Exception as e:
         logger.warning("tool_reschedule_cancel_gcal_failed", error=str(e))
 
@@ -1105,7 +1127,10 @@ async def _handle_cancel_appointment(args: dict, ctx: ToolContext) -> dict:
 
     # Google Calendar
     try:
-        await cancel_appointment_in_calendar(appt_id, ctx.office.id, ctx.db)
+        await cancel_appointment_in_calendar(
+            appt_id, ctx.office.id, ctx.db,
+            note=calendar_cancellation_note("el paciente", reason=reason),
+        )
     except Exception as e:
         logger.warning("tool_cancel_gcal_failed", error=str(e))
 
