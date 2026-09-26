@@ -42,7 +42,7 @@ from app.modules.reminders.wa_templates import (
     build_reschedule_notice_params,
 )
 from app.modules.whatsapp.doctor_notify import send_doctor_alert
-from app.utils.dates import now_mx
+from app.utils.dates import now_mx, time_label
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -299,7 +299,7 @@ async def notify_appointment_brief(
 
     patient_name = patient.name or "El paciente"
     brief_lines = await _build_patient_brief(db, appointment, patient)
-    slot_time = appointment.start_datetime.astimezone(MX_TIMEZONE).strftime("%H:%M")
+    slot_time = time_label(appointment.start_datetime.astimezone(MX_TIMEZONE))
 
     return await send_doctor_alert(
         redis_client,

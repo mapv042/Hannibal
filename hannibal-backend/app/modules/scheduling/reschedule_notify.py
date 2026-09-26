@@ -21,14 +21,14 @@ import redis.asyncio as aioredis
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.constants import DAYS_ES, MX_TIMEZONE
+from app.core.constants import MX_TIMEZONE
 from app.db.models import Appointment, Office, Patient
 from app.modules.reminders.wa_templates import (
     TEMPLATE_RESCHEDULE_NOTICE,
     build_reschedule_notice_params,
 )
 from app.modules.whatsapp.doctor_notify import send_doctor_alert
-from app.utils.dates import now_mx
+from app.utils.dates import long_date_label, now_mx, time_label
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -41,7 +41,7 @@ PENDING_CANCELLATION_LOOKBACK_DAYS = 14
 def _format_slot(dt: datetime) -> str:
     """Format an appointment datetime as 'lunes 16/06/2025 a las 16:00' (MX TZ)."""
     dt = dt.astimezone(MX_TIMEZONE) if dt.tzinfo else dt.replace(tzinfo=MX_TIMEZONE)
-    return f"{DAYS_ES[dt.weekday()]} {dt.strftime('%d/%m/%Y')} a las {dt.strftime('%H:%M')}"
+    return f"{long_date_label(dt.date())} a las {time_label(dt)}"
 
 
 def _doctor_gave_up_text(patient_name: str, old_slot: str) -> str:

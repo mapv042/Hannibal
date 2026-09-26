@@ -72,7 +72,8 @@ TEMPLATE_DOCTOR_SYNC_WARNING = "doctor_sync_warning"
 TEMPLATE_DOCTOR_APPOINTMENT_BRIEF = "doctor_appointment_brief"
 # Doctor-facing notice that Google rejected the calendar credentials. Create it
 # in WhatsApp Manager (Utility). Suggested body:
-#   doctor_calendar_disconnected    -> "Tu Google Calendar se desconectó. Sigo agendando con la agenda del sistema, pero no veo los eventos que tengas solo en Google. Reconéctalo aquí: {{detail}}"
+#   doctor_calendar_disconnected    -> "Tu Google Calendar se desconectó de ArgosAI. Sigo agendando citas con la agenda del sistema, pero no veo los eventos que tengas solo en Google. Reconéctalo aquí: {{detail}} y las citas agendadas mientras tanto se agregarán a tu calendario."
+#   (Meta rejects a body that starts or ends with a variable — keep text after {{detail}}.)
 TEMPLATE_DOCTOR_CALENDAR_DISCONNECTED = "doctor_calendar_disconnected"
 
 # Set to False if the templates were created with positional params ({{1}}, {{2}})

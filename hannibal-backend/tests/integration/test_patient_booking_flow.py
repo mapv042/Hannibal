@@ -92,6 +92,11 @@ async def env():
     redis_client = aioredis.from_url(settings.redis_url, decode_responses=True)
     async with get_async_session_maker()() as db:
         office = await sim_seed.reset(db)
+        # The simulator's reset keeps the calendar link on purpose; tests must
+        # not inherit one (e.g. the fake token a previous run left behind).
+        office.google_calendar_token = None
+        office.google_calendar_id = None
+        await db.commit()
     await redis_client.delete(f"session:{PATIENT}:{office.id}")
     ai, wa = ScriptedAI(), Recorder()
     manager = ConversationManager(SessionStore(redis_client), wa, ai_service=ai)

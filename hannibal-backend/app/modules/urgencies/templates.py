@@ -10,7 +10,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Optional
 
-from app.core.constants import DAYS_ES
+from app.utils.dates import long_date_label, time_label
 
 
 def _is_formal(tone: str) -> bool:
@@ -18,8 +18,12 @@ def _is_formal(tone: str) -> bool:
 
 
 def format_datetime(dt: datetime) -> str:
-    """'viernes 16/06 a las 17:00' (assumes a Mexico-local datetime)."""
-    return f"{DAYS_ES[dt.weekday()]} {dt.strftime('%d/%m')} a las {dt.strftime('%H:%M')}"
+    """'viernes 16 de junio a las 5:00 PM' (Mexico-local; aware datetimes are converted)."""
+    if dt.tzinfo is not None:
+        from app.core.constants import MX_TIMEZONE
+
+        dt = dt.astimezone(MX_TIMEZONE)
+    return f"{long_date_label(dt.date())} a las {time_label(dt)}"
 
 
 def format_preferred(preferred_time: Optional[datetime]) -> str:

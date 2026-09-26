@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.constants import ArrivalStatus, MX_TIMEZONE
 from app.db.models import Appointment, Patient
-from app.utils.dates import now_mx
+from app.utils.dates import now_mx, time_label
 
 # How long an arrival stays in the doctor's context. Past this the patient has
 # either been seen or gone home, and keeping them listed would be misleading.
@@ -30,7 +30,7 @@ def _describe(appointment: Appointment) -> str:
         reported = appointment.arrival_reported_at
         if reported is not None:
             local = reported.astimezone(MX_TIMEZONE)
-            return f"ya llegó (avisó a las {local.strftime('%H:%M')})"
+            return f"ya llegó (avisó a las {time_label(local)})"
         return "ya llegó"
 
     if appointment.arrival_status == ArrivalStatus.ON_THE_WAY.value:
@@ -73,7 +73,7 @@ async def get_waiting_room(office_id: UUID, db: AsyncSession) -> list[dict]:
     return [
         {
             "patient_name": patient_name or "Paciente",
-            "slot": appointment.start_datetime.astimezone(MX_TIMEZONE).strftime("%H:%M"),
+            "slot": time_label(appointment.start_datetime.astimezone(MX_TIMEZONE)),
             "state": _describe(appointment),
         }
         for appointment, patient_name in rows

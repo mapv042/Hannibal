@@ -35,6 +35,7 @@ from app.modules.reminders.wa_templates import (
 )
 from app.modules.whatsapp.doctor_notify import send_doctor_alert
 from app.utils.logger import get_logger
+from app.utils.dates import time_label
 
 logger = get_logger(__name__)
 
@@ -124,8 +125,8 @@ async def _check_calendar(
                     KIND_CALENDAR_STALE,
                     (
                         f"Google Calendar tiene la cita a las "
-                        f"{google_start.strftime('%H:%M')} y el sistema a las "
-                        f"{local_start.strftime('%H:%M')}"
+                        f"{time_label(google_start)} y el sistema a las "
+                        f"{time_label(local_start)}"
                     ),
                 )
         return None
@@ -200,8 +201,8 @@ def _check_row(appointment: Appointment, expectation: dict) -> Optional[Divergen
                 return Divergence(
                     KIND_FIELD_MISMATCH,
                     (
-                        f"la cita quedó guardada a las {stored.strftime('%H:%M')} "
-                        f"y debía quedar a las {wanted.strftime('%H:%M')}"
+                        f"la cita quedó guardada a las {time_label(stored)} "
+                        f"y debía quedar a las {time_label(wanted)}"
                     ),
                 )
 

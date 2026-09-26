@@ -914,9 +914,7 @@ async def _handle_block_time(args: dict, ctx: DoctorToolContext) -> dict:
 
                 conflict_list.append({
                     "id": str(appt.id),
-                    "date": dt.strftime("%Y-%m-%d"),
-                    "day_name": DAYS_ES[dt.weekday()],
-                    "time": dt.strftime("%H:%M"),
+                    "label": format_appointment_dt(appt.start_datetime),
                     "patient_name": patient_name,
                     "reason": appt.consultation_reason or "Consulta",
                     "status": appt.status,
@@ -1417,7 +1415,9 @@ async def _handle_check_delivery(args: dict, ctx: DoctorToolContext) -> dict:
         "delivery_status": last_msg.delivery_status,
         "status_description": status_labels.get(last_msg.delivery_status, last_msg.delivery_status),
         "message_preview": last_msg.content[:100],
-        "sent_at": last_msg.created_at.strftime("%Y-%m-%d %H:%M"),
+        # Localized: created_at is stored in UTC, and printing it raw told the
+        # doctor a message went out six hours later than it did.
+        "sent_at": format_appointment_dt(last_msg.created_at),
     }
 
 

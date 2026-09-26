@@ -57,7 +57,7 @@ from app.modules.reminders.wa_templates import (
 )
 from app.modules.conversation.session_store import SessionStore
 from app.modules.whatsapp.window import service_window_open
-from app.utils.dates import now_mx
+from app.utils.dates import now_mx, time_label
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -307,7 +307,7 @@ async def _send_reminder(appointment_id: str, reminder_type: str) -> None:
         start_local = appointment.start_datetime.astimezone(MX_TZ)
         now_local = now_mx()
         appointment_date = format_appointment_date(start_local, now_local)
-        appointment_time = start_local.strftime("%H:%M")
+        appointment_time = time_label(start_local)
 
         appointment_data = {
             "patient_name": patient.name or "paciente",
@@ -363,7 +363,7 @@ async def _send_day_before(appointment_id: str) -> None:
         appointment, patient, office = loaded
 
         start_local = appointment.start_datetime.astimezone(MX_TZ)
-        appointment_time = start_local.strftime("%H:%M")
+        appointment_time = time_label(start_local)
         patient_name = patient.name or "paciente"
         needs_confirmation = appointment.status == "scheduled"
 

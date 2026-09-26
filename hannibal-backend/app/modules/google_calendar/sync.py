@@ -147,7 +147,7 @@ def calendar_cancellation_note(
     from app.utils.dates import long_date_label, now_mx, time_label
 
     now = now_mx()
-    stamp = f"el {now.strftime('%d/%m/%Y')} a las {time_label(now)}"
+    stamp = f"el {long_date_label(now.date())} a las {time_label(now)}"
     if moved_to is not None:
         local = moved_to.astimezone(MX_TIMEZONE)
         return (
