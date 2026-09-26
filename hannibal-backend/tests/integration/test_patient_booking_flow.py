@@ -426,3 +426,62 @@ async def test_doctor_block_is_idempotent(env):
     assert first.get("success") and "4:00 PM a 7:00 PM" in first["formatted"], first
     assert again.get("already_blocked") is True, again
     assert len(blocks) == 1
+
+
+async def test_google_rejection_keeps_scheduling_and_reconnect_backfills(env, monkeypatch):
+    """Google rejects the credentials: slots still come from the system's agenda,
+    the booking goes through without an event, the doctor is flagged for a
+    notice — and the reconnect writes the missing event."""
+    from app.core.exceptions import GoogleCalendarAuthError
+    from app.modules.google_calendar import connection
+    import app.modules.scheduling.availability as availability
+    import app.modules.scheduling.booking as booking
+    from app.db.models import Office, Appointment
+
+    office_id = env["office"].id
+    async with get_async_session_maker()() as db:
+        office = await db.get(Office, office_id)
+        office.google_calendar_token = {"access_token": "revoked", "refresh_token": "revoked"}
+        await db.commit()
+
+    async def rejected(*a, **k):
+        raise GoogleCalendarAuthError("invalid_grant")
+
+    reported = []
+    monkeypatch.setattr(availability, "get_freebusy", rejected)
+    monkeypatch.setattr(booking, "create_calendar_event", rejected)
+    monkeypatch.setattr(connection, "dispatch", lambda task, args, **kw: reported.append(args))
+    connection.clear_local_skip(office_id)
+
+    ai, turn = env["ai"], env["turn"]
+    tue = next_weekday(1).isoformat()
+    ai.then(
+        call("get_available_slots", dates=[tue]),
+        lambda results: say(
+            "hay lugar" if results[0].get("days", [{}])[0].get("slots") else f"sin lugar: {results[0]}"
+        ),
+    )
+    assert await turn("¿qué hay el martes?") == "hay lugar"
+    assert reported == [[str(office_id)]]           # the doctor notice was queued (once)
+
+    ai.then(
+        call("prepare_booking", slot_id=f"{tue}T09:00", for_self=True, reason="chequeo"),
+        say("¿Confirmas?"), call("confirm_booking"), say("Agendada."),
+    )
+    await turn("el de las 9")
+    await turn("sí")
+    appts = await env["appointments"]()
+    assert len(appts) == 1 and appts[0].google_event_id is None
+
+    # Reconnected: the backfill writes the event the booking couldn't.
+    import app.modules.google_calendar.service as gservice
+
+    async def created(**kw):
+        return "evt-backfilled"
+
+    monkeypatch.setattr(gservice, "create_calendar_event", created)
+    connection.clear_local_skip(office_id)
+    async with get_async_session_maker()() as db:
+        result = await connection.backfill_missing_events(db, office_id)
+    assert result == {"created": 1, "failed": 0}
+    assert (await env["appointments"]())[0].google_event_id == "evt-backfilled"

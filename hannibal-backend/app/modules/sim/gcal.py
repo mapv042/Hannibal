@@ -48,6 +48,7 @@ APP_EVENT_MARKERS = (
     "Reagendada por el doctor",
     "Agendada desde el dashboard",
     "Cita urgente aprobada por el doctor",
+    "Agendada mientras Google Calendar estaba desconectado",
     "Fixture del simulador",
     FIXTURE_MARKER,
 )

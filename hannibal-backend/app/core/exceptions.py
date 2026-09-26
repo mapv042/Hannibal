@@ -51,6 +51,18 @@ class GoogleCalendarError(HTTPException):
         )
 
 
+class GoogleCalendarAuthError(GoogleCalendarError):
+    """Google rejected the office's credentials (revoked, expired, wrong scope).
+
+    Not transient: retrying won't help until the doctor reconnects the
+    calendar. Callers fall back to the system's own agenda and the doctor is
+    told (see google_calendar/connection.py) instead of failing the booking.
+    """
+
+    def __init__(self, detail: str = "Google Calendar rejected the credentials"):
+        super().__init__(detail=detail)
+
+
 class AIServiceError(HTTPException):
     """AI service (Claude) error."""
 

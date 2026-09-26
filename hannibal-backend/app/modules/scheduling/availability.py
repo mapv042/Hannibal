@@ -20,7 +20,7 @@ from app.db.models import (
 from app.modules.scheduling.schemas import AvailableSlot
 from app.modules.google_calendar.service import get_freebusy
 from app.core.constants import MX_TIMEZONE
-from app.core.exceptions import GoogleCalendarError
+from app.core.exceptions import GoogleCalendarAuthError, GoogleCalendarError
 from app.utils.dates import now_mx
 from app.utils.logger import get_logger
 
@@ -135,9 +135,21 @@ async def _collect_busy_ranges(
     # Google Calendar busy periods
     office = await db.get(Office, office_id)
     if office and office.google_calendar_token:
-        busy_periods = await get_freebusy(
-            office_id=office_id, time_min=day_start, time_max=day_end, db=db,
-        )
+        from app.modules.google_calendar import connection
+
+        busy_periods = []
+        if connection.should_skip_google(office_id):
+            logger.info("google_freebusy_skipped_disconnected", office_id=str(office_id))
+        else:
+            try:
+                busy_periods = await get_freebusy(
+                    office_id=office_id, time_min=day_start, time_max=day_end, db=db,
+                )
+            except GoogleCalendarAuthError as e:
+                # Google rejected the credentials: keep scheduling on the
+                # system's own agenda and tell the doctor to reconnect. A
+                # transient failure (timeout, 5xx) still raises below.
+                connection.report_auth_failure(office_id, e)
         for period in busy_periods:
             g_start = datetime.fromisoformat(period["start"].replace("Z", "+00:00")).astimezone(MX_TIMEZONE)
             g_end = datetime.fromisoformat(period["end"].replace("Z", "+00:00")).astimezone(MX_TIMEZONE)

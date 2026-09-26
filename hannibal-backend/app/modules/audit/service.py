@@ -255,8 +255,15 @@ async def verify_appointment_write(
     if office is None:
         return "skipped"
 
+    from app.modules.google_calendar.connection import is_disconnected
+
     divergence = _check_row(appointment, expectation)
-    if divergence is None:
+    if divergence is None and await is_disconnected(redis_client, office.id):
+        # Google rejects this office's credentials; the doctor already got the
+        # daily "reconnect your calendar" notice, and the reconnect backfills
+        # the missing events. One alert per cita would just be noise.
+        logger.info("audit_calendar_skipped_disconnected", appointment_id=str(appointment_id))
+    elif divergence is None:
         divergence = await _check_calendar(
             db, office, appointment, expected_present=action != "cancel"
         )

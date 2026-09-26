@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.google_calendar.auth import get_valid_google_token
 from app.core.constants import MX_TIMEZONE
-from app.core.exceptions import GoogleCalendarError
+from app.core.exceptions import GoogleCalendarAuthError, GoogleCalendarError
 from app.utils.dates import now_mx
 from app.utils.logger import get_logger
 
@@ -64,6 +64,10 @@ async def get_freebusy(
                     headers={"Authorization": f"Bearer {access_token}"},
                 )
 
+            if response.status_code in (401, 403):
+                raise GoogleCalendarAuthError(
+                    f"Google rejected the calendar credentials ({response.status_code})"
+                )
             if response.status_code != 200:
                 logger.error(
                     "google_freebusy_failed",
@@ -239,12 +243,20 @@ async def create_calendar_event(
             event["start"] = {"dateTime": start_time.isoformat(), "timeZone": "America/Mexico_City"}
             event["end"] = {"dateTime": end_time.isoformat(), "timeZone": "America/Mexico_City"}
 
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=15) as client:
+            url = f"https://www.googleapis.com/calendar/v3/calendars/{calendar_id}/events"
             response = await client.post(
-                f"https://www.googleapis.com/calendar/v3/calendars/{calendar_id}/events",
-                json=event,
-                headers={"Authorization": f"Bearer {access_token}"},
+                url, json=event, headers={"Authorization": f"Bearer {access_token}"},
             )
+            if response.status_code == 401:
+                access_token = await get_valid_google_token(office_id, db, force_refresh=True)
+                response = await client.post(
+                    url, json=event, headers={"Authorization": f"Bearer {access_token}"},
+                )
+            if response.status_code in (401, 403):
+                raise GoogleCalendarAuthError(
+                    f"Google rejected the calendar credentials ({response.status_code})"
+                )
 
             if response.status_code not in [200, 201]:
                 logger.error(

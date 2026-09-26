@@ -21,6 +21,7 @@ import redis.asyncio as aioredis
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Appointment, Office
+from app.core.exceptions import GoogleCalendarAuthError
 from app.modules.google_calendar.service import create_calendar_event
 from app.modules.scheduling.availability import (
     OVERRIDABLE_CONFLICTS,
@@ -116,7 +117,9 @@ async def book_appointment(
 
     # Google Calendar event (best-effort: a GCal hiccup must not block the booking)
     google_event_id = None
-    if office.google_calendar_token:
+    from app.modules.google_calendar import connection
+
+    if office.google_calendar_token and not connection.should_skip_google(office.id):
         try:
             google_event_id = await create_calendar_event(
                 office_id=office.id,
@@ -127,6 +130,8 @@ async def book_appointment(
                 db=db,
                 color_id=gcal_color_id,
             )
+        except GoogleCalendarAuthError as e:
+            connection.report_auth_failure(office.id, e)
         except Exception as e:
             logger.error("booking_gcal_failed", office_id=str(office.id), error=str(e))
 

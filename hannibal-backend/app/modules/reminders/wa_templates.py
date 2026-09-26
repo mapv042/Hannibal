@@ -70,6 +70,10 @@ TEMPLATE_DOCTOR_UNCONFIRMED_SUMMARY = "doctor_unconfirmed_summary"
 TEMPLATE_DOCTOR_PATIENT_ARRIVED = "doctor_patient_arrived"
 TEMPLATE_DOCTOR_SYNC_WARNING = "doctor_sync_warning"
 TEMPLATE_DOCTOR_APPOINTMENT_BRIEF = "doctor_appointment_brief"
+# Doctor-facing notice that Google rejected the calendar credentials. Create it
+# in WhatsApp Manager (Utility). Suggested body:
+#   doctor_calendar_disconnected    -> "Tu Google Calendar se desconectó. Sigo agendando con la agenda del sistema, pero no veo los eventos que tengas solo en Google. Reconéctalo aquí: {{detail}}"
+TEMPLATE_DOCTOR_CALENDAR_DISCONNECTED = "doctor_calendar_disconnected"
 
 # Set to False if the templates were created with positional params ({{1}}, {{2}})
 # instead of named params ({{patient_name}}). Named is the modern default and
@@ -241,6 +245,11 @@ def build_doctor_sync_warning_params(
         _param("patient_name", patient_name),
         _param("detail", detail),
     ]
+
+
+def build_doctor_calendar_disconnected_params(detail: str) -> List[Dict[str, str]]:
+    """doctor_calendar_disconnected: detail (where to reconnect)."""
+    return [_param("detail", detail)]
 
 
 def build_doctor_appointment_brief_params(

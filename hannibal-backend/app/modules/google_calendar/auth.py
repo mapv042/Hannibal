@@ -12,7 +12,7 @@ from sqlalchemy import select
 
 from app.config import settings
 from app.db.models import Office
-from app.core.exceptions import GoogleCalendarError
+from app.core.exceptions import GoogleCalendarAuthError, GoogleCalendarError
 from app.utils.dates import real_now
 from app.utils.logger import get_logger
 
@@ -238,7 +238,14 @@ async def refresh_google_token(
                     "token_refresh_failed",
                     status_code=response.status_code,
                     office_id=str(office_id),
+                    response=response.text[:300],
                 )
+                # 400/401 from the token endpoint (invalid_grant: revoked,
+                # expired, password changed) won't fix itself on retry.
+                if response.status_code in (400, 401, 403):
+                    raise GoogleCalendarAuthError(
+                        f"Google rejected the refresh token ({response.status_code})"
+                    )
                 raise GoogleCalendarError("Failed to refresh token")
 
             new_token_data = response.json()
@@ -249,8 +256,18 @@ async def refresh_google_token(
                 real_now() + timedelta(seconds=new_token_data["expires_in"])
             ).isoformat()
 
+            # Persist in a session of its own. Committing the caller's session
+            # here used to commit a conversation turn half-way — from inside a
+            # tool's SAVEPOINT — whenever a token happened to expire mid-turn.
+            from app.db.base import get_async_session_maker
+
+            async with get_async_session_maker()() as own:
+                stored = await own.get(Office, office_id)
+                if stored is not None:
+                    stored.google_calendar_token = new_token_data
+                    await own.commit()
+            # Keep the caller's copy current too (same value; harmless on commit).
             office.google_calendar_token = new_token_data
-            await db.commit()
 
             logger.info(
                 "google_token_refreshed",

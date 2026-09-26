@@ -123,6 +123,21 @@ async def process_oauth_callback(
 
         await exchange_code_for_token(code, office_id, db)
 
+        # A reconnect after Google had rejected the old credentials: clear the
+        # disconnected state and write the citas booked meanwhile to Google.
+        from app.core.celery_dispatch import dispatch
+        from app.modules.google_calendar.connection import mark_reconnected
+        from app.modules.google_calendar.tasks import backfill_calendar_events
+
+        await mark_reconnected(redis_client, office_id)
+        dispatch(
+            backfill_calendar_events,
+            [str(office_id)],
+            countdown=5,
+            event="gcal_backfill_enqueued",
+            office_id=str(office_id),
+        )
+
         return RedirectResponse(url=f"{frontend_url}{return_path}?gcal=success")
 
     except Exception as e:
