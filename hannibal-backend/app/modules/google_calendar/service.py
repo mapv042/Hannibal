@@ -47,12 +47,22 @@ async def get_freebusy(
             "items": [{"id": calendar_id}],
         }
 
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=15) as client:
             response = await client.post(
                 "https://www.googleapis.com/calendar/v3/freeBusy",
                 json=payload,
                 headers={"Authorization": f"Bearer {access_token}"},
             )
+            if response.status_code == 401:
+                # The token we believed valid isn't (revoked, or its stored
+                # expiry was wrong): get a fresh one once before giving up.
+                logger.warning("google_freebusy_401_refreshing", office_id=str(office_id))
+                access_token = await get_valid_google_token(office_id, db, force_refresh=True)
+                response = await client.post(
+                    "https://www.googleapis.com/calendar/v3/freeBusy",
+                    json=payload,
+                    headers={"Authorization": f"Bearer {access_token}"},
+                )
 
             if response.status_code != 200:
                 logger.error(

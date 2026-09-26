@@ -17,7 +17,7 @@ from app.core.task_runner import run_task
 from app.db.base import get_async_session_maker
 from app.db.models import Office
 from app.modules.google_calendar.watch import build_webhook_url, renew_watch_channel
-from app.utils.dates import now_mx
+from app.utils.dates import real_now
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -37,7 +37,7 @@ def _log_exception(task_name: str, e: Exception) -> None:
 
 async def _renew_google_watches_async() -> None:
     webhook_url = build_webhook_url()
-    cutoff = now_mx() + timedelta(days=RENEWAL_BUFFER_DAYS)
+    cutoff = real_now() + timedelta(days=RENEWAL_BUFFER_DAYS)
     renewed = failed = 0
 
     async with get_async_session_maker()() as db:

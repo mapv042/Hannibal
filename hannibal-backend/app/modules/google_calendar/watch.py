@@ -13,7 +13,7 @@ from app.config import settings
 from app.db.models import Office
 from app.modules.google_calendar.auth import get_valid_google_token
 from app.core.exceptions import GoogleCalendarError
-from app.utils.dates import now_mx
+from app.utils.dates import real_now
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -56,7 +56,7 @@ async def create_watch_channel(
         channel_id = str(uuid.uuid4())
         # Aware datetime: .timestamp() on a naive datetime would assume local
         # time and send Google an expiration offset by the server's UTC offset.
-        expiration = int((now_mx() + timedelta(days=29)).timestamp() * 1000)
+        expiration = int((real_now() + timedelta(days=29)).timestamp() * 1000)
 
         watch_body = {
             "id": channel_id,
@@ -88,7 +88,7 @@ async def create_watch_channel(
             # first push triggers a full incremental sync.
             office.google_watch_channel_id = channel_id
             office.google_watch_resource_id = resource_id
-            office.google_watch_expiry = now_mx() + timedelta(days=29)
+            office.google_watch_expiry = real_now() + timedelta(days=29)
             office.google_sync_token = None
 
             await db.commit()

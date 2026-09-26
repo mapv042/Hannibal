@@ -13,7 +13,7 @@ from sqlalchemy import select
 from app.config import settings
 from app.db.models import Office
 from app.core.exceptions import GoogleCalendarError
-from app.utils.dates import now_mx
+from app.utils.dates import real_now
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -163,7 +163,7 @@ async def exchange_code_for_token(
             # Add expiry time
             if "expires_in" in token_data:
                 token_data["expires_at"] = (
-                    now_mx() + timedelta(seconds=token_data["expires_in"])
+                    real_now() + timedelta(seconds=token_data["expires_in"])
                 ).isoformat()
 
             # Store token in office (encrypted at rest by the EncryptedJSON type)
@@ -246,7 +246,7 @@ async def refresh_google_token(
                 refresh_token  # Preserve refresh token
             )
             new_token_data["expires_at"] = (
-                now_mx() + timedelta(seconds=new_token_data["expires_in"])
+                real_now() + timedelta(seconds=new_token_data["expires_in"])
             ).isoformat()
 
             office.google_calendar_token = new_token_data
@@ -318,9 +318,15 @@ async def revoke_google_token(token_data: Optional[dict]) -> bool:
         return False
 
 
+# Google access tokens live one hour. A stored expiry further out than this
+# can't be real (it was written under a moved simulator clock) — refresh.
+_MAX_PLAUSIBLE_TOKEN_LIFETIME_HOURS = 2
+
+
 async def get_valid_google_token(
     office_id: UUID,
     db: AsyncSession,
+    force_refresh: bool = False,
 ) -> str:
     """
     Get a valid Google access token, refreshing if necessary.
@@ -352,9 +358,14 @@ async def get_valid_google_token(
         # normalize them to UTC so the comparison never mixes naive and aware.
         if expires_at.tzinfo is None:
             expires_at = expires_at.replace(tzinfo=timezone.utc)
-        if now_mx() >= expires_at - timedelta(minutes=5):
-            # Token expired, refresh it
+        now = real_now()
+        expired = now >= expires_at - timedelta(minutes=5)
+        implausible = expires_at - now > timedelta(hours=_MAX_PLAUSIBLE_TOKEN_LIFETIME_HOURS)
+        if expired or implausible or force_refresh:
             new_token = await refresh_google_token(office_id, db)
             return new_token.get("access_token", access_token)
+    elif force_refresh:
+        new_token = await refresh_google_token(office_id, db)
+        return new_token.get("access_token", access_token)
 
     return access_token

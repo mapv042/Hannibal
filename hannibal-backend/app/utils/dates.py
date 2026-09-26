@@ -115,6 +115,21 @@ def now_mx() -> datetime:
     return datetime.now(tz=MX_TZ) + clock_offset()
 
 
+def real_now() -> datetime:
+    """The wall clock, ignoring the conversation simulator's offset (UTC).
+
+    Only for expiries owned by an external service — a Google access token,
+    a Google watch channel. Those run on real time whatever the simulator says:
+    a token refreshed while the simulated clock stood days ahead was stored as
+    valid "until next Monday", Google expired it an hour later, and after the
+    clock reset the app kept sending it (401) because by its own clock it
+    hadn't expired. Everything about the practice's own timeline uses now_mx().
+    """
+    from datetime import timezone
+
+    return datetime.now(tz=timezone.utc)
+
+
 def to_mx(dt: datetime) -> datetime:
     """
     Convert any datetime to Mexico City timezone.

@@ -201,6 +201,7 @@ npm run dev
 - DB engine is **lazy-initialized** — import `Base` freely, engine only created when `get_engine()` is called
 - Use `settings.async_database_url` (auto-converts `postgresql://` → `postgresql+asyncpg://`)
 - Timezone: always `America/Mexico_City` — use `MX_TIMEZONE` from constants or `now_mx()` from utils
+- `now_mx()` follows the conversation simulator's clock. **Expiries owned by an external service** (Google access tokens, Google watch channels) must use `real_now()` from `app/utils/dates.py` instead: a token refreshed while the simulated clock stood days ahead was stored as valid for days, and Google's 401s followed
 
 ## Important architectural decisions
 

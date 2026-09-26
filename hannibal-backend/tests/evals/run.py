@@ -121,9 +121,14 @@ async def run_scenario(sim: SimClient, sc: Scenario, spec: ModelSpec) -> dict:
     traces = [t for t in await sim.traces(200) if t.get("channel") == sc.channel]
     final_state = await sim.state()
     gcal_events = None
+    gcal_failure = None
     if gcal:
         week_end = (now + timedelta(days=13)).date().isoformat()
-        gcal_events = await sim.gcal_events(now.date().isoformat(), week_end)
+        try:
+            gcal_events = await sim.gcal_events(now.date().isoformat(), week_end)
+        except Exception as e:
+            # Keep evaluating everything else; the calendar check itself fails.
+            gcal_failure = f"couldn't read Google Calendar ({e.__class__.__name__}) — check the simulator's calendar connection"
     result = Result(
         monday=now.date(),
         appointments=await sim.appointments(),
@@ -139,6 +144,8 @@ async def run_scenario(sim: SimClient, sc: Scenario, spec: ModelSpec) -> dict:
         channel=sc.channel,
     )
     failures = invariants(result, allow_overlap=sc.allows_overlap) + sc.check(result)
+    if gcal_failure:
+        failures.append(gcal_failure)
     if sc.channel == "doctor":
         # No model-written text reaches a patient without the doctor's OK
         # (the draft → confirm_send_messages gate). The urgency resolution
