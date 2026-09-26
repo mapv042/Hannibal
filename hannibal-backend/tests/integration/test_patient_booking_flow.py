@@ -404,3 +404,25 @@ async def test_doctor_booking_is_identified_by_phone_and_idempotent(env):
         assert len(patients) == 1
     appts = [a for a in await env["appointments"]() if a.status == "scheduled"]
     assert len(appts) == 1
+
+
+async def test_doctor_block_is_idempotent(env):
+    from app.modules.ai.doctor_tools import DoctorToolContext, execute_doctor_tool
+    from app.modules.conversation.state import ConversationState
+    from app.db.models import TimeBlock
+
+    tue = next_weekday(1).isoformat()
+    args = {"start_date": tue, "start_time": "16:00", "end_time": "19:00", "reason": "Junta"}
+    async with get_async_session_maker()() as db:
+        office = await db.get(type(env["office"]), env["office"].id)
+        ctx = DoctorToolContext(db=db, office=office, redis_client=env["redis"],
+                                meta_client=None, state=ConversationState())
+        first = await execute_doctor_tool("block_time", args, ctx)
+        again = await execute_doctor_tool("block_time", {**args, "reason": "Junta en el hospital"}, ctx)
+        await db.commit()
+        blocks = (await db.execute(
+            select(TimeBlock).where(TimeBlock.office_id == office.id, TimeBlock.origin == "manual")
+        )).scalars().all()
+    assert first.get("success") and "4:00 PM a 7:00 PM" in first["formatted"], first
+    assert again.get("already_blocked") is True, again
+    assert len(blocks) == 1

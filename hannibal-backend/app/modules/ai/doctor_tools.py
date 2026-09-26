@@ -594,11 +594,11 @@ def _format_block(block: TimeBlock) -> str:
     start = localize_mx(block.start_date)
     end = localize_mx(block.end_date)
     if start.date() != end.date():
-        return f"Del {start.strftime('%d/%m/%Y')} al {end.strftime('%d/%m/%Y')}"
-    day = f"{DAYS_ES[start.date().weekday()]} {start.strftime('%d/%m/%Y')}"
+        return f"Del {long_date_label(start.date())} al {long_date_label(end.date())}"
+    day = long_date_label(start.date())
     if block.is_all_day:
         return f"{day} (todo el día)"
-    return f"{day} de {start.strftime('%H:%M')} a {end.strftime('%H:%M')}"
+    return f"{day} de {time_label(start)} a {time_label(end)}"
 
 
 async def _release_slot(ctx: DoctorToolContext, start_dt: datetime) -> None:
@@ -866,6 +866,25 @@ async def _handle_block_time(args: dict, ctx: DoctorToolContext) -> dict:
     start_dt = datetime.combine(start_date, s_time).replace(tzinfo=MX_TIMEZONE)
     end_dt = datetime.combine(end_date, e_time).replace(tzinfo=MX_TIMEZONE)
 
+    # Blocking what is already blocked is not a new block. A repeated
+    # instruction ("asegúrate de que nadie agende") used to add an identical
+    # second block — and a second event in the doctor's Google Calendar.
+    covering = (await ctx.db.execute(
+        select(TimeBlock).where(
+            (TimeBlock.office_id == ctx.office.id)
+            & (TimeBlock.start_date <= start_dt)
+            & (TimeBlock.end_date >= end_dt)
+        ).limit(1)
+    )).scalars().first()
+    if covering is not None:
+        label = _format_block(covering)
+        return {
+            "already_blocked": True,
+            "block_id": str(covering.id),
+            "formatted": label,
+            "summary": f"Ya estaba bloqueado: {label}",
+        }
+
     # Check for appointments inside the range — the doctor decides what to do with them.
     # We never block silently over existing citas.
     confirm_overlap = bool(args.get("confirm_overlap", False))
@@ -950,13 +969,7 @@ async def _handle_block_time(args: dict, ctx: DoctorToolContext) -> dict:
     ]
     await _invalidate_avail(ctx, *blocked_dates)
 
-    # Format response
-    if start_date == end_date and start_time_str:
-        formatted = f"{DAYS_ES[start_date.weekday()]} {start_date.strftime('%d/%m/%Y')} de {start_time_str} a {end_time_str}"
-    elif start_date == end_date:
-        formatted = f"{DAYS_ES[start_date.weekday()]} {start_date.strftime('%d/%m/%Y')} (todo el día)"
-    else:
-        formatted = f"Del {start_date.strftime('%d/%m/%Y')} al {end_date.strftime('%d/%m/%Y')}"
+    formatted = _format_block(block)
 
     logger.info("doctor_blocked_time", block_id=str(block.id), reason=reason)
 
@@ -964,6 +977,7 @@ async def _handle_block_time(args: dict, ctx: DoctorToolContext) -> dict:
         "success": True,
         "block_id": str(block.id),
         "formatted": formatted,
+        "summary": f"Bloqueado: {formatted}",
         "reason": reason,
     }
 
