@@ -20,6 +20,7 @@ from app.modules.ai.tool_helpers import (
     format_appointment_dt,
     localize_mx,
     offered_slots_from,
+    resolve_appointment_duration,
     resolve_requested_days,
 )
 from app.modules.conversation.state import ConversationState
@@ -46,7 +47,7 @@ from app.modules.reminders.wa_templates import (
 )
 from app.utils.dates import long_date_label, now_mx, time_label
 from app.utils.logger import get_logger
-from app.utils.phone import display_or_raw, normalize_phone, to_whatsapp_id
+from app.utils.phone import display_or_raw, normalize_phone, to_whatsapp_id, phone_match_variants
 
 logger = get_logger(__name__)
 
@@ -1517,11 +1518,28 @@ async def _handle_create_appointment(args: dict, ctx: DoctorToolContext) -> dict
     except ValueError:
         return {"error": f"Fecha u hora invalida: {date_str} {time_str}"}
 
+    # The phone is the strongest identity: a patient already registered under
+    # it IS this patient, whatever variant of the name the doctor typed. Looking
+    # up by name alone created "Pedro Ramírez López" next to "Pedro Ramírez",
+    # same phone, and booked the same person twice.
+    phone_match = None
+    if patient_phone:
+        try:
+            variants = phone_match_variants(patient_phone)
+        except ValueError:
+            return {"error": f"El teléfono '{patient_phone}' no es válido. Usa 10 dígitos."}
+        phone_match = (await ctx.db.execute(
+            select(Patient).where(
+                (Patient.office_id == ctx.office.id)
+                & (Patient.whatsapp_id.in_(variants) | Patient.phone.in_(variants))
+            ).limit(1)
+        )).scalars().first()
+
     # Find or create patient by name. create_new_patient skips the lookup when
     # the doctor confirmed it's a different, new patient with a similar name.
     create_new_patient = bool(args.get("create_new_patient", False))
-    patients = []
-    if not create_new_patient:
+    patients = [phone_match] if phone_match is not None else []
+    if phone_match is None and not create_new_patient:
         stmt = select(Patient).where(
             (Patient.office_id == ctx.office.id)
             & (Patient.name.ilike(f"%{patient_name}%"))
@@ -1530,18 +1548,22 @@ async def _handle_create_appointment(args: dict, ctx: DoctorToolContext) -> dict
         patients = result.scalars().all()
 
     if len(patients) > 1:
-        names = [p.name for p in patients]
-        return {
-            "error": "Se encontraron multiples pacientes. Se mas especifico.",
-            "matches": names,
-        }
+        exact = [p for p in patients if (p.name or "").strip().lower() == patient_name.lower()]
+        if len(exact) == 1:
+            patients = exact
+        else:
+            return {
+                "error": "Se encontraron varios pacientes con ese nombre. Pídele al doctor su teléfono.",
+                "matches": [p.name for p in patients],
+            }
 
     if patients:
         patient = patients[0]
         registered_name = (patient.name or "").strip()
         # A single but non-exact match must be confirmed by the doctor — a
-        # partial ilike can land on the wrong patient ("Ana" → "Mariana").
-        if registered_name.lower() != patient_name.lower():
+        # partial ilike can land on the wrong patient ("Ana" → "Mariana"). A
+        # phone match needs no confirmation: the number identifies them.
+        if phone_match is None and registered_name.lower() != patient_name.lower():
             return {
                 "needs_confirmation": True,
                 "matched_patient": registered_name,
@@ -1582,20 +1604,30 @@ async def _handle_create_appointment(args: dict, ctx: DoctorToolContext) -> dict
         ctx.db.add(patient)
         await ctx.db.flush()
 
-    # Determine duration based on patient type (new vs returning)
-    existing_appt = await ctx.db.execute(
+    # Asking again for a cita that already exists is not a new cita. Without
+    # this, a repeated instruction ("agéndalo", "sí, confírmalo") booked the
+    # same patient twice at the same time.
+    existing_same_slot = (await ctx.db.execute(
         select(Appointment).where(
             (Appointment.office_id == ctx.office.id)
             & (Appointment.patient_id == patient.id)
-            & (Appointment.status.in_(["completed", "confirmed", "scheduled"]))
+            & (Appointment.start_datetime == start_dt)
+            & (Appointment.status.in_(["scheduled", "confirmed"]))
         ).limit(1)
+    )).scalars().first()
+    if existing_same_slot is not None:
+        return {
+            "already_booked": True,
+            "appointment_id": str(existing_same_slot.id),
+            "patient_name": patient.name,
+            "label": format_appointment_dt(start_dt),
+            "summary": f"{patient.name} ya estaba agendado el {format_appointment_dt(start_dt)}",
+        }
+
+    # Same definition of "first visit or follow-up" as the patient flow.
+    duration_min, appt_type = await resolve_appointment_duration(
+        ctx.db, ctx.office, patient.id
     )
-    is_returning = existing_appt.scalars().first() is not None
-    duration_min = (
-        ctx.office.returning_patient_duration_min if is_returning
-        else ctx.office.new_patient_duration_min
-    )
-    appt_type = "follow_up" if is_returning else "first_visit"
 
     outcome = await book_appointment(
         ctx.db,

@@ -371,3 +371,36 @@ async def test_reschedule_accepts_the_grid_the_patient_was_offered(env):
         lambda results: say("ok" if results[0].get("prepared") else f"rechazado: {results[0]}"),
     )
     assert await turn("muévela a las 4:50") == "ok"
+
+
+async def test_doctor_booking_is_identified_by_phone_and_idempotent(env):
+    """Same phone = same patient, whatever the name variant; the same cita
+    asked for twice is booked once."""
+    from app.modules.ai.doctor_tools import DoctorToolContext, execute_doctor_tool
+    from app.modules.conversation.state import ConversationState
+    from app.db.models import Patient
+
+    wed = next_weekday(2).isoformat()
+    async with get_async_session_maker()() as db:
+        office = await db.get(type(env["office"]), env["office"].id)
+        ctx = DoctorToolContext(db=db, office=office, redis_client=env["redis"],
+                                meta_client=None, state=ConversationState())
+        first = await execute_doctor_tool("create_appointment", {
+            "patient_name": "Pedro Ramírez", "date": wed, "time": "11:30",
+            "reason": "rodilla", "patient_phone": "5587654321",
+        }, ctx)
+        assert first.get("success") or first.get("appointment_id"), first
+        # A variant of the name, same phone, same slot: nothing new is created.
+        again = await execute_doctor_tool("create_appointment", {
+            "patient_name": "Pedro Ramírez López", "date": wed, "time": "11:30",
+            "reason": "rodilla", "patient_phone": "55 8765 4321", "create_new_patient": True,
+        }, ctx)
+        assert again.get("already_booked") is True, again
+        await db.commit()
+
+        patients = (await db.execute(
+            select(Patient).where(Patient.office_id == office.id, Patient.phone.like("%5587654321"))
+        )).scalars().all()
+        assert len(patients) == 1
+    appts = [a for a in await env["appointments"]() if a.status == "scheduled"]
+    assert len(appts) == 1

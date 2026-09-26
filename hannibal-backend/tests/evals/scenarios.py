@@ -776,12 +776,13 @@ def _check_doc_new_patient(r: Result) -> list[str]:
 
 def _check_doc_overbook(r: Result) -> list[str]:
     wed9 = f"{r.day(2).isoformat()}T09:00"
-    pedro = [a for a in r.active() if (a["patient_name"] or "").startswith("Pedro") and a["start"] == wed9]
+    # Identified by phone: two rows for the same number is the duplicate bug.
+    pedro = [a for a in _active_for(r, "5215587654321") if a["start"] == wed9]
     juan = _by_id(r, r.fixtures["juan"])
     creates = [c for t in r.traces for c in (t.get("tool_calls") or []) if c["name"] == "create_appointment"]
     asked_first = any("error" in str(c.get("result")) for c in creates)
     return (
-        expect(len(pedro) == 1, "Pedro wasn't booked at 9:00")
+        expect(len(pedro) == 1, f"expected exactly one 9:00 cita for Pedro's phone, got {len(pedro)}")
         + expect(juan is not None and juan["status"] == "scheduled", "Juan's cita was touched")
         + expect(asked_first, "overbooked without surfacing the conflict first")
     )
