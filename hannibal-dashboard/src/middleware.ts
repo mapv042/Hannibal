@@ -59,6 +59,8 @@ export async function middleware(request: NextRequest) {
 
 export const config = {
   matcher: [
-    '/((?!api|_next/static|_next/image|favicon.ico).*)',
+    // The manifest and icons are fetched without a session (iOS requests the
+    // apple-touch-icon on its own); redirecting them to /login breaks install.
+    '/((?!api|_next/static|_next/image|favicon.ico|manifest.webmanifest|icon|apple-icon).*)',
   ],
 }

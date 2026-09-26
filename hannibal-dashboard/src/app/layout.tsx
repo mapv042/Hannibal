@@ -1,4 +1,4 @@
-import type { Metadata } from 'next'
+import type { Metadata, Viewport } from 'next'
 import { Inter, Newsreader, JetBrains_Mono } from 'next/font/google'
 import './globals.css'
 
@@ -46,6 +46,20 @@ export const metadata: Metadata = {
     description: 'Control panel to manage your WhatsApp assistant',
     type: 'website',
   },
+  // Home-screen install on iOS: opens standalone under the app's name. The
+  // "default" status bar keeps the page below it, so no safe-area padding is
+  // needed (black-translucent would draw the page underneath the clock).
+  appleWebApp: {
+    capable: true,
+    title: 'Argos',
+    statusBarStyle: 'default',
+  },
+}
+
+export const viewport: Viewport = {
+  width: 'device-width',
+  initialScale: 1,
+  themeColor: '#F7F9FC',
 }
 
 export default function RootLayout({
@@ -60,7 +74,6 @@ export default function RootLayout({
     >
       <head>
         <meta charSet="utf-8" />
-        <meta name="viewport" content="width=device-width, initial-scale=1" />
         <meta name="facebook-domain-verification" content="4bcg78qx5hyxjvhml2lf3gl9qm4s2e" />
       </head>
       <body>{children}</body>
