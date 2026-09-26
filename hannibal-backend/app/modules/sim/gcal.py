@@ -26,7 +26,7 @@ import redis.asyncio as aioredis
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Appointment, GoogleCalendarEvent, Office
+from app.db.models import Appointment, GoogleCalendarEvent, Office, TimeBlock
 from app.modules.google_calendar.auth import get_valid_google_token
 from app.modules.google_calendar.service import create_calendar_event, delete_calendar_event
 from app.utils.logger import get_logger
@@ -49,9 +49,15 @@ APP_EVENT_MARKERS = (
     "Agendada desde el dashboard",
     "Cita urgente aprobada por el doctor",
     "Agendada mientras Google Calendar estaba desconectado",
+    "Bloqueo creado desde ArgosAI",
     "Fixture del simulador",
     FIXTURE_MARKER,
 )
+
+
+# Titles of block events the app created (before and after they were
+# translated) — for purging leftovers that predate the description marker.
+APP_BLOCK_TITLE_PREFIXES = ("Blocked - ", "Bloqueado: ")
 
 
 def calendar_connected(office: Office) -> bool:
@@ -72,6 +78,18 @@ async def _event_ids_in_db(db: AsyncSession, office_id) -> set[str]:
             select(GoogleCalendarEvent.google_event_id).where(
                 (GoogleCalendarEvent.office_id == office_id)
                 & (GoogleCalendarEvent.appointment_id.is_not(None))
+            )
+        )).scalars().all()
+    )
+    # Blocks made in the app (the doctor's "bloquea el martes") are mirrored to
+    # Google too. Only manual ones: a google_calendar-origin block IS an event
+    # someone put in Google, and isn't ours to delete.
+    ids |= set(
+        (await db.execute(
+            select(TimeBlock.google_event_id).where(
+                (TimeBlock.office_id == office_id)
+                & (TimeBlock.origin == "manual")
+                & (TimeBlock.google_event_id.is_not(None))
             )
         )).scalars().all()
     )
@@ -149,7 +167,10 @@ async def purge_marked_events(
     deleted = kept = 0
     for event in await list_events(db, office, time_min, time_max):
         description = event.get("description") or ""
-        if any(marker in description for marker in APP_EVENT_MARKERS):
+        summary = event.get("summary") or ""
+        if any(marker in description for marker in APP_EVENT_MARKERS) or summary.startswith(
+            APP_BLOCK_TITLE_PREFIXES
+        ):
             try:
                 await delete_calendar_event(office.id, event["id"], db)
                 deleted += 1

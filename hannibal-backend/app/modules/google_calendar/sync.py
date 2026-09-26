@@ -25,6 +25,12 @@ from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
+# How a block made in ArgosAI shows up on the doctor's calendar (in Spanish,
+# like everything the doctor reads). The description doubles as the marker the
+# simulator's cleanup recognises.
+BLOCK_TITLE_PREFIX = "Bloqueado: "
+BLOCK_EVENT_DESCRIPTION = "Bloqueo creado desde ArgosAI"
+
 
 def _parse_gcal_datetime(node: dict) -> tuple[datetime, bool]:
     """Parse a Google event start/end node into a tz-aware MX datetime.
@@ -299,7 +305,7 @@ async def sync_time_block(
             await update_calendar_event(
                 office_id=office_id,
                 google_event_id=google_event.google_event_id,
-                title=f"Blocked - {time_block.reason or 'Not specified'}",
+                title=f"{BLOCK_TITLE_PREFIX}{time_block.reason or 'Sin motivo'}",
                 start_time=time_block.start_date,
                 end_time=time_block.end_date,
                 db=db,
@@ -315,10 +321,10 @@ async def sync_time_block(
             if time_block.origin == "manual":
                 google_event_id = await create_calendar_event(
                     office_id=office_id,
-                    title=f"Blocked - {time_block.reason or 'Not specified'}",
+                    title=f"{BLOCK_TITLE_PREFIX}{time_block.reason or 'Sin motivo'}",
                     start_time=time_block.start_date,
                     end_time=time_block.end_date,
-                    description=f"Type: {time_block.reason}",
+                    description=BLOCK_EVENT_DESCRIPTION,
                     db=db,
                     all_day=time_block.is_all_day,
                 )
@@ -326,7 +332,7 @@ async def sync_time_block(
                 google_event = GoogleCalendarEvent(
                     office_id=office_id,
                     google_event_id=google_event_id,
-                    title=f"Blocked - {time_block.reason or 'Not specified'}",
+                    title=f"{BLOCK_TITLE_PREFIX}{time_block.reason or 'Sin motivo'}",
                     start_date=time_block.start_date,
                     end_date=time_block.end_date,
                     is_block=True,

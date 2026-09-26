@@ -59,6 +59,8 @@ async def test_purge_only_touches_events_the_app_created(monkeypatch):
         {"id": "c", "description": "Comida con mi familia"},
         {"id": "d"},  # no description at all: a person made it
         {"id": "e", "description": sim_gcal.FIXTURE_MARKER},
+        {"id": "f", "summary": "Blocked - Junta en el hospital", "description": "Type: Junta"},
+        {"id": "g", "summary": "Bloqueado: Congreso", "description": "Bloqueo creado desde ArgosAI"},
     ]
     deleted = []
 
@@ -73,5 +75,5 @@ async def test_purge_only_touches_events_the_app_created(monkeypatch):
     out = await sim_gcal.purge_marked_events(
         None, SimpleNamespace(id="o"), datetime(2026, 9, 1), datetime(2026, 10, 1)
     )
-    assert sorted(deleted) == ["a", "b", "e"]
-    assert out == {"deleted": 3, "kept_not_ours": 2}
+    assert sorted(deleted) == ["a", "b", "e", "f", "g"]
+    assert out == {"deleted": 5, "kept_not_ours": 2}
