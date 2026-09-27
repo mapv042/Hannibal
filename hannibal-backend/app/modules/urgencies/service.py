@@ -341,6 +341,7 @@ async def _create_urgent_appointment(
 
     appointment = Appointment(
         id=uuid.uuid4(),
+        created_at=now_mx(),  # app clock, as the reminder sweep compares against it
         office_id=office.id,
         patient_id=patient.id,
         start_datetime=start_dt,

@@ -33,7 +33,7 @@ from app.core.constants import (
 from app.core.task_runner import run_task
 from app.db.base import get_async_session_maker
 from app.db.models import Appointment, Office, Patient, Conversation, Message
-from app.modules.reminders.scheduler import due_at, is_still_worth_sending
+from app.modules.reminders.scheduler import due_at, is_still_worth_sending, was_due_after_booking
 from app.modules.reminders.templates import (
     reminder_week_before,
     reminder_6h,
@@ -774,6 +774,14 @@ async def _dispatch_due_reminders_async() -> list[dict]:
 
                 due = due_at(reminder_type, offset_minutes, start_local)
                 if due is None or due > now:
+                    continue
+
+                booked_at = (
+                    appointment.created_at.astimezone(MX_TZ)
+                    if appointment.created_at is not None
+                    else None
+                )
+                if not was_due_after_booking(due, booked_at):
                     continue
 
                 if not is_still_worth_sending(

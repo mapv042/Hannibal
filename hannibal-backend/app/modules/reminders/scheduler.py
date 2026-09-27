@@ -91,6 +91,20 @@ def due_at(
     return clamp_to_sending_window(run_at, start_local)
 
 
+def was_due_after_booking(due: datetime, booked_at: datetime | None) -> bool:
+    """Whether a reminder's moment came after the appointment was booked.
+
+    The sweep sends reminders that are merely late (downtime, a slow worker).
+    It must not send the ones whose moment passed before the appointment even
+    existed: booking a cita for the day after tomorrow used to get the
+    "falta una semana" reminder seconds later, and a same-day booking got the
+    day-before confirmation request right after the patient had confirmed.
+    """
+    if booked_at is None:
+        return True
+    return due >= booked_at
+
+
 def is_still_worth_sending(
     reminder_type: str,
     offset_minutes: int,

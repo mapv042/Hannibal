@@ -118,6 +118,9 @@ async def run_scenario(sim: SimClient, sc: Scenario, spec: ModelSpec) -> dict:
         await sim.send(msg, **send_kw)
         await collect()
 
+    if sc.after:
+        await sc.after(sim, now.date())
+
     traces = [t for t in await sim.traces(200) if t.get("channel") == sc.channel]
     final_state = await sim.state()
     gcal_events = None

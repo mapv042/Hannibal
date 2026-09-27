@@ -490,3 +490,47 @@ async def test_google_rejection_keeps_scheduling_and_reconnect_backfills(env, mo
         result = await connection.backfill_missing_events(db, office_id)
     assert result == {"created": 1, "failed": 0}
     assert (await env["appointments"]())[0].google_event_id == "evt-backfilled"
+
+
+async def test_sweep_skips_reminders_whose_moment_passed_before_booking(env, monkeypatch):
+    """Booked 2 days ahead: no "falta una semana" right after booking. Booked
+    long ago but the sweep ran late: the overdue reminder still goes out."""
+    from datetime import datetime
+    from app.core.constants import MX_TIMEZONE
+    from app.db.models import Patient
+    from app.modules.reminders import tasks as reminder_tasks
+    from app.modules.scheduling.booking import book_appointment
+
+    dispatched = []
+    monkeypatch.setattr(
+        reminder_tasks, "dispatch",
+        lambda task, args, **kw: dispatched.append((kw.get("reminder_type"), args[0])) or True,
+    )
+
+    in_two_days = (now_mx() + timedelta(days=2)).date()
+    async with get_async_session_maker()() as db:
+        office = await db.get(type(env["office"]), env["office"].id)
+        patient = (await db.execute(
+            select(Patient).where(Patient.office_id == office.id, Patient.whatsapp_id == PATIENT)
+        )).scalars().first()
+
+        async def book(day, hour):
+            outcome = await book_appointment(
+                db, office, patient_id=patient.id,
+                start_dt=datetime.combine(day, datetime.min.time(), tzinfo=MX_TIMEZONE).replace(hour=hour),
+                duration_min=30, reason="Chequeo", appt_type="follow_up",
+                gcal_title="x", gcal_description="x",
+            )
+            assert outcome.appointment is not None, outcome.error
+            return outcome.appointment
+
+        fresh = await book(in_two_days, 11)          # booked just now
+        old = await book(in_two_days, 16)            # pretend: booked 20 days ago
+        old.created_at = now_mx() - timedelta(days=20)
+        await db.commit()
+        fresh_id, old_id = str(fresh.id), str(old.id)
+
+    await reminder_tasks._dispatch_due_reminders_async()
+
+    assert ("week_before", fresh_id) not in dispatched
+    assert ("week_before", old_id) in dispatched

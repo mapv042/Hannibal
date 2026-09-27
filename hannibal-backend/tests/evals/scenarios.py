@@ -95,6 +95,9 @@ class Scenario:
     requires_gcal: bool = False
     # Who talks to the assistant: "patient", or "doctor" (the owner's number).
     channel: str = "patient"
+    # Runs after the conversation, before the checks (e.g. move the clock so
+    # the reminder sweep fires). Receives (sim, monday).
+    after: Optional[Callable[..., Awaitable[None]]] = None
     # Doctor scenarios that end in a deliberate overbook.
     allows_overlap: bool = False
     # Whether escalating to the doctor is an acceptable outcome here. Everywhere
@@ -442,6 +445,27 @@ def _tool_result_text(r: Result) -> str:
     return " ".join(str(c.get("result")) for t in r.traces for c in (t.get("tool_calls") or []))
 
 
+async def _ten_minutes_later(sim, monday: date) -> None:
+    # Long enough for the 5-minute reminder sweep to run at least once.
+    await sim.advance(10 * 60)
+
+
+_REMINDER_RE = re.compile(r"recordamos|recordatorio|falta una semana|confirma tu asistencia", re.I)
+
+
+def _check_no_stale_reminder(r: Result) -> list[str]:
+    wed = r.active_on(2)
+    sent_after = [
+        e for e in r.outbox
+        if e.get("to") == DEFAULT_PATIENT
+        and (e.get("kind") == "template" or _REMINDER_RE.search(e.get("body") or ""))
+    ]
+    return (
+        expect(len(wed) == 1, "expected the appointment on Wednesday")
+        + expect(not sent_after, f"a reminder went out right after booking: {sent_after[:1]}")
+    )
+
+
 def _check_no_duplicate_booking(r: Result) -> list[str]:
     return expect(len(r.active()) == 1, f"expected exactly 1 appointment, got {len(r.active())}")
 
@@ -644,6 +668,15 @@ SCENARIOS: list[Scenario] = [
         persona=JUAN + "\nSi te dan opciones, elige la primera.",
         goal="Agendar ese día por la mañana.",
         check=_check_day_number,
+    ),
+    Scenario(
+        name="no_stale_reminder_after_booking",
+        tags=["reminders"],
+        opening=["Quiero una cita para pasado mañana a las 9 de la mañana"],
+        persona=JUAN + "\nSi te dan opciones, elige la de las 9:00 o la más cercana.",
+        goal="Agendar pasado mañana en la mañana.",
+        check=_check_no_stale_reminder,
+        after=_ten_minutes_later,
     ),
     Scenario(
         name="double_yes_books_once",

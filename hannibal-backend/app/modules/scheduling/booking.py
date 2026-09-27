@@ -29,6 +29,7 @@ from app.modules.scheduling.availability import (
     invalidate_availability_cache,
     lock_slot_temporarily,
 )
+from app.utils.dates import now_mx
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -137,6 +138,9 @@ async def book_appointment(
 
     appointment = Appointment(
         id=uuid.uuid4(),
+        # On the app's clock, like the reminder sweep that compares against it
+        # (the DB default would use real time even under the simulator).
+        created_at=now_mx(),
         office_id=office.id,
         patient_id=patient_id,
         start_datetime=start_dt,
