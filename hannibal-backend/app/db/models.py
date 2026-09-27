@@ -246,6 +246,11 @@ class Office(Base):
         foreign_keys="ReminderRule.office_id",
     )
 
+    @property
+    def google_calendar_connected(self) -> bool:
+        """What the dashboard may know about the calendar link: never the token."""
+        return bool(self.google_calendar_token)
+
     def __repr__(self) -> str:
         return f"<Office(id={self.id}, name={self.name}, user_id={self.user_id})>"
 

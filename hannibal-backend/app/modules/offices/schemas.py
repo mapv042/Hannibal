@@ -217,6 +217,10 @@ class OfficeResponse(BaseModel):
     notify_unconfirmed: bool
     notify_arrival: bool
     notify_reschedule: bool
+    # Derived from the (encrypted) OAuth token, which is never returned. The
+    # dashboard used to test `google_calendar_token` — a field this response
+    # never had — so it showed "Conecta tu Google Calendar" to connected offices.
+    google_calendar_connected: bool = False
     plan: str
 
     class Config:

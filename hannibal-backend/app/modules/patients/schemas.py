@@ -55,9 +55,12 @@ class PatientResponse(BaseModel):
     phone: str
     whatsapp_id: str
     email: Optional[str]
-    birth_date: Optional[date]
-    main_reason: Optional[str]
-    how_found_us: Optional[str]
+    # The API keeps its original names; the columns are named differently.
+    # Without the aliases every row failed validation ("Field required") and
+    # GET /api/patients answered 500 as soon as the office had one patient.
+    birth_date: Optional[date] = Field(None, validation_alias="date_of_birth")
+    main_reason: Optional[str] = Field(None, validation_alias="primary_reason")
+    how_found_us: Optional[str] = Field(None, validation_alias="how_they_found_us")
     internal_notes: Optional[str]
     is_active: bool
     first_appointment_at: Optional[datetime]

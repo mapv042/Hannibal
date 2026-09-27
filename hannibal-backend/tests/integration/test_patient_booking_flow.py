@@ -9,10 +9,9 @@ must hold no matter which model answers.
 DESTRUCTIVE: it wipes and reseeds the database (the simulator's seed). It only
 runs when RUN_INTEGRATION=1 and DATABASE_URL points at localhost:
 
-    docker run -d --name hannibal-eval-pg -e POSTGRES_PASSWORD=eval \\
-        -e POSTGRES_DB=hannibal_sim -p 55432:5432 postgres:16-alpine
-    export DATABASE_URL=postgresql://postgres:eval@localhost:55432/hannibal_sim
-    export REDIS_URL=redis://localhost:6379/7 WHATSAPP_TRANSPORT=fake
+    docker compose -f docker-compose.sim.yml up -d
+    export DATABASE_URL=postgresql://argos:argos@localhost:55432/argos_sim
+    export REDIS_URL=redis://localhost:56379/0 WHATSAPP_TRANSPORT=fake
     alembic upgrade head
     RUN_INTEGRATION=1 pytest tests/integration -v
 """

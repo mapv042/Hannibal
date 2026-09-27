@@ -544,9 +544,9 @@ export default function SettingsPage() {
             </div>
           )}
           <GoogleCalendarIntegration
-            connected={!!office?.google_calendar_token}
+            connected={!!office?.google_calendar_connected}
             onDisconnected={() =>
-              setOffice((prev) => (prev ? { ...prev, google_calendar_token: null } : prev))
+              setOffice((prev) => (prev ? { ...prev, google_calendar_connected: false } : prev))
             }
           />
         </CardBody>

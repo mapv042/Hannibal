@@ -11,6 +11,7 @@ from sqlalchemy import select, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.core.constants import MX_TIMEZONE
 from app.db.models import Appointment, Office, Patient
 from app.modules.scheduling.schemas import CreateAppointmentRequest, UpdateAppointmentRequest
 from app.modules.scheduling.availability import (
@@ -406,10 +407,17 @@ async def get_appointments(
         .where(Appointment.office_id == office_id)
     )
 
+    # A bare date ("2026-09-27") arrives naive, and Postgres would read it as
+    # UTC midnight — 6 PM the day before in Mexico — so "today" dropped the
+    # evening citas and picked up yesterday's. Naive means office-local time.
     if start_date:
+        if start_date.tzinfo is None:
+            start_date = start_date.replace(tzinfo=MX_TIMEZONE)
         query = query.where(Appointment.start_datetime >= start_date)
 
     if end_date:
+        if end_date.tzinfo is None:
+            end_date = end_date.replace(tzinfo=MX_TIMEZONE)
         query = query.where(Appointment.start_datetime <= end_date)
 
     if status:

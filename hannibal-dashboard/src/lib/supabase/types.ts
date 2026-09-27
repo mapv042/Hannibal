@@ -44,7 +44,8 @@ export type Office = {
   notify_unconfirmed: boolean
   notify_arrival: boolean
   notify_reschedule: boolean
-  google_calendar_token: Record<string, unknown> | null
+  // The API never returns the OAuth token itself, only whether one is stored.
+  google_calendar_connected: boolean
   plan: string
   created_at: string
   updated_at: string | null
@@ -72,8 +73,8 @@ export type Appointment = {
   cancelled_by: string | null
   cancellation_reason: string | null
   reminder_day_before_sent: boolean
-  reminder_4h_sent: boolean
-  reminder_1h_sent: boolean
+  reminder_week_before_sent: boolean
+  reminder_6h_sent: boolean
   follow_up_sent: boolean
   /** Waiting room: null until the patient answers the arrival check-in. */
   arrival_status: 'on_the_way' | 'arrived' | 'no_answer' | null

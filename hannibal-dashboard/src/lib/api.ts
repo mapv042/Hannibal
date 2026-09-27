@@ -206,9 +206,15 @@ export class ApiClient {
   }
 
   async getAppointmentsToday(office_id: string): Promise<ApiResponse<Appointment[]>> {
-    const today = new Date().toISOString().split('T')[0]
-    const tomorrow = new Date(Date.now() + 86400000).toISOString().split('T')[0]
-    return this.getAppointments(office_id, { start_date: today, end_date: tomorrow })
+    // The office's calendar day, not UTC's: toISOString() rolled "today" over to
+    // tomorrow at 6 PM in Mexico. The API reads these bare times as office-local.
+    const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Mexico_City' }).format(
+      new Date()
+    )
+    return this.getAppointments(office_id, {
+      start_date: `${today}T00:00:00`,
+      end_date: `${today}T23:59:59`,
+    })
   }
 
   async getAppointment(appointment_id: string): Promise<ApiResponse<Appointment>> {
@@ -373,7 +379,7 @@ export class ApiClient {
     if (res.success && res.data && res.data.length > 0) {
       return {
         success: true,
-        data: { connected: !!res.data[0].google_calendar_token },
+        data: { connected: !!res.data[0].google_calendar_connected },
       }
     }
     return { success: true, data: { connected: false } }

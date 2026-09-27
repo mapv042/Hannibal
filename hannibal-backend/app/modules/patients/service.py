@@ -5,7 +5,7 @@ from __future__ import annotations
 from uuid import UUID
 from typing import List, Optional
 
-from sqlalchemy import select, and_
+from sqlalchemy import select, and_, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Patient, Office
@@ -41,9 +41,9 @@ async def create_patient(
         phone=data.phone,
         whatsapp_id=data.whatsapp_id,
         email=data.email,
-        birth_date=data.birth_date,
-        main_reason=data.main_reason,
-        how_found_us=data.how_found_us,
+        date_of_birth=data.birth_date,
+        primary_reason=data.main_reason,
+        how_they_found_us=data.how_found_us,
         internal_notes=data.internal_notes,
     )
 
@@ -92,6 +92,7 @@ async def list_patients(
     office_id: UUID,
     active_only: bool = True,
     db: AsyncSession = None,
+    search: Optional[str] = None,
 ) -> List[Patient]:
     """
     List all patients for an office.
@@ -100,6 +101,7 @@ async def list_patients(
         office_id: Office ID
         active_only: Only return active patients
         db: Database session
+        search: Case-insensitive substring of the name or phone
 
     Returns:
         List of Patient objects
@@ -108,6 +110,16 @@ async def list_patients(
 
     if active_only:
         query = query.where(Patient.is_active == True)
+
+    term = (search or "").strip()
+    if term:
+        pattern = "%" + term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+        query = query.where(
+            or_(
+                Patient.name.ilike(pattern, escape="\\"),
+                Patient.phone.ilike(pattern, escape="\\"),
+            )
+        )
 
     result = await db.execute(query.order_by(Patient.created_at.desc()))
     return result.scalars().all()
@@ -142,11 +154,11 @@ async def update_patient(
     if data.email is not None:
         patient.email = data.email
     if data.birth_date is not None:
-        patient.birth_date = data.birth_date
+        patient.date_of_birth = data.birth_date
     if data.main_reason is not None:
-        patient.main_reason = data.main_reason
+        patient.primary_reason = data.main_reason
     if data.how_found_us is not None:
-        patient.how_found_us = data.how_found_us
+        patient.how_they_found_us = data.how_found_us
     if data.internal_notes is not None:
         patient.internal_notes = data.internal_notes
     if data.is_active is not None:

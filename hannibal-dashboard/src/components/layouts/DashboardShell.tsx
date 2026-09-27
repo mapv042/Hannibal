@@ -217,7 +217,7 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
             {office && (
               <ConnectCalendarBanner
                 officeId={office.id}
-                connected={!!office.google_calendar_token}
+                connected={!!office.google_calendar_connected}
               />
             )}
             {children}

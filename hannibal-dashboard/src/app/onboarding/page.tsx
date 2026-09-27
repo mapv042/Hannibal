@@ -67,7 +67,7 @@ export default function OnboardingPage() {
           }
 
           setOffice(existingOffice)
-          if (existingOffice.google_calendar_token) {
+          if (existingOffice.google_calendar_connected) {
             setGcalConnected(true)
           }
 

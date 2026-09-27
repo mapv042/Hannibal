@@ -89,6 +89,7 @@ async def create_patient_endpoint(
 @router.get("", response_model=List[PatientResponse])
 async def list_patients_endpoint(
     active_only: bool = Query(True, description="Only return active patients"),
+    search: str | None = Query(None, max_length=100, description="Name or phone contains"),
     db: AsyncSession = Depends(get_db),
     office: Office = Depends(get_office_from_user),
 ):
@@ -97,6 +98,7 @@ async def list_patients_endpoint(
 
     Query Parameters:
         active_only: Only return active patients (default true)
+        search: Filter by name or phone (substring, case-insensitive)
 
     Returns:
         List of patients
@@ -110,6 +112,7 @@ async def list_patients_endpoint(
         office_id=office.id,
         active_only=active_only,
         db=db,
+        search=search,
     )
 
     return patients
