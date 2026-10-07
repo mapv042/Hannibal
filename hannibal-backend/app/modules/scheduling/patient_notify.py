@@ -21,6 +21,7 @@ from app.db.models import Appointment, Office, Patient
 from app.modules.reminders.templates import (
     appointment_cancellation,
     appointment_confirmation,
+    office_location,
 )
 from app.modules.reminders.wa_templates import (
     TEMPLATE_LANGUAGE,
@@ -135,7 +136,7 @@ async def notify_patient_reschedule(
             # Date and time go in separate lines of this template.
             "date": long_date_label(local.date()),
             "time": time_label(local),
-            "office_name": office.name,
+            "office_name": office_location(office),
             "assistant_name": office.assistant_name,
         },
         tone=office.assistant_tone,

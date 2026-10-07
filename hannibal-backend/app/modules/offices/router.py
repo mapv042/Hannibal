@@ -5,11 +5,20 @@ from __future__ import annotations
 from uuid import UUID
 from typing import List
 
-from fastapi import APIRouter, Depends, Query
+import redis.asyncio as aioredis
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.dependencies import get_db, get_current_user
+from app.core.dependencies import get_db, get_current_user, get_redis
+from app.modules.whatsapp.coexistence import (
+    DEFAULT_DOCTOR_TAKEOVER_PAUSE_MINUTES,
+    get_pause_until,
+    pause_bot,
+    resume_bot,
+)
 from app.modules.offices.schemas import (
+    BotStatusResponse,
+    PauseBotRequest,
     CreateOfficeRequest,
     UpdateOfficeRequest,
     OfficeResponse,
@@ -207,3 +216,53 @@ async def get_office_stats_endpoint(
     # Authorization: resolves the office from the JWT and 404s if not owned.
     await get_office(office_id, UUID(current_user.get("sub")), db)
     return await get_office_stats(db, office_id, period)  # type: ignore[arg-type]
+
+
+async def _bot_status(office_id: UUID, redis_client: aioredis.Redis) -> BotStatusResponse:
+    paused_until = await get_pause_until(office_id, redis_client)
+    return BotStatusResponse(
+        bot_status="paused" if paused_until else "active",
+        paused_until=paused_until,
+    )
+
+
+@router.get("/{office_id}/bot-status", response_model=BotStatusResponse)
+async def get_bot_status_endpoint(
+    office_id: UUID,
+    current_user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    redis_client: aioredis.Redis = Depends(get_redis),
+):
+    """Whether the assistant is answering patients, read from the pause key."""
+    await get_office(office_id, UUID(current_user.get("sub")), db)
+    return await _bot_status(office_id, redis_client)
+
+
+@router.post("/{office_id}/pause", response_model=BotStatusResponse)
+async def pause_bot_endpoint(
+    office_id: UUID,
+    request: PauseBotRequest | None = None,
+    current_user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    redis_client: aioredis.Redis = Depends(get_redis),
+):
+    """Pause the assistant office-wide — the same pause the doctor's pause_bot tool sets."""
+    await get_office(office_id, UUID(current_user.get("sub")), db)
+    minutes = request.minutes if request else DEFAULT_DOCTOR_TAKEOVER_PAUSE_MINUTES
+    if not await pause_bot(office_id, minutes, redis_client):
+        raise HTTPException(status_code=503, detail="No se pudo pausar el asistente")
+    return await _bot_status(office_id, redis_client)
+
+
+@router.post("/{office_id}/resume", response_model=BotStatusResponse)
+async def resume_bot_endpoint(
+    office_id: UUID,
+    current_user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    redis_client: aioredis.Redis = Depends(get_redis),
+):
+    """Lift the office-wide pause."""
+    await get_office(office_id, UUID(current_user.get("sub")), db)
+    if not await resume_bot(office_id, redis_client):
+        raise HTTPException(status_code=503, detail="No se pudo reanudar el asistente")
+    return await _bot_status(office_id, redis_client)

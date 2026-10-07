@@ -56,6 +56,7 @@ async def create_office(
         city=data.city,
         state=data.state,
         address=data.address,
+        privacy_contact_email=(data.privacy_contact_email or "").strip() or None,
     )
 
     # Seed the office with the default reminder configuration so doctors get
@@ -206,7 +207,10 @@ async def update_office(
     if data.state is not None:
         office.state = data.state
     if data.welcome_message is not None:
-        office.welcome_message = data.welcome_message
+        # Empty string clears it (the assistant then greets normally).
+        office.welcome_message = data.welcome_message.strip() or None
+    if data.privacy_contact_email is not None:
+        office.privacy_contact_email = data.privacy_contact_email.strip() or None
     if data.new_patient_duration_min is not None:
         office.new_patient_duration_min = data.new_patient_duration_min
     if data.returning_patient_duration_min is not None:

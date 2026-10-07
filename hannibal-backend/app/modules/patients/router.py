@@ -8,7 +8,9 @@ from typing import List
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.dependencies import get_db, get_current_user
+import redis.asyncio as aioredis
+
+from app.core.dependencies import get_db, get_current_user, get_redis
 from app.db.models import Office
 from app.modules.patients.schemas import (
     CreatePatientRequest,
@@ -169,6 +171,7 @@ async def delete_patient_endpoint(
     patient_id: UUID,
     db: AsyncSession = Depends(get_db),
     office: Office = Depends(get_office_from_user),
+    redis_client: aioredis.Redis = Depends(get_redis),
 ):
     """Delete a patient."""
     logger.info(
@@ -181,6 +184,7 @@ async def delete_patient_endpoint(
         patient_id=patient_id,
         office_id=office.id,
         db=db,
+        redis_client=redis_client,
     )
 
 

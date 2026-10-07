@@ -26,6 +26,7 @@ from app.modules.scheduling.schemas import (
     AvailabilityScheduleResponse,
 )
 from app.modules.scheduling.availability import (
+    invalidate_office_availability_cache,
     get_available_slots,
     get_upcoming_slots,
 )
@@ -142,6 +143,7 @@ async def list_appointments(
         None,
         description="Filter by state (scheduled|confirmed|completed|no_show|cancelled)",
     ),
+    patient_id: Optional[UUID] = Query(None, description="Only this patient's appointments"),
     db: AsyncSession = Depends(get_db),
     office: Office = Depends(get_office_from_user),
 ):
@@ -170,6 +172,7 @@ async def list_appointments(
         end_date=end_date,
         status=status,
         db=db,
+        patient_id=patient_id,
     )
 
     return appointments
@@ -366,6 +369,7 @@ async def upsert_schedules_endpoint(
     request: BulkUpsertSchedulesRequest,
     db: AsyncSession = Depends(get_db),
     office: Office = Depends(get_office_from_user),
+    redis_client: aioredis.Redis = Depends(get_redis),
 ):
     """Bulk upsert availability schedules — replaces all existing schedules."""
     from app.modules.scheduling.availability_crud import bulk_upsert_schedules
@@ -376,6 +380,8 @@ async def upsert_schedules_endpoint(
         schedules_data=request.schedules,
         db=db,
     )
+    # New hours change every day's slots, not just one date.
+    await invalidate_office_availability_cache(office.id, redis_client)
 
     results = []
     for s in schedules:

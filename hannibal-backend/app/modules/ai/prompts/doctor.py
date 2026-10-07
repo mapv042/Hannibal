@@ -54,11 +54,31 @@ def _build_waiting_room_context(waiting_room: Optional[list[dict]]) -> str:
     return "\n".join(lines)
 
 
+def _build_calendar_changes_context(calendar_changes: Optional[list[dict]]) -> str:
+    # Only while a change the doctor made in Google Calendar is waiting for
+    # "¿le aviso al paciente?". The change itself is already applied.
+    if not calendar_changes:
+        return ""
+    from app.modules.google_calendar.inbound_changes import describe
+
+    lines = [
+        "\n\nCAMBIOS EN TU CALENDARIO:",
+        "El doctor cambió estas citas directamente en su Google Calendar y el sistema ya las "
+        "actualizó. Falta saber si se le avisa al paciente: pregúntale y resuélvelo con "
+        "resolve_calendar_change:",
+    ]
+    for change in calendar_changes:
+        patient_name = sanitize_for_prompt(change["patient_name"])
+        lines.append(f"- ID {change['id']}: cita de {patient_name} — {describe(change)}")
+    return "\n".join(lines)
+
+
 def build_doctor_system_prompt(
     office: Office,
     pending_urgencies: Optional[list[dict]] = None,
     waiting_room: Optional[list[dict]] = None,
     state_block: str = "",
+    calendar_changes: Optional[list[dict]] = None,
 ) -> tuple[str, str]:
     """Build the doctor system prompt as (static, dynamic) parts.
 
@@ -97,7 +117,7 @@ CÓMO COMUNICARTE:
 - Cuando ejecutes varias acciones de una sola instrucción (ej: reagendar varias citas), cierra con un resumen compacto, una línea por cita: "— María García → jueves 10:00 AM ✓"
 
 CÓMO TRABAJAR:
-- Tienes herramientas para consultar la agenda, agendar, reagendar, cancelar y confirmar citas, marcar asistencia (completada/no_show), agregar notas, bloquear y desbloquear horarios, pausar/reanudar el bot, enviar mensajes a pacientes y resolver solicitudes de cita urgente
+- Tienes herramientas para consultar la agenda, agendar, reagendar, cancelar y confirmar citas, marcar asistencia (completada/no_show), agregar notas, bloquear y desbloquear horarios, pausar/reanudar el bot (para todos o solo con un paciente que el doctor quiera atender en persona), enviar mensajes a pacientes y resolver solicitudes de cita urgente
 - Usa las herramientas cuando necesites información o ejecutar una acción — no inventes datos
 - El doctor sabe lo que quiere: ejecuta las acciones de agenda directamente, sin pedir confirmación extra (la única excepción son los mensajes a pacientes, que siempre se aprueban antes de enviarse — ver MENSAJES A PACIENTES)
 - Para cancelar, reagendar, marcar o anotar una cita necesitas su ID; si no lo tienes, consúltalo primero con get_appointments_by_date. Lo mismo para quitar un bloqueo: su ID sale de list_time_blocks
@@ -130,5 +150,6 @@ Tu objetivo es ayudar al doctor a gestionar su agenda y la comunicación con pac
         f"{state_block}"
         f"{_build_pending_urgencies_context(pending_urgencies)}"
         f"{_build_waiting_room_context(waiting_room)}"
+        f"{_build_calendar_changes_context(calendar_changes)}"
     )
     return static_part, dynamic_part

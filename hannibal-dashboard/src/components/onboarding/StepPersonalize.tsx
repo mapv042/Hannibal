@@ -1,9 +1,7 @@
 import React from 'react'
-import { Card, CardBody } from '@/components/ui/Card'
-import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
 import { FieldError } from '@/components/ui/FieldError'
-import { StepHeader } from '@/components/onboarding/StepHeader'
+import { StepFrame, type StepVariant } from '@/components/onboarding/StepFrame'
 import { Lock, Plus, X } from 'lucide-react'
 import { ASSISTANT_GENDERS, type CatalogOption } from '@/lib/constants/catalogs'
 import type { FieldErrors } from '@/lib/validation/onboarding'
@@ -36,11 +34,13 @@ const NOTIFICATION_DEFS: { key: NotifKey; label: string; description: string }[]
   { key: 'notifyNewAppointment', label: 'Cita nueva agendada', description: 'Cuando el asistente agenda una cita.' },
   { key: 'notifyCancellation', label: 'Cancelación de paciente', description: 'Cuando un paciente cancela su cita.' },
   { key: 'notifyNewPatient', label: 'Paciente nuevo', description: 'Cuando se registra un paciente nuevo.' },
-  { key: 'notifyUnconfirmed', label: 'Citas sin confirmar', description: 'Resumen al inicio del día con las citas de hoy sin confirmar.' },
+  { key: 'notifyUnconfirmed', label: 'Resumen del día', description: 'Antes de tu primer horario: tus citas de hoy, cuáles faltan por confirmar y las urgencias pendientes.' },
   { key: 'notifyArrival', label: 'Check-in de llegada', description: 'Cuando el paciente avisa que ya llegó o que viene en camino.' },
 ]
 
 interface StepPersonalizeProps {
+  /** Onboarding wizard (default) or the Settings page. */
+  variant?: StepVariant
   data: PersonalizeData
   onUpdate: (data: Partial<PersonalizeData>) => void
   onNext: () => void
@@ -67,6 +67,7 @@ const Checkbox = ({ checked }: { checked: boolean }) => (
 )
 
 export const StepPersonalize: React.FC<StepPersonalizeProps> = ({
+  variant = 'wizard',
   data,
   onUpdate,
   onNext,
@@ -122,79 +123,87 @@ export const StepPersonalize: React.FC<StepPersonalizeProps> = ({
   }
 
   return (
-    <Card>
-      <CardBody className="space-y-6 p-8">
-        <StepHeader
-          eyebrow="Paso 4"
-          title="Personaliza a tu asistente"
-          subtitle="Decide cómo se llama, cómo habla y qué considera una emergencia."
-        />
+    <StepFrame
+      variant={variant}
+      eyebrow="Paso 4"
+      title="Personaliza a tu asistente"
+      subtitle="Decide cómo se llama, cómo habla y qué considera una emergencia."
+      onNext={onNext}
+      onBack={onBack}
+      loading={loading}
+      bodyClassName="space-y-6 p-8"
+    >
 
-        <Input
-          label="Nombre del asistente"
-          placeholder="Sofía"
-          value={data.assistantName}
-          onChange={(e) => onUpdate({ assistantName: e.target.value })}
-          error={errors.assistantName}
-          helpText="Este nombre aparecerá en los mensajes a pacientes"
-          data-field="assistantName"
-        />
+        {/* Identity — Settings edits these under "General" */}
+        {variant === 'wizard' && (
+          <>
+            <Input
+              label="Nombre del asistente"
+              placeholder="Sofía"
+              value={data.assistantName}
+              onChange={(e) => onUpdate({ assistantName: e.target.value })}
+              error={errors.assistantName}
+              helpText="Este nombre aparecerá en los mensajes a pacientes"
+              data-field="assistantName"
+            />
 
-        <div>
-          <label className="block text-sm font-semibold text-navy mb-2.5">
-            Tono de conversación
-          </label>
-          <div className="grid grid-cols-2 gap-2.5">
-            {[
-              { value: 'formal' as const, label: 'De usted', desc: 'Formal, profesional', example: '«Buen día, ¿en qué le puedo ayudar?»' },
-              { value: 'informal' as const, label: 'De tú', desc: 'Cercano, casual', example: '«¡Hola! ¿En qué te ayudo?»' },
-            ].map((option) => {
-              const active = data.assistantTone === option.value
-              return (
-                <button
-                  key={option.value}
-                  type="button"
-                  onClick={() => onUpdate({ assistantTone: option.value })}
-                  className={`choice-card ${active ? 'selected' : ''}`}
-                >
-                  <p className="text-[15px] font-semibold text-navy">{option.label}</p>
-                  <p className="text-xs text-slate-light mt-0.5 mb-2.5">{option.desc}</p>
-                  <p className="text-[12.5px] italic px-2.5 py-2 rounded-md bg-off-white text-slate">
-                    {option.example}
-                  </p>
-                </button>
-              )
-            })}
-          </div>
-          <FieldError message={errors.assistantTone} />
-        </div>
+            <div>
+              <label className="block text-sm font-semibold text-navy mb-2.5">
+                Tono de conversación
+              </label>
+              <div className="grid grid-cols-2 gap-2.5">
+                {[
+                  { value: 'formal' as const, label: 'De usted', desc: 'Formal, profesional', example: '«Buen día, ¿en qué le puedo ayudar?»' },
+                  { value: 'informal' as const, label: 'De tú', desc: 'Cercano, casual', example: '«¡Hola! ¿En qué te ayudo?»' },
+                ].map((option) => {
+                  const active = data.assistantTone === option.value
+                  return (
+                    <button
+                      key={option.value}
+                      type="button"
+                      onClick={() => onUpdate({ assistantTone: option.value })}
+                      className={`choice-card ${active ? 'selected' : ''}`}
+                    >
+                      <p className="text-[15px] font-semibold text-navy">{option.label}</p>
+                      <p className="text-xs text-slate-light mt-0.5 mb-2.5">{option.desc}</p>
+                      <p className="text-[12.5px] italic px-2.5 py-2 rounded-md bg-off-white text-slate">
+                        {option.example}
+                      </p>
+                    </button>
+                  )
+                })}
+              </div>
+              <FieldError message={errors.assistantTone} />
+            </div>
 
-        <div>
-          <label className="block text-sm font-semibold text-navy mb-1">
-            ¿Cómo debe hablar de sí mismo?
-          </label>
-          <p className="text-xs text-slate-light mb-2.5">
-            Para que concuerde bien al referirse a sí mismo, según el nombre que le pusiste.
-          </p>
-          <div className="grid grid-cols-3 gap-2.5">
-            {ASSISTANT_GENDERS.map((option) => {
-              const active = data.assistantGender === option.id
-              return (
-                <button
-                  key={option.id}
-                  type="button"
-                  onClick={() => onUpdate({ assistantGender: option.id })}
-                  className={`choice-card ${active ? 'selected' : ''}`}
-                  data-field="assistantGender"
-                >
-                  <p className="text-[15px] font-semibold text-navy">{option.label}</p>
-                  <p className="text-[12px] text-slate-light mt-0.5">{option.description}</p>
-                </button>
-              )
-            })}
-          </div>
-          <FieldError message={errors.assistantGender} />
-        </div>
+            <div>
+              <label className="block text-sm font-semibold text-navy mb-1">
+                ¿Cómo debe hablar de sí mismo?
+              </label>
+              <p className="text-xs text-slate-light mb-2.5">
+                Para que concuerde bien al referirse a sí mismo, según el nombre que le pusiste.
+              </p>
+              <div className="grid grid-cols-3 gap-2.5">
+                {ASSISTANT_GENDERS.map((option) => {
+                  const active = data.assistantGender === option.id
+                  return (
+                    <button
+                      key={option.id}
+                      type="button"
+                      onClick={() => onUpdate({ assistantGender: option.id })}
+                      className={`choice-card ${active ? 'selected' : ''}`}
+                      data-field="assistantGender"
+                    >
+                      <p className="text-[15px] font-semibold text-navy">{option.label}</p>
+                      <p className="text-[12px] text-slate-light mt-0.5">{option.description}</p>
+                    </button>
+                  )
+                })}
+              </div>
+              <FieldError message={errors.assistantGender} />
+            </div>
+          </>
+        )}
 
         <div>
           <label className="block text-sm font-semibold text-navy mb-1">
@@ -304,54 +313,47 @@ export const StepPersonalize: React.FC<StepPersonalizeProps> = ({
           <FieldError message={errors.intakeQuestions} />
         </div>
 
-        <div>
-          <label className="block text-sm font-semibold text-navy mb-1">
-            Notificaciones al doctor
-          </label>
-          <p className="text-xs text-slate-light mb-2.5">
-            Elige de qué eventos quieres que el asistente te avise por WhatsApp. Puedes cambiarlo después.
-          </p>
-          <div className="space-y-2">
-            {NOTIFICATION_DEFS.map((notif) => {
-              const enabled = data[notif.key]
-              return (
-                <button
-                  key={notif.key}
-                  type="button"
-                  onClick={() => onUpdate({ [notif.key]: !enabled } as Partial<PersonalizeData>)}
-                  className={`w-full flex items-center gap-3 p-3 rounded-lg border text-left transition-colors ${
-                    enabled ? 'border-primary-200 bg-primary-50' : 'border-line bg-white hover:border-slate-light'
-                  }`}
-                >
-                  <Checkbox checked={enabled} />
-                  <span>
-                    <span className={`block text-sm font-medium ${enabled ? 'text-navy' : 'text-slate'}`}>
-                      {notif.label}
+        {/* Notifications — Settings has its own section for these */}
+        {variant === 'wizard' && (
+          <div>
+            <label className="block text-sm font-semibold text-navy mb-1">
+              Notificaciones al doctor
+            </label>
+            <p className="text-xs text-slate-light mb-2.5">
+              Elige de qué eventos quieres que el asistente te avise por WhatsApp. Puedes cambiarlo después.
+            </p>
+            <div className="space-y-2">
+              {NOTIFICATION_DEFS.map((notif) => {
+                const enabled = data[notif.key]
+                return (
+                  <button
+                    key={notif.key}
+                    type="button"
+                    onClick={() => onUpdate({ [notif.key]: !enabled } as Partial<PersonalizeData>)}
+                    className={`w-full flex items-center gap-3 p-3 rounded-lg border text-left transition-colors ${
+                      enabled ? 'border-primary-200 bg-primary-50' : 'border-line bg-white hover:border-slate-light'
+                    }`}
+                  >
+                    <Checkbox checked={enabled} />
+                    <span>
+                      <span className={`block text-sm font-medium ${enabled ? 'text-navy' : 'text-slate'}`}>
+                        {notif.label}
+                      </span>
+                      <span className="block text-xs text-slate-light">{notif.description}</span>
                     </span>
-                    <span className="block text-xs text-slate-light">{notif.description}</span>
-                  </span>
-                </button>
-              )
-            })}
+                  </button>
+                )
+              })}
+            </div>
+            <div className="flex items-start gap-2.5 p-3.5 mt-3 bg-off-white border border-line rounded-lg">
+              <Lock size={15} className="text-accent flex-shrink-0 mt-0.5" strokeWidth={1.8} />
+              <span className="text-[13px] text-slate leading-relaxed">
+                El texto de estos avisos y el de los recordatorios está aprobado por WhatsApp y
+                no se puede editar. Aquí decides cuáles se mandan, no qué dicen.
+              </span>
+            </div>
           </div>
-          <div className="flex items-start gap-2.5 p-3.5 mt-3 bg-off-white border border-line rounded-lg">
-            <Lock size={15} className="text-accent flex-shrink-0 mt-0.5" strokeWidth={1.8} />
-            <span className="text-[13px] text-slate leading-relaxed">
-              El texto de estos avisos y el de los recordatorios está aprobado por WhatsApp y
-              no se puede editar. Aquí decides cuáles se mandan, no qué dicen.
-            </span>
-          </div>
-        </div>
-
-        <div className="flex gap-3 pt-2">
-          <Button variant="secondary" onClick={onBack}>
-            Atrás
-          </Button>
-          <Button onClick={onNext} isLoading={loading} className="flex-1">
-            Continuar
-          </Button>
-        </div>
-      </CardBody>
-    </Card>
+        )}
+    </StepFrame>
   )
 }

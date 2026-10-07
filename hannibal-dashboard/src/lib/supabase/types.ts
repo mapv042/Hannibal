@@ -27,6 +27,8 @@ export type Office = {
   assistant_gender: string
   custom_prompt: string | null
   welcome_message: string | null
+  /** ARCO contact shown on the office's privacy notice (/aviso/<id>). */
+  privacy_contact_email: string | null
   new_patient_duration_min: number
   returning_patient_duration_min: number
   new_patient_cost: string | null

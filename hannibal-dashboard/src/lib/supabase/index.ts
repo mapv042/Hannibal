@@ -1,5 +1,5 @@
 // Re-export types (safe for both client and server)
-export type { Office, Appointment, Patient, Doctor } from './types'
+export type { Office, Appointment, Patient, Doctor, AvailabilitySchedule } from './types'
 
 // Re-export browser client (safe for 'use client' components)
 export { createBrowserSupabaseClient } from './browser'

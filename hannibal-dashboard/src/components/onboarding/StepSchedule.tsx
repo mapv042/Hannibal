@@ -1,7 +1,5 @@
 import React from 'react'
-import { Card, CardBody } from '@/components/ui/Card'
-import { Button } from '@/components/ui/Button'
-import { StepHeader } from '@/components/onboarding/StepHeader'
+import { StepFrame, type StepVariant } from '@/components/onboarding/StepFrame'
 import { FieldError } from '@/components/ui/FieldError'
 import { Plus, X } from 'lucide-react'
 import type { FieldErrors } from '@/lib/validation/onboarding'
@@ -91,6 +89,8 @@ export interface ScheduleData {
 }
 
 interface StepScheduleProps {
+  /** Onboarding wizard (default) or the Settings page. */
+  variant?: StepVariant
   data: ScheduleData
   onUpdate: (data: Partial<ScheduleData>) => void
   onNext: () => void
@@ -102,6 +102,7 @@ interface StepScheduleProps {
 const DAY_NAMES = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado']
 
 export const StepSchedule: React.FC<StepScheduleProps> = ({
+  variant = 'wizard',
   data,
   onUpdate,
   onNext,
@@ -162,13 +163,16 @@ export const StepSchedule: React.FC<StepScheduleProps> = ({
 
 
   return (
-    <Card>
-      <CardBody className="space-y-4 p-8">
-        <StepHeader
-          eyebrow="Paso 2"
-          title="¿Cuándo estás disponible?"
-          subtitle="Define los horarios en los que tomas pacientes. El asistente solo ofrecerá citas dentro de estos bloques."
-        />
+    <StepFrame
+      variant={variant}
+      eyebrow="Paso 2"
+      title="¿Cuándo estás disponible?"
+      subtitle="Define los horarios en los que tomas pacientes. El asistente solo ofrecerá citas dentro de estos bloques."
+      onNext={onNext}
+      onBack={onBack}
+      loading={loading}
+      bodyClassName="space-y-4 p-8"
+    >
         {/* Days */}
         <div className="space-y-2.5">
           {data.days.map((day) => (
@@ -314,62 +318,55 @@ export const StepSchedule: React.FC<StepScheduleProps> = ({
           </div>
         </div>
 
-        {/* Reminders */}
-        <div className="space-y-3 p-5 bg-off-white border border-line rounded-xl">
-          <div>
-            <p className="text-sm font-semibold text-navy">Recordatorios automáticos</p>
-            <p className="text-xs text-slate-light mt-0.5">
-              Elige qué recordatorios enviará el asistente por WhatsApp a tus pacientes.
-              El texto de cada uno está aprobado por WhatsApp y no se puede editar: aquí
-              decides cuáles se mandan, no qué dicen.
-            </p>
-          </div>
-          <div className="space-y-2">
-            {REMINDER_DEFS.map((reminder) => {
-              const enabled = data.reminders[reminder.type]
-              return (
-                <button
-                  key={reminder.type}
-                  type="button"
-                  onClick={() => toggleReminder(reminder.type)}
-                  className={`w-full flex items-center gap-3 p-3 rounded-lg border text-left transition-colors ${
-                    enabled ? 'border-primary-200 bg-primary-50' : 'border-line bg-white hover:border-slate-light'
-                  }`}
-                >
-                  <span
-                    className={`w-6 h-6 rounded flex items-center justify-center border-2 transition-colors flex-shrink-0 ${
-                      enabled ? 'bg-accent border-accent text-white' : 'bg-white border-line'
+        {/* Reminders — Settings has its own section for these */}
+        {variant === 'wizard' && (
+          <div className="space-y-3 p-5 bg-off-white border border-line rounded-xl">
+            <div>
+              <p className="text-sm font-semibold text-navy">Recordatorios automáticos</p>
+              <p className="text-xs text-slate-light mt-0.5">
+                Elige qué recordatorios enviará el asistente por WhatsApp a tus pacientes.
+                El texto de cada uno está aprobado por WhatsApp y no se puede editar: aquí
+                decides cuáles se mandan, no qué dicen.
+              </p>
+            </div>
+            <div className="space-y-2">
+              {REMINDER_DEFS.map((reminder) => {
+                const enabled = data.reminders[reminder.type]
+                return (
+                  <button
+                    key={reminder.type}
+                    type="button"
+                    onClick={() => toggleReminder(reminder.type)}
+                    className={`w-full flex items-center gap-3 p-3 rounded-lg border text-left transition-colors ${
+                      enabled ? 'border-primary-200 bg-primary-50' : 'border-line bg-white hover:border-slate-light'
                     }`}
                   >
-                    {enabled && (
-                      <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
-                      </svg>
-                    )}
-                  </span>
-                  <span>
-                    <span className={`block text-sm font-medium ${enabled ? 'text-navy' : 'text-slate-light'}`}>
-                      {reminder.label}
+                    <span
+                      className={`w-6 h-6 rounded flex items-center justify-center border-2 transition-colors flex-shrink-0 ${
+                        enabled ? 'bg-accent border-accent text-white' : 'bg-white border-line'
+                      }`}
+                    >
+                      {enabled && (
+                        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+                        </svg>
+                      )}
                     </span>
-                    <span className="block text-xs text-slate-light">{reminder.description}</span>
-                  </span>
-                </button>
-              )
-            })}
+                    <span>
+                      <span className={`block text-sm font-medium ${enabled ? 'text-navy' : 'text-slate-light'}`}>
+                        {reminder.label}
+                      </span>
+                      <span className="block text-xs text-slate-light">{reminder.description}</span>
+                    </span>
+                  </button>
+                )
+              })}
+            </div>
           </div>
-        </div>
+        )}
 
         <FieldError message={errors.days} />
 
-        <div className="flex gap-3 pt-2">
-          <Button variant="secondary" onClick={onBack}>
-            Atrás
-          </Button>
-          <Button onClick={onNext} isLoading={loading} className="flex-1">
-            Continuar
-          </Button>
-        </div>
-      </CardBody>
-    </Card>
+    </StepFrame>
   )
 }

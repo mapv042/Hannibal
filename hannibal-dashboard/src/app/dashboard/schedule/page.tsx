@@ -71,7 +71,7 @@ export default function SchedulePage() {
                 <div>
                   <p className="text-xs font-medium text-gray-600 uppercase">Hora</p>
                   <p className="text-sm text-gray-900">
-                    {formatDateSafe(selectedAppointment.start_datetime, 'HH:mm')}
+                    {formatDateSafe(selectedAppointment.start_datetime, 'h:mm a')}
                   </p>
                 </div>
               </div>

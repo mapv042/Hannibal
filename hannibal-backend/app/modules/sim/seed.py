@@ -34,10 +34,14 @@ from app.db.models import (
     Message,
     Office,
     Patient,
+    PrivacyConsent,
     ReminderRule,
     TimeBlock,
     UrgencyRequest,
+    WaitlistEntry,
 )
+from app.modules.privacy.consent import PRIVACY_NOTICE_VERSION
+from app.utils.dates import now_mx
 
 # Fake numbers, in the shape WhatsApp actually delivers (52 + 1 + 10 digits).
 OWNER_PHONE = "5215559876543"
@@ -60,10 +64,12 @@ WIPE_ORDER = [
     Conversation,
     GoogleCalendarEvent,
     UrgencyRequest,
+    WaitlistEntry,
     Appointment,
     TimeBlock,
     AvailabilitySchedule,
     ReminderRule,
+    PrivacyConsent,
     Patient,
     Office,
 ]
@@ -163,6 +169,18 @@ async def seed_office(db: AsyncSession) -> Office:
             whatsapp_id=DEFAULT_PATIENT_PHONE,
             name="Juan Pérez",
             phone=DEFAULT_PATIENT_PHONE,
+        )
+    )
+    # Juan is an existing patient who already accepted the privacy notice, so
+    # scenarios about booking don't all open with the consent question. A new
+    # number (any other sender) still gets asked.
+    db.add(
+        PrivacyConsent(
+            office_id=office.id,
+            whatsapp_id=DEFAULT_PATIENT_PHONE,
+            notice_version=PRIVACY_NOTICE_VERSION,
+            accepted=True,
+            decided_at=now_mx(),
         )
     )
 

@@ -6,8 +6,9 @@ the conversation manager after the tool loop) lands first; they retry on
 "not_found" if the turn is still in flight.
 
 `send_unconfirmed_summaries` is a Celery Beat task (every 15 min): for each
-office it sends the day's unconfirmed-appointments digest once, 1h before the
-doctor's first availability block that day.
+office it sends the day summary (citas, urgencies, free slots) once, 1h before
+the doctor's first availability block that day. The name predates the summary
+and is kept so the beat schedule and running workers don't change.
 """
 
 from __future__ import annotations
@@ -30,7 +31,7 @@ from app.modules.notifications.service import (
     notify_arrival,
     notify_cancellation,
     notify_reschedule,
-    notify_unconfirmed_summary,
+    notify_daily_agenda,
 )
 from app.utils.dates import now_mx
 from app.utils.logger import get_logger
@@ -260,7 +261,7 @@ def notify_reschedule_task(self, new_appointment_id: str):
 
 
 # --------------------------------------------------------------------------- #
-# Daily unconfirmed-appointments digest (Celery Beat, every 15 min)
+# Daily agenda summary (Celery Beat, every 15 min)
 # --------------------------------------------------------------------------- #
 
 async def _first_block_start_today(db, office_id, weekday_db: int):
@@ -313,7 +314,7 @@ async def _send_unconfirmed_summaries_async() -> None:
                 if await redis_client.exists(flag_key):
                     continue  # already handled today
 
-                status = await notify_unconfirmed_summary(db, redis_client, meta_client, office)
+                status = await notify_daily_agenda(db, redis_client, meta_client, office)
                 await db.commit()
                 # Mark handled for the day even when "skipped" (nothing to send),
                 # so we don't recompute every 15 min.
@@ -325,7 +326,7 @@ async def _send_unconfirmed_summaries_async() -> None:
 
 @shared_task(bind=True)
 def send_unconfirmed_summaries(self):
-    """Beat task: send each office its daily unconfirmed-appointments digest."""
+    """Beat task: send each office the summary of its day."""
     _log("send_unconfirmed_summaries: START")
     try:
         run_task(_send_unconfirmed_summaries_async())

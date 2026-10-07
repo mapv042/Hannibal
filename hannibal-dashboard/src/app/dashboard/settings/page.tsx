@@ -10,7 +10,9 @@ import { Input } from '@/components/ui/Input'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { Card, CardBody, CardHeader } from '@/components/ui/Card'
 import { GoogleCalendarIntegration } from '@/components/settings/GoogleCalendarIntegration'
-import { Settings, Save, Globe, Zap, Clock, Bell, BellRing, LucideIcon } from 'lucide-react'
+import { BotStatusBadge } from '@/components/coexistence/BotStatusBadge'
+import { OfficeProfileSections } from '@/components/settings/OfficeProfileSections'
+import { Settings, Save, Globe, Zap, Bell, BellRing, LucideIcon } from 'lucide-react'
 import type { Office } from '@/lib/supabase'
 
 type NotifKey =
@@ -39,8 +41,8 @@ const NOTIFICATION_DEFS: { key: NotifKey; label: string; description: string }[]
   },
   {
     key: 'notify_unconfirmed',
-    label: 'Citas sin confirmar',
-    description: 'Resumen al inicio del día con las citas de hoy sin confirmar.',
+    label: 'Resumen del día',
+    description: 'Una hora antes de tu primer horario: tus citas de hoy, cuáles faltan por confirmar, urgencias pendientes y horarios libres.',
   },
   {
     key: 'notify_arrival',
@@ -67,25 +69,14 @@ import {
   type ReminderType,
 } from '@/components/onboarding/StepSchedule'
 
-/** Marks a section/control that is intentionally not wired up yet (pre-launch). */
-function SoonPill() {
-  return (
-    <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold bg-gray-100 text-gray-500 uppercase tracking-wide">
-      Próximamente
-    </span>
-  )
-}
-
 function SectionHeader({
   icon: Icon,
   title,
   subtitle,
-  soon,
 }: {
   icon: LucideIcon
   title: string
   subtitle?: string
-  soon?: boolean
 }) {
   return (
     <div className="flex items-center gap-3.5">
@@ -93,10 +84,7 @@ function SectionHeader({
         <Icon size={20} className="text-primary-700" />
       </div>
       <div>
-        <div className="flex items-center gap-2">
-          <h2 className="text-base font-semibold tracking-tight text-gray-900">{title}</h2>
-          {soon && <SoonPill />}
-        </div>
+        <h2 className="text-base font-semibold tracking-tight text-gray-900">{title}</h2>
         {subtitle && <p className="text-[13px] text-gray-500 mt-0.5">{subtitle}</p>}
       </div>
     </div>
@@ -110,6 +98,7 @@ export default function SettingsPage() {
     tone: 'formal' as 'formal' | 'informal',
     assistant_gender: 'femenino',
     custom_prompt: '',
+    welcome_message: '',
   })
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -152,6 +141,7 @@ export default function SettingsPage() {
             tone: officeData.assistant_tone as 'formal' | 'informal',
             assistant_gender: officeData.assistant_gender || 'femenino',
             custom_prompt: officeData.custom_prompt || '',
+            welcome_message: officeData.welcome_message || '',
           })
 
           setNotifications({
@@ -200,6 +190,8 @@ export default function SettingsPage() {
         assistant_tone: formData.tone,
         assistant_gender: formData.assistant_gender,
         custom_prompt: formData.custom_prompt,
+        // Empty string clears a previous greeting.
+        welcome_message: formData.welcome_message.trim(),
       })
       if (response.success) {
         setSaved(true)
@@ -337,6 +329,24 @@ export default function SettingsPage() {
 
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1.5">
+              Mensaje de bienvenida
+            </label>
+            <textarea
+              name="welcome_message"
+              value={formData.welcome_message}
+              onChange={handleChange}
+              placeholder="Hola, gracias por escribir al consultorio. ¿En qué te puedo ayudar?"
+              rows={3}
+              maxLength={2000}
+              className="input-field resize-none"
+            />
+            <p className="text-xs text-gray-500 mt-1">
+              Con esto saluda el asistente a quien escribe por primera vez. Déjalo vacío para un saludo normal.
+            </p>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1.5">
               Instrucciones personalizadas
             </label>
             <textarea
@@ -362,6 +372,10 @@ export default function SettingsPage() {
           </Button>
         </CardBody>
       </Card>
+
+      {office && (
+        <OfficeProfileSections office={office} onOfficeUpdated={setOffice} />
+      )}
 
       {/* Reminders */}
       <Card>
@@ -501,23 +515,15 @@ export default function SettingsPage() {
             />
           </div>
 
-          <div className="flex items-center justify-between p-4 bg-gray-50 rounded-xl border border-gray-200">
-            <div>
-              <p className="font-medium text-gray-900">Estado del bot</p>
-              <p className="text-sm text-gray-600 mt-1">
-                {office?.is_active
-                  ? 'Bot activo y respondiendo'
-                  : 'Bot en pausa'}
+          {office && (
+            <div className="p-4 bg-gray-50 rounded-xl border border-gray-200 space-y-2">
+              <p className="font-medium text-gray-900">Estado del asistente</p>
+              <BotStatusBadge officeId={office.id} />
+              <p className="text-xs text-gray-500">
+                En pausa, los mensajes de tus pacientes se guardan pero el asistente no responde.
               </p>
             </div>
-            <div
-              className={`w-3 h-3 rounded-full ${
-                office?.is_active
-                  ? 'bg-green-500 animate-pulse'
-                  : 'bg-gray-400'
-              }`}
-            />
-          </div>
+          )}
         </CardBody>
       </Card>
 
@@ -552,40 +558,6 @@ export default function SettingsPage() {
         </CardBody>
       </Card>
 
-      {/* Schedules */}
-      <Card>
-        <CardHeader>
-          <SectionHeader
-            icon={Clock}
-            title="Horarios de atención"
-            subtitle="Disponibilidad semanal. El bot solo agenda dentro de estos bloques."
-            soon
-          />
-        </CardHeader>
-        <CardBody className="space-y-4">
-          <p className="text-sm text-gray-600">
-            Por ahora puedes configurar tus horarios durante el alta de tu consultorio.
-            La edición desde aquí estará disponible pronto.
-          </p>
-          <div className="space-y-3 opacity-60 pointer-events-none select-none" aria-hidden="true">
-            {['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo'].map(
-              (day) => (
-                <div key={day} className="flex flex-wrap items-center gap-x-4 gap-y-2">
-                  <label className="w-24 font-medium text-gray-900 text-sm">
-                    {day}
-                  </label>
-                  <input type="time" className="input-field flex-1 min-w-0 sm:flex-none sm:w-32" disabled />
-                  <span className="text-gray-500">-</span>
-                  <input type="time" className="input-field flex-1 min-w-0 sm:flex-none sm:w-32" disabled />
-                </div>
-              )
-            )}
-          </div>
-          <Button variant="secondary" className="w-full" disabled>
-            Guardar horarios
-          </Button>
-        </CardBody>
-      </Card>
     </div>
   )
 }

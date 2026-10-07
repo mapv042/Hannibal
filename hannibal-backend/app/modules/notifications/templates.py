@@ -9,7 +9,7 @@ app/modules/urgencies/templates.py.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import List
+from typing import List, Optional
 
 from app.core.constants import MX_TIMEZONE
 from app.utils.dates import long_date_label, time_label
@@ -85,13 +85,51 @@ def arrival_detail(arrival_status: str, eta_minutes: int | None) -> str:
     return "viene en camino"
 
 
-def doctor_unconfirmed_summary(slots: List[str], tone: str = "informal") -> str:
-    """Morning digest: today's appointments still awaiting patient confirmation."""
-    count = len(slots)
-    noun = "cita" if count == 1 else "citas"
-    header = f"Tienes {count} {noun} de hoy sin confirmar:"
-    body = "\n".join(f"• {s}" for s in slots)
-    return f"{header}\n{body}"
+def agenda_line(slot: str, patient_name: str, first_visit: bool, unconfirmed: bool) -> str:
+    """One cita of the day summary: "9:00 AM — María García (primera vez) · sin confirmar"."""
+    line = f"{slot} — {patient_name}"
+    if first_visit:
+        line += " (primera vez)"
+    if unconfirmed:
+        line += " · sin confirmar"
+    return line
+
+
+def doctor_daily_agenda(
+    lines: List[str],
+    pending_urgencies: int,
+    free_slots: Optional[int],
+    tone: str = "informal",
+) -> str:
+    """Morning summary of the doctor's day, sent before their first block.
+
+    Replaces the old "citas sin confirmar" digest: that was one slice of what
+    the doctor wants to know on the way to the practice.
+    """
+    count = len(lines)
+    if count:
+        noun = "cita" if count == 1 else "citas"
+        parts = [f"Buen día. Tu agenda de hoy ({count} {noun}):", *[f"• {l}" for l in lines]]
+    else:
+        parts = ["Buen día. Hoy no tienes citas agendadas."]
+    if pending_urgencies:
+        noun = "solicitud urgente" if pending_urgencies == 1 else "solicitudes urgentes"
+        parts.append(f"Tienes {pending_urgencies} {noun} esperando tu respuesta.")
+    if free_slots is not None:
+        parts.append(
+            "No quedan horarios libres hoy."
+            if free_slots == 0
+            else f"Quedan {free_slots} horario{'s' if free_slots != 1 else ''} libre{'s' if free_slots != 1 else ''} hoy."
+        )
+    closing = "Si necesita mover algo, dígamelo por aquí." if _is_formal(tone) else "Si necesitas mover algo, dímelo por aquí."
+    parts.append(closing)
+    return "\n".join(parts)
+
+
+def daily_agenda_detail(lines: List[str], limit: int = 700) -> str:
+    """The day's citas on one line, for the Meta template param (no newlines)."""
+    detail = "; ".join(lines) or "sin citas agendadas"
+    return detail if len(detail) <= limit else detail[: limit - 1].rstrip() + "…"
 
 
 def doctor_reschedule(

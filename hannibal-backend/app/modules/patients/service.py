@@ -5,10 +5,10 @@ from __future__ import annotations
 from uuid import UUID
 from typing import List, Optional
 
-from sqlalchemy import select, and_, or_
+from sqlalchemy import delete, select, and_, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Patient, Office
+from app.db.models import AiTurnTrace, Conversation, Patient, Office
 from app.modules.patients.schemas import (
     CreatePatientRequest,
     UpdatePatientRequest,
@@ -180,22 +180,54 @@ async def delete_patient(
     patient_id: UUID,
     office_id: UUID,
     db: AsyncSession,
+    redis_client=None,
 ) -> None:
     """
-    Delete a patient.
+    Delete a patient and what the assistant kept about them.
 
-    Args:
-        patient_id: Patient ID
-        office_id: Office ID (for authorization)
-        db: Database session
+    This is how the office honours a cancellation request (ARCO): the row goes
+    with its appointments and linked conversations (ORM cascade), plus the
+    threads stored only under the number, the turn traces and the live
+    session. A number shared with another patient (a parent who booked for a
+    child) keeps its threads — they are the other patient's too.
 
     Raises:
         NotFoundError: If patient not found
     """
     patient = await get_patient(patient_id, office_id, db)
+    whatsapp_id = patient.whatsapp_id
+
+    shared = (
+        await db.execute(
+            select(Patient.id).where(
+                Patient.office_id == office_id,
+                Patient.whatsapp_id == whatsapp_id,
+                Patient.id != patient_id,
+            ).limit(1)
+        )
+    ).first() is not None
 
     await db.delete(patient)
+    if not shared:
+        await db.execute(
+            delete(Conversation).where(
+                Conversation.office_id == office_id,
+                Conversation.whatsapp_id == whatsapp_id,
+            )
+        )
+        await db.execute(
+            delete(AiTurnTrace).where(
+                AiTurnTrace.office_id == office_id,
+                AiTurnTrace.whatsapp_id == whatsapp_id,
+            )
+        )
     await db.commit()
+
+    if redis_client is not None and not shared:
+        try:
+            await redis_client.delete(f"session:{whatsapp_id}:{office_id}")
+        except Exception as e:
+            logger.warning("patient_session_purge_failed", error=str(e))
 
     logger.info(
         "patient_deleted",

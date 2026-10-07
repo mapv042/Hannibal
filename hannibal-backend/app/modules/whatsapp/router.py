@@ -34,7 +34,9 @@ from app.modules.whatsapp.provisioning import (
 )
 from app.modules.whatsapp.coexistence import (
     check_pause,
+    conversation_taken_until,
     get_conversation_by_whatsapp_id,
+    take_over_conversation,
 )
 from app.modules.conversation.manager import ConversationManager
 from app.modules.conversation.doctor_manager import DoctorConversationManager
@@ -267,6 +269,12 @@ async def _process_webhook_async(
                             redis_client,
                         )
 
+                    # Messages the doctor sent from the WhatsApp Business app
+                    # on this same number (coexistence). Needs the
+                    # smb_message_echoes field subscribed in the Meta app.
+                    for echo in value.get("message_echoes", []):
+                        await _process_echo(echo, office, db, redis_client)
+
                     # Process status updates
                     statuses = value.get("statuses", [])
                     for status_update in statuses:
@@ -482,11 +490,111 @@ async def _route_message(
             await _persist_incoming_while_paused(message, office, db)
         return
 
+    # The doctor is handling this patient personally (they wrote from their
+    # WhatsApp, or told the assistant so): keep the message, don't answer.
+    if await conversation_taken_until(office.id, from_id, redis_client):
+        logger.info(
+            "message_stored_conversation_taken_over",
+            message_id=message_id,
+            office_id=str(office.id),
+        )
+        for message in messages:
+            await _persist_incoming_while_paused(message, office, db)
+        return
+
     # Route to the tool-use conversation manager
     session_store = SessionStore(redis_client)
     meta_client = get_meta_client()
     manager = ConversationManager(session_store, meta_client)
     await manager.process(office, messages, db)
+
+
+async def _open_conversation(office, whatsapp_id: str, db: AsyncSession):
+    """The patient's open thread with this office, created if needed."""
+    from sqlalchemy import select
+    from app.db.models import Conversation
+
+    stmt = select(Conversation).where(
+        (Conversation.office_id == office.id)
+        & (Conversation.whatsapp_id == whatsapp_id)
+        & (Conversation.status != "archived")
+    ).limit(1)
+    conversation = (await db.execute(stmt)).scalars().first()
+    if not conversation:
+        conversation = Conversation(
+            id=uuid_module.uuid4(),
+            office_id=office.id,
+            whatsapp_id=whatsapp_id,
+            status="active",
+        )
+        db.add(conversation)
+        await db.flush()
+    return conversation
+
+
+async def _process_echo(
+    echo: Dict[str, Any],
+    office,
+    db: AsyncSession,
+    redis_client: redis.Redis,
+) -> None:
+    """The doctor wrote to a patient from the WhatsApp Business app.
+
+    Three things follow: the message joins the thread (dashboard), it joins the
+    patient's session (so when the assistant answers again it knows what the
+    doctor said and doesn't contradict it), and the assistant steps back from
+    this one conversation for a while — without silencing everyone else.
+    """
+    from app.db.models import Message
+    from app.modules.conversation.session_store import append_outgoing_message
+
+    try:
+        echo_id = echo.get("id")
+        to = echo.get("to")
+        if not to:
+            return
+        if echo_id and not await redis_client.set(
+            MESSAGE_DEDUP_KEY.format(message_id=echo_id), "1", nx=True, ex=MESSAGE_DEDUP_TTL
+        ):
+            return
+
+        # The doctor writing to their own secretary is not a patient thread.
+        try:
+            recipient = normalize_phone(to)
+            doctor_numbers = {normalize_phone(n) for n in doctor_recipients(office)}
+            if recipient in doctor_numbers:
+                return
+        except ValueError:
+            pass
+
+        msg_type = echo.get("type", "text")
+        content = (
+            (echo.get("text") or {}).get("body", "")
+            if msg_type == "text"
+            else f"[El doctor envió un {msg_type}]"
+        )
+
+        conversation = await _open_conversation(office, to, db)
+        db.add(Message(
+            id=uuid_module.uuid4(),
+            conversation_id=conversation.id,
+            content=content,
+            type="text",
+            direction="outgoing",
+            whatsapp_message_id=echo_id,
+            delivery_status="sent",
+            extra_metadata={"source": "doctor_app"},
+        ))
+        await db.commit()
+
+        await append_outgoing_message(
+            redis_client, office.id, to, content,
+            conversation_id=conversation.id, patient_id=conversation.patient_id,
+        )
+        await take_over_conversation(office.id, to, redis_client)
+        logger.info("doctor_echo_processed", office_id=str(office.id), message_id=echo_id)
+    except Exception as e:
+        logger.error("process_echo_error", message_id=echo.get("id"), error=str(e), exc_info=True)
 
 
 async def _persist_incoming_while_paused(
@@ -506,21 +614,7 @@ async def _persist_incoming_while_paused(
         else:
             content = f"[Mensaje de tipo {msg_type}]"
 
-        stmt = select(Conversation).where(
-            (Conversation.office_id == office.id)
-            & (Conversation.whatsapp_id == from_id)
-            & (Conversation.status != "archived")
-        ).limit(1)
-        conversation = (await db.execute(stmt)).scalars().first()
-        if not conversation:
-            conversation = Conversation(
-                id=uuid_module.uuid4(),
-                office_id=office.id,
-                whatsapp_id=from_id,
-                status="active",
-            )
-            db.add(conversation)
-            await db.flush()
+        conversation = await _open_conversation(office, from_id, db)
 
         db.add(Message(
             id=uuid_module.uuid4(),

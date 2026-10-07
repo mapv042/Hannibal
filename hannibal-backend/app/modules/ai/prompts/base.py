@@ -200,7 +200,9 @@ def build_capabilities_section(reminder_rules: Optional[Iterable] = None) -> str
     lines = [
         "\n\nLO QUE PUEDES HACER (y lo único que puedes prometer):",
         "- Con tus herramientas: consultar horarios, agendar, reagendar y cancelar citas, "
-        "confirmar asistencia y avisarle al doctor de una urgencia",
+        "confirmar asistencia, avisarle al doctor de una urgencia y anotar al paciente en la "
+        "lista de espera si ningún horario le acomoda (si se libera uno antes, el sistema se "
+        "lo ofrece por WhatsApp)",
     ]
     if reminders:
         lines.append(
@@ -338,10 +340,16 @@ Este paciente es RECURRENTE (ya ha tenido citas previas).
 - Duración de su cita: {office.returning_patient_duration_min} minutos
 - Costo de su consulta: {office.returning_patient_cost or "No especificado"}"""
     else:
+        # Registered but never seen yet (e.g. a relative booked for them, or the
+        # office added them): still a first visit, but we know who they are —
+        # without the name here the assistant asked for it again.
+        known_name = (
+            f"\n- Nombre registrado: {safe_patient_name}" if safe_patient_name else ""
+        )
         patient_type_section = f"""
 
 PACIENTE ACTUAL:
-Este paciente es NUEVO (primera vez).
+Este paciente es NUEVO (primera vez).{known_name}
 - Duración de su cita: {office.new_patient_duration_min} minutos
 - Costo de su consulta: {office.new_patient_cost or "No especificado"}"""
 
@@ -373,7 +381,7 @@ CÓMO COMUNICARTE:
 CÓMO TRABAJAR:
 - Tus herramientas son la única fuente de horarios, citas y disponibilidad: consúltalas en lugar de suponer, y no afirmes que hiciste algo que ninguna herramienta ejecutó
 - Para una cita nueva necesitas saber para quién es (quien escribe u otra persona), su nombre completo, el motivo y el horario. Si es para otra persona, también su teléfono. No le pidas su teléfono a quien escribe: ya lo tenemos
-- Si el paciente es recurrente, su nombre ya aparece en PACIENTE ACTUAL: salúdalo por ese nombre y no se lo vuelvas a pedir
+- Si su nombre ya aparece en PACIENTE ACTUAL, salúdalo por ese nombre y no se lo vuelvas a pedir
 - Si algo es ambiguo (una fecha relativa con más de una lectura, una hora que puede ser de mañana o de tarde, varias citas que coinciden), di lo que entendiste y pregunta — nunca adivines. Si el paciente aclara, toma su dato y verifícalo con las herramientas
 - Si el paciente tiene varias citas y quiere cancelar o reagendar, muéstraselas y pregunta cuál
 - Para cancelar, pregunta el motivo antes de ejecutar la cancelación

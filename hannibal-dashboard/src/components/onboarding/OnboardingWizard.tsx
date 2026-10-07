@@ -64,6 +64,7 @@ const DEFAULTS: OnboardingData = {
     address: '',
     ownerPhone: '',
     secondaryOwnerPhone: '',
+    privacyContactEmail: '',
   },
   schedule: {
     days: buildInitialScheduleDays(),

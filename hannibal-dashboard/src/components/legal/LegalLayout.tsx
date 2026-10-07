@@ -13,11 +13,11 @@ export function LegalLayout({
 }) {
   return (
     <div className="bg-white min-h-screen">
-      <nav className="flex items-center justify-between px-6 lg:px-10 py-4 border-b border-line">
-        <Link href="/">
+      <nav className="flex items-center justify-between gap-4 px-6 lg:px-10 py-4 border-b border-line">
+        <Link href="/" className="flex-shrink-0">
           <Logo size={28} />
         </Link>
-        <div className="flex gap-6 text-[13.5px] text-slate">
+        <div className="flex gap-4 sm:gap-6 text-[13.5px] text-slate text-right">
           <Link href="/privacy" className="hover:text-navy transition-colors">
             Aviso de privacidad
           </Link>

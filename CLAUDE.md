@@ -15,7 +15,7 @@ hannibal/
 │   │   ├── core/                      # Cross-cutting: security, deps, exceptions, constants
 │   │   ├── db/
 │   │   │   ├── base.py                # SQLAlchemy async engine (lazy init) + Base
-│   │   │   ├── models.py             # 11 SQLAlchemy models
+│   │   │   ├── models.py             # 13 SQLAlchemy models
 │   │   │   └── migrations/           # Alembic (async)
 │   │   ├── modules/
 │   │   │   ├── whatsapp/             # Meta Cloud API webhook, coexistence, provisioning, Twilio number purchase
@@ -28,7 +28,9 @@ hannibal/
 │   │   │   ├── patients/             # Patient CRUD
 │   │   │   ├── notifications/        # Configurable doctor notifications (new appointment/patient, cancellation, reschedule, pre-consultation brief, unconfirmed summary, arrival)
 │   │   │   ├── audit/                # Post-action write audit (Rule 12): action vs. DB + Google Calendar
-│   │   │   └── google_calendar/      # OAuth2, sync, watch channels
+│   │   │   ├── privacy/              # LFPDPPP: consent to the office's privacy notice, public notice data, message retention
+│   │   │   ├── waitlist/             # Offer freed slots to patients who wanted a sooner one (join tool, 5-min sweep, yes/no in code)
+│   │   │   └── google_calendar/      # OAuth2, sync, watch channels; inbound_changes = citas moved/deleted in Google
 │   │   ├── middleware/               # JWT auth, rate limiting
 │   │   └── utils/                    # Dates (Mexico_City TZ), phone normalization, logging
 │   ├── celery_app.py                 # Celery config + beat schedule
@@ -40,7 +42,8 @@ hannibal/
     └── src/
         ├── app/
         │   ├── (auth)/               # Login, Register pages
-        │   └── (dashboard)/          # Today, Schedule, Patients, Settings
+        │   ├── (dashboard)/          # Today, Schedule, Patients, Conversations (read-only), Settings
+        │   └── aviso/[officeId]/     # Public privacy notice of one practice (linked from the WhatsApp consent question)
         ├── components/
         │   ├── scheduling/           # ScheduleCalendar, AppointmentCard
         │   ├── coexistence/          # BotStatusBadge
@@ -71,20 +74,22 @@ Every table has `office_id`. All queries must filter by office. **Isolation is e
 - Google Calendar OAuth uses a single-use random `state` nonce stored in Redis (`gcal_oauth_state:{nonce}`, 10-min TTL) — the callback resolves the office from the nonce, never from a client-supplied id (CSRF defense).
 - Owner-scoped endpoints resolve the office from the JWT `sub` (or verify `office.user_id == sub` when an id is in the path) and return 404 — not 403 — for a non-owned office, so ids can't be enumerated.
 
-### Database models (app/db/models.py) — 11 models (Office, AvailabilitySchedule, TimeBlock, Patient, Appointment, UrgencyRequest, ReminderRule, Conversation, Message, GoogleCalendarEvent, AiTurnTrace)
+### Database models (app/db/models.py) — 13 models (Office, AvailabilitySchedule, TimeBlock, Patient, Appointment, UrgencyRequest, ReminderRule, Conversation, Message, GoogleCalendarEvent, PrivacyConsent, WaitlistEntry, AiTurnTrace)
 - `Office` — the practice/consultorio (tenant). Onboarding writes structured fields here (`services`, `insurances`, `emergency_symptoms`, `intake_questions`, `assistant_gender`, `secondary_owner_phone`), seeded from the curated catalogues in `app/core/catalogs.py`; `custom_prompt` remains only as the free-text Settings field
 - `AvailabilitySchedule` — weekly schedule (day_of_week, start_time, end_time, duration, buffer)
 - `TimeBlock` — unavailable periods (vacations, etc.)
 - `Patient` — identified by whatsapp_id
-- `Appointment` — the core entity (status: scheduled → confirmed → completed)
+- `Appointment` — the core entity (status: scheduled → confirmed → completed). `booked_via` (`BookedVia`: patient_assistant, doctor_assistant, dashboard, urgency, google_calendar) records which channel wrote the row — it feeds the dashboard's ROI card
 - `UrgencyRequest` — a patient's urgent-appointment request awaiting doctor approval (status: pending → approved/rejected/expired); on approval it books a (possibly overbooked) `type="urgent"` appointment
 - `ReminderRule` — per-office reminder configuration (reminder_type, offset_minutes, enabled)
 - `Conversation` — WhatsApp conversation thread
-- `Message` — individual messages (incoming/outgoing, with delivery_status)
+- `Message` — individual messages (incoming/outgoing, with delivery_status). `created_at` uses `clock_timestamp()` (a turn writes question and reply in one transaction; `now()` gave them the same instant). `extra_metadata.source` says who wrote an outgoing one (doctor_send_message, doctor_app, reminder_task, privacy_consent, waitlist_offer; none = the assistant). Deleted after `MESSAGE_RETENTION_DAYS` (365) by `prune_old_messages`
+- `PrivacyConsent` — a number's answer to the office's privacy notice (per notice version): the evidence of consent
+- `WaitlistEntry` — someone who wants a sooner slot (window end, part of day, optional cita to move); status waiting → offered → booked/expired
 - `GoogleCalendarEvent` — synced calendar events
 - `AiTurnTrace` — one row per assistant turn (either channel): model/effort, every tool call with args and result, reply-validator findings, reply, outcome, tokens, latency. Diagnosis data ("why did the bot say that"); patient data, so it lives in the DB scoped by `office_id` (RLS on), pruned after 30 days by the `prune_turn_traces` beat task
 
-> **Note:** `Waitlist` was removed (migration `f1a2b3c4d5e6_drop_waitlist_table`). Do not reference it.
+> **Note:** the old `Waitlist` table was removed (`f1a2b3c4d5e6`); `WaitlistEntry` (`f4a5b6c7d8e9`) is its redesign — see "Waitlist" below.
 
 ### Enums (app/core/constants.py)
 All enums use string values in English:
@@ -105,7 +110,9 @@ alert and both can instruct the doctor assistant. Never read `owner_phone` direc
 notification and the webhook's `is_doctor` check all go through.
 
 ### WhatsApp coexistence
-The doctor can use WhatsApp on their phone simultaneously with the bot. The pause is office-wide via the doctor `pause_bot`/`resume_bot` tools (Redis key `whatsapp:bot_paused:{office_id}`; default 60 min). While paused, incoming patient messages are still persisted to the conversation history (the bot just stays silent). ⚠️ Pausing automatically on a doctor's own outbound message is not implemented (it needs Meta's `message_echoes` webhook field); the doctor pauses explicitly.
+The doctor can use WhatsApp on their phone simultaneously with the bot. Two ways to keep the bot quiet (`whatsapp/coexistence.py`), both checked in the webhook router; messages are still persisted while it is silent:
+- **Office-wide pause**: doctor `pause_bot`/`resume_bot` tools or the dashboard switch (`GET /api/offices/{id}/bot-status`, `POST …/pause|resume`) — Redis `whatsapp:bot_paused:{office_id}`, default 60 min.
+- **One conversation**: when the doctor writes to a patient from the WhatsApp Business app, Meta sends an `smb_message_echoes` webhook (`value.message_echoes[]`) → the message joins the thread and the patient's session (so the bot won't contradict it) and `conv_takeover:{office_id}:{whatsapp_id}` holds that thread for 2h (sliding). Also by hand: doctor tools `take_over_conversation` / `release_conversation`. ⚠️ Requires subscribing the `smb_message_echoes` field in the Meta app's webhook configuration.
 
 ### Availability engine (modules/scheduling/availability.py)
 Calculates free slots by: getting weekly schedules → generating all possible slots → subtracting existing appointments → subtracting time blocks → checking Google Calendar freebusy. Results cached in Redis (5 min TTL). Slot locking via Redis SETNX (60s) prevents double-booking.
@@ -143,6 +150,15 @@ reads today's reports back into the doctor prompt as `SALA DE ESPERA`, so the do
 outside; telling a patient to wait needs no new code — it is the existing `send_message_to_patient`
 draft-and-approve flow.
 
+### Citas changed in Google Calendar
+The doctor's calendar is an editing surface. Inbound sync (`google_calendar/sync.import_calendar_changes`) matches our own citas by `Appointment.google_event_id` (`inbound_changes.py`): an event moved → a reschedule through `book_appointment(existing_google_event_id=…)` (new row, `rescheduled_from`, `booked_via=google_calendar`; the old row gives up the event id so the audit doesn't "repair" it); an event deleted → the cita is cancelled; echoes of our own writes are no-ops. Applied at once (reminders use the new time); the patient is told only after the doctor answers "¿le aviso?" — pending in `gcal_change_pending:{office_id}`, shown in the doctor prompt as `CAMBIOS EN TU CALENDARIO`, resolved with `resolve_calendar_change` (sends the deterministic `patient_notify` notice). A move the system refuses (block, closed hours) is reported to the doctor, not applied. Template `doctor_calendar_change` for out-of-window alerts.
+
+### Privacy (LFPDPPP)
+Health data is sensitive personal data. `prepare_booking` and `join_waitlist` refuse until the writer's number accepted the office's notice (`privacy/consent.py`, version `PRIVACY_NOTICE_VERSION`); the manager then sends a fixed question with Acepto / No acepto buttons linking `{FRONTEND_URL}/aviso/{office_id}` and records the answer in code (button id, or a plain yes/no while pending) in `privacy_consents`. General questions need no consent. `PRIVACY_CONSENT_REQUIRED=false` disables it for tooling. Deleting a patient purges their threads, traces and session. The notice text is a template that needs legal review before selling.
+
+### Waitlist
+`join_waitlist` (patient tool) is for "I want something sooner than what's available" — it refuses when the window already has free slots (it returns them to offer). The window is given by ids (`before_slot_id` or `replaces_appointment_id`), never by converted dates. `waitlist/tasks.offer_waitlist_slots` (beat, 5 min) offers the first free slot in each window, oldest entry first, holding it 30 min; the answer is settled in code (`waitlist.settle_answer`: button or plain yes/no) and books through `_execute_booking` / `_execute_reschedule` with a fixed reply — the offer is the draft, the yes is the confirmation.
+
 ### Write audit (Rule 12)
 `audit/` verifies, ~20s after every appointment write, that what the action reported matches the
 appointments table **and** the doctor's Google Calendar. It exists because `book_appointment`
@@ -171,6 +187,8 @@ spent, escalate to the doctor: a notice that silently fails is the outcome Rule 
 - `doctor_msg_sent:{office_id}:{patient_id}:{hash}` — an approved doctor→patient message already sent (TTL 30min); the same text to the same patient is not sent twice (a repeated "sí, mándalo" used to resend it)
 - `gcal_disconnected:{office_id}` / `gcal_disconnect_alerted:{office_id}` — Google rejects the office's calendar credentials (TTL 24h, re-set on each rejection) / the doctor was already told today
 - `audit_alert:{appointment_id}:{kind}` — write-audit alert dedup (TTL 24h); a persistent divergence is reported once a day, not on every write
+- `conv_takeover:{office_id}:{whatsapp_id}` — the doctor handles this patient personally (TTL 2h, sliding); the bot stays silent in that thread only
+- `gcal_change_pending:{office_id}` — hash of calendar changes awaiting the doctor's "¿le aviso al paciente?" (TTL 24h)
 
 ## Common commands
 
@@ -212,7 +230,7 @@ npm run dev
 2. **Webhook returns 200 immediately** — processing happens in FastAPI `BackgroundTasks`
 3. **Verification endpoint** returns `PlainTextResponse` with just the challenge value (Meta requirement)
 4. **Session context stored in Redis** (not DB) for speed — persisted to DB on conversation close
-5. **Celery Beat** schedule (`celery_app.py`): `dispatch_due_reminders` every 5 min (the single reminder clock), the unconfirmed-appointments digest every 15 min, `prune_turn_traces` daily, Google Calendar watch renewal daily (`renew_google_watches`, renews channels expiring within `RENEWAL_BUFFER_DAYS`). **Nothing is scheduled at booking time.** `reminders/scheduler.py` is pure arithmetic (when each rule is due) and `reminders/tasks.dispatch_due_reminders` sweeps the appointments in range, compares each office's `ReminderRule`s against the per-type sent flags, and dispatches what is due. Far-future `eta` tasks are gone, and with them the lost-on-worker-restart, delivered-twice and nightly-reconciliation problems they created.
+5. **Celery Beat** schedule (`celery_app.py`): `dispatch_due_reminders` every 5 min (the single reminder clock), the doctor's day summary every 15 min (`send_unconfirmed_summaries` → `notify_daily_agenda`, once a day 1h before the first block: citas, unconfirmed, urgencies, free slots; toggle `notify_unconfirmed`, template `doctor_daily_agenda`), `offer_waitlist_slots` every 5 min, `prune_turn_traces` and `prune_old_messages` daily, Google Calendar watch renewal daily (`renew_google_watches`, renews channels expiring within `RENEWAL_BUFFER_DAYS`). **Nothing is scheduled at booking time.** `reminders/scheduler.py` is pure arithmetic (when each rule is due) and `reminders/tasks.dispatch_due_reminders` sweeps the appointments in range, compares each office's `ReminderRule`s against the per-type sent flags, and dispatches what is due. Far-future `eta` tasks are gone, and with them the lost-on-worker-restart, delivered-twice and nightly-reconciliation problems they created.
 6. **DB base.py uses lazy initialization** — `get_engine()` and `get_async_session_maker()` create connections on first use, not at import time (required for Alembic to work)
 7. **Every Celery task body runs through `app/core/task_runner.run_task`**, never `asyncio.run` directly. Each task gets its own event loop, but the engine from decision 6 is a *process* global whose asyncpg connections stay bound to the loop that opened them — so the second task in a worker process used to check out a connection whose loop was already closed and die (`attached to a different loop`, then `connection was closed in the middle of operation`). `run_task` disposes the engine inside the task's own loop, so no connection outlives its loop and the next task builds a fresh one. The API process must **not** do this: there, one long-lived pool across requests is correct.
 

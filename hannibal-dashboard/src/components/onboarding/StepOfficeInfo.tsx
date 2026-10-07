@@ -1,9 +1,7 @@
 import React from 'react'
-import { Card, CardBody } from '@/components/ui/Card'
-import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
 import { FieldError } from '@/components/ui/FieldError'
-import { StepHeader } from '@/components/onboarding/StepHeader'
+import { StepFrame, type StepVariant } from '@/components/onboarding/StepFrame'
 import { Lock } from 'lucide-react'
 import { MEXICAN_STATES } from '@/lib/constants/mexican-states'
 import { OTHER_SPECIALTY_ID, type CatalogOption } from '@/lib/constants/catalogs'
@@ -22,9 +20,13 @@ export interface OfficeInfoData {
   address: string
   ownerPhone: string
   secondaryOwnerPhone: string
+  /** Where patients send privacy (ARCO) requests; shown on the office's notice. */
+  privacyContactEmail: string
 }
 
 interface StepOfficeInfoProps {
+  /** Onboarding wizard (default) or the Settings page. */
+  variant?: StepVariant
   data: OfficeInfoData
   onUpdate: (data: Partial<OfficeInfoData>) => void
   onNext: () => void
@@ -35,6 +37,7 @@ interface StepOfficeInfoProps {
 }
 
 export const StepOfficeInfo: React.FC<StepOfficeInfoProps> = ({
+  variant = 'wizard',
   data,
   onUpdate,
   onNext,
@@ -44,13 +47,16 @@ export const StepOfficeInfo: React.FC<StepOfficeInfoProps> = ({
   specialties = [],
 }) => {
   return (
-    <Card>
-      <CardBody className="space-y-5 p-8">
-        <StepHeader
-          eyebrow="Paso 1"
-          title="Cuéntanos sobre tu consultorio"
-          subtitle="Esta información ayuda al asistente a presentar tu práctica correctamente a los pacientes."
-        />
+    <StepFrame
+      variant={variant}
+      eyebrow="Paso 1"
+      title="Cuéntanos sobre tu consultorio"
+      subtitle="Esta información ayuda al asistente a presentar tu práctica correctamente a los pacientes."
+      onNext={onNext}
+      onBack={onBack}
+      loading={loading}
+      bodyClassName="space-y-5 p-8"
+    >
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <Input
@@ -154,6 +160,17 @@ export const StepOfficeInfo: React.FC<StepOfficeInfoProps> = ({
         />
 
         <Input
+          label="Correo para temas de privacidad (opcional)"
+          type="email"
+          placeholder="consultorio@correo.com"
+          value={data.privacyContactEmail}
+          onChange={(e) => onUpdate({ privacyContactEmail: e.target.value })}
+          error={errors.privacyContactEmail}
+          helpText="Aparece en el aviso de privacidad que tus pacientes aceptan antes de agendar. Si lo dejas vacío, se indica el WhatsApp del consultorio."
+          data-field="privacyContactEmail"
+        />
+
+        <Input
           label="Tu WhatsApp personal"
           placeholder="+52 33 1234 5678"
           value={data.ownerPhone}
@@ -180,15 +197,6 @@ export const StepOfficeInfo: React.FC<StepOfficeInfoProps> = ({
           </span>
         </div>
 
-        <div className="flex gap-3 pt-2">
-          <Button variant="secondary" onClick={onBack}>
-            Atrás
-          </Button>
-          <Button onClick={onNext} isLoading={loading} className="flex-1">
-            Continuar
-          </Button>
-        </div>
-      </CardBody>
-    </Card>
+    </StepFrame>
   )
 }

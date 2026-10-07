@@ -169,6 +169,12 @@ class Office(Base):
         Text, nullable=True
     )  # incremental events.list token for inbound sync
 
+    # Contact for privacy requests (access, rectification, cancellation,
+    # opposition — "derechos ARCO"), shown on the office's privacy notice.
+    privacy_contact_email: Mapped[Optional[str]] = mapped_column(
+        String(255), nullable=True
+    )
+
     # Doctor notification preferences (per-office toggles, default on)
     notify_new_appointment: Mapped[bool] = mapped_column(
         Boolean, default=True, nullable=False
@@ -510,6 +516,10 @@ class Appointment(Base):
         nullable=True,
     )
 
+    # Which channel wrote this row (BookedVia). NULL for rows created before
+    # the column existed. A reschedule records who moved it.
+    booked_via: Mapped[Optional[str]] = mapped_column(String(30), nullable=True)
+
     # Reminders & follow-ups: one idempotency flag per ReminderType (see
     # SENT_FLAG_BY_REMINDER_TYPE). The periodic sweep reads these to decide what
     # still has to go out, and each send task sets its own under a row lock.
@@ -819,9 +829,12 @@ class Message(Base):
     # Metadata
     extra_metadata: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
 
-    # Timestamps
+    # Timestamps. clock_timestamp(), not now(): now() is the transaction's
+    # start, and a turn writes the patient's message and the reply in one
+    # transaction — every message of the turn got the same instant and the
+    # dashboard showed replies before the questions they answer.
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=func.now(), nullable=False
+        DateTime(timezone=True), default=func.clock_timestamp(), nullable=False
     )
 
     # Relationship
@@ -892,6 +905,97 @@ class GoogleCalendarEvent(Base):
         return f"<GoogleCalendarEvent(id={self.id}, google_event_id={self.google_event_id})>"
 
 
+class WaitlistEntry(Base):
+    """Someone who wants a sooner slot than the ones available: offer it when one frees up.
+
+    A periodic sweep (waitlist/tasks.py) looks for a free slot inside the
+    window, oldest entry first, and offers it over WhatsApp. The patient's
+    "sí" books it through the normal booking path — the offer is the draft,
+    the tap is the confirmation. `replaces_appointment_id` makes it a move of
+    an existing cita to an earlier time instead of a new one.
+    """
+
+    __tablename__ = "waitlist_entries"
+    __table_args__ = (
+        Index("ix_waitlist_entries_office_status", "office_id", "status"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    office_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("offices.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    # Who asked (and who receives the offer).
+    whatsapp_id: Mapped[str] = mapped_column(String(50), nullable=False)
+    patient_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    reason: Mapped[str] = mapped_column(String(500), nullable=False)
+    # Answers to the office's pre-visit questions, carried to the booking so
+    # the doctor's brief has them (same field as Appointment.intake_notes).
+    intake_notes: Mapped[Optional[str]] = mapped_column(String(2000), nullable=True)
+    # "mañana" | "tarde" | NULL (any time)
+    part_of_day: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
+    # Only slots that start before this are worth offering.
+    window_end: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    replaces_appointment_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("appointments.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    # waiting | offered | booked | expired | cancelled
+    status: Mapped[str] = mapped_column(String(20), default="waiting", nullable=False)
+    offered_slot: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    offered_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Slots (slot_ids, office-local) this person already turned down or let lapse.
+    declined_slots: Mapped[Optional[list]] = mapped_column(JSONB, nullable=True)
+    appointment_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("appointments.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    def __repr__(self) -> str:
+        return f"<WaitlistEntry(id={self.id}, status={self.status})>"
+
+
+class PrivacyConsent(Base):
+    """A person's answer to an office's privacy notice — the evidence of consent.
+
+    Keyed by WhatsApp number, not by patient: the question is asked before
+    booking, when someone new has no Patient row yet, and a parent booking for
+    a child consents for both. One row per notice version; a new version of the
+    notice asks again.
+    """
+
+    __tablename__ = "privacy_consents"
+    __table_args__ = (
+        UniqueConstraint(
+            "office_id", "whatsapp_id", "notice_version", name="uq_privacy_consent_version"
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    office_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("offices.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    whatsapp_id: Mapped[str] = mapped_column(String(50), nullable=False)
+    notice_version: Mapped[str] = mapped_column(String(20), nullable=False)
+    accepted: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    # The WhatsApp message that carried the answer (button tap or text).
+    evidence_message_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    decided_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    def __repr__(self) -> str:
+        return f"<PrivacyConsent(office_id={self.office_id}, accepted={self.accepted})>"
+
+
 class AiTurnTrace(Base):
     """
     What the assistant did in one conversation turn, for diagnosis.
@@ -958,5 +1062,7 @@ __all__ = [
     "Conversation",
     "Message",
     "GoogleCalendarEvent",
+    "PrivacyConsent",
+    "WaitlistEntry",
     "AiTurnTrace",
 ]

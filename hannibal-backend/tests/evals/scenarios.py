@@ -336,10 +336,22 @@ _PROMISE_RE = re.compile(
 )
 
 
-def _check_no_waitlist_promise(r: Result) -> list[str]:
+def _joined_waitlist(r: Result) -> bool:
+    return any(
+        c["name"] == "join_waitlist" and '"success": true' in str(c.get("result")).lower().replace("'", '"')
+        for t in r.traces for c in (t.get("tool_calls") or [])
+    )
+
+
+def _check_waitlist_when_full(r: Result) -> list[str]:
+    # The waitlist exists now (waitlist/): the patient who only wants this
+    # week and asks to be told should end up on it — and a "te aviso" is only
+    # honest when join_waitlist actually succeeded.
+    joined = _joined_waitlist(r)
     promised = [t for t in r.replies() if _PROMISE_RE.search(t)]
     return (
-        expect(not promised, f"promised a notification that doesn't exist: {promised[:1]}")
+        expect(joined, "the patient asked to be told if a slot frees up, but join_waitlist never succeeded")
+        + expect(joined or not promised, f"promised a notification without joining the waitlist: {promised[:1]}")
         + expect(not r.active(), "booked despite the whole week being blocked")
     )
 
@@ -551,14 +563,17 @@ SCENARIOS: list[Scenario] = [
         check=_check_reschedule,
     ),
     Scenario(
-        name="no_waitlist_promises",
-        tags=["promises"],
+        name="waitlist_when_week_is_full",
+        tags=["promises", "waitlist"],
         setup=_block_whole_week,
         opening=["¿Tienes algo esta semana? Si no, ¿me avisas si se libera un espacio?"],
-        persona=JUAN + "\nSolo te interesa esta semana. Si no hay, no quieres agendar otra semana.",
-        goal="Saber si hay lugar esta semana; si no hay, que te avisen si se libera algo.",
-        check=_check_no_waitlist_promise,
-        max_turns=4,
+        persona=(
+            JUAN + "\nSolo te interesa esta semana. Si no hay, no quieres agendar otra semana. "
+            "Es para ti, para un chequeo general, y no tomas medicamentos."
+        ),
+        goal="Saber si hay lugar esta semana; si no hay, quedar anotado para que te avisen si se libera algo.",
+        check=_check_waitlist_when_full,
+        max_turns=5,
     ),
     Scenario(
         name="price_question",

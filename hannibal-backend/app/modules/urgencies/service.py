@@ -12,6 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.constants import (
+    BookedVia,
     GCAL_COLOR_URGENT,
     MX_TIMEZONE,
     UrgencyStatus,
@@ -75,7 +76,7 @@ async def create_urgency_request(
 
 
 async def get_pending_urgencies(office_id: UUID, db: AsyncSession) -> list[dict]:
-    """Pending requests for an office, shaped for the doctor system prompt."""
+    """Pending requests for an office — for the doctor system prompt and the dashboard."""
     stmt = (
         select(UrgencyRequest, Patient.name)
         .join(Patient, UrgencyRequest.patient_id == Patient.id)
@@ -92,6 +93,8 @@ async def get_pending_urgencies(office_id: UUID, db: AsyncSession) -> list[dict]
             "patient_name": patient_name or "Paciente",
             "reason": req.reason,
             "preferred": templates.format_preferred(req.preferred_time),
+            "patient_id": str(req.patient_id),
+            "created_at": req.created_at.isoformat() if req.created_at else None,
         }
         for req, patient_name in rows
     ]
@@ -351,6 +354,7 @@ async def _create_urgent_appointment(
         consultation_reason=reason,
         status="scheduled",
         google_event_id=google_event_id,
+        booked_via=BookedVia.URGENCY.value,
     )
     db.add(appointment)
     await db.flush()

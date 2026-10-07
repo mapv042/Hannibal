@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import List, Optional
 from uuid import UUID
 
@@ -57,6 +58,12 @@ class CreateOfficeRequest(BaseModel):
     city: Optional[str] = Field(None, description="City", max_length=100)
     state: Optional[str] = Field(None, description="State", max_length=100)
     address: Optional[str] = Field(None, description="Address", max_length=500)
+    privacy_contact_email: Optional[str] = Field(
+        None,
+        description="Contact for privacy (ARCO) requests shown on the privacy notice",
+        max_length=255,
+        pattern=r"^$|^[^@\s]+@[^@\s]+\.[^@\s]+$",
+    )
 
 
 class UpdateOfficeRequest(BaseModel):
@@ -113,6 +120,12 @@ class UpdateOfficeRequest(BaseModel):
     )
     welcome_message: Optional[str] = Field(
         None, description="Welcome message for first-time patients", max_length=2000
+    )
+    privacy_contact_email: Optional[str] = Field(
+        None,
+        description="Contact for privacy (ARCO) requests shown on the privacy notice; empty clears it",
+        max_length=255,
+        pattern=r"^$|^[^@\s]+@[^@\s]+\.[^@\s]+$",
     )
     new_patient_duration_min: Optional[int] = Field(
         None, description="Appointment duration for new patients (minutes)", ge=10, le=120
@@ -178,6 +191,19 @@ class UpdateReminderRulesRequest(BaseModel):
     )
 
 
+class PauseBotRequest(BaseModel):
+    """How long to silence the assistant office-wide."""
+
+    minutes: int = Field(60, ge=1, le=24 * 60)
+
+
+class BotStatusResponse(BaseModel):
+    """The assistant's live state, read from the Redis pause key."""
+
+    bot_status: str = Field(..., description="active | paused")
+    paused_until: Optional[datetime] = None
+
+
 class OfficeResponse(BaseModel):
     """Response model for office data."""
 
@@ -198,6 +224,7 @@ class OfficeResponse(BaseModel):
     assistant_gender: str
     custom_prompt: Optional[str]
     welcome_message: Optional[str]
+    privacy_contact_email: Optional[str] = None
     new_patient_duration_min: int
     returning_patient_duration_min: int
     new_patient_cost: Optional[str]

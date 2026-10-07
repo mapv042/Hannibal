@@ -104,6 +104,20 @@ class BlockOrigin(str, Enum):
     HOLIDAY = "holiday"  # Seeded Mexican statutory holiday
 
 
+class BookedVia(str, Enum):
+    """Which channel wrote an appointment row (Appointment.booked_via).
+
+    What lets the dashboard say how much of the agenda the assistant filled on
+    its own — booked_by_patient_id can't, it always names a patient.
+    """
+
+    PATIENT_ASSISTANT = "patient_assistant"  # the patient booked with the bot
+    DOCTOR_ASSISTANT = "doctor_assistant"  # the doctor asked their assistant
+    DASHBOARD = "dashboard"
+    URGENCY = "urgency"  # an approved urgent request
+    GOOGLE_CALENDAR = "google_calendar"  # the doctor moved the event in their calendar
+
+
 # Time Preference
 class TimePreference(str, Enum):
     """Patient's preferred time of day."""

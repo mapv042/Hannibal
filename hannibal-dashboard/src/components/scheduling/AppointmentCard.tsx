@@ -18,7 +18,7 @@ export const AppointmentCard: React.FC<AppointmentCardProps> = ({
   onClick,
   className = '',
 }) => {
-  const time = formatDateSafe(appointment.start_datetime, 'HH:mm')
+  const time = formatDateSafe(appointment.start_datetime, 'h:mm a')
   const date = formatDateSafe(appointment.start_datetime, 'MMMM d')
   // Arrival is a separate axis from status — a confirmed cita can still have a
   // patient stuck in traffic — so it gets its own chip beside the status badge.

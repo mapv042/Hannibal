@@ -9,9 +9,11 @@ from typing import Any, Optional
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.constants import ArrivalStatus, MX_TIMEZONE
+from app.core.constants import ArrivalStatus, BookedVia, MX_TIMEZONE
 from app.db.models import Appointment, Office, Patient
+from app.modules.privacy.consent import has_consented
 from app.modules.ai.tool_helpers import (
+    CalendarUnavailable,
     appointment_access_error,
     availability_for_dates,
     format_appointment_dt,
@@ -28,6 +30,7 @@ from app.modules.conversation.state import (
     BookingDraft,
     ConversationState,
     KnownAppointment,
+    OfferedSlot,
 )
 from app.modules.google_calendar.service import update_event_color
 from app.modules.google_calendar.sync import (
@@ -50,7 +53,7 @@ from app.modules.notifications.tasks import (
     enqueue_reschedule_notification,
 )
 from app.modules.audit.tasks import enqueue_write_audit
-from app.utils.dates import now_mx
+from app.utils.dates import long_date_label, now_mx
 from app.utils.logger import get_logger
 from app.utils.text import sanitize_for_prompt
 from app.utils.phone import (
@@ -214,6 +217,62 @@ TOOL_DEFINITIONS = [
         },
     },
     {
+        "name": "join_waitlist",
+        "description": (
+            "Lista de espera para quien quiere una cita ANTES de lo que hay disponible (el primer "
+            "horario libre, o la cita que ya tiene, le queda demasiado lejos). No sirve para "
+            "buscar otros días: si el problema es el día o la hora, consulta más días con "
+            "get_available_slots y ofréceselos. Si se libera un horario anterior, el sistema se lo "
+            "ofrece por WhatsApp y, si lo acepta, queda agendado (o su cita se mueve) sin que tú "
+            "hagas nada. Solo para quien escribe, o para adelantar una cita que ya tiene."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "before_slot_id": {
+                    "type": "string",
+                    "description": (
+                        "Se le ofrecerán solo horarios ANTERIORES a este: el primer horario "
+                        "disponible, que le quedó demasiado lejos (slot_id tal cual de "
+                        "get_available_slots). Omítelo para buscar en las próximas dos semanas."
+                    ),
+                },
+                "replaces_appointment_id": {
+                    "type": "string",
+                    "description": (
+                        "Si ya tiene cita y la quiere antes: su ID (de get_patient_appointments "
+                        "o del ESTADO DE LA CONVERSACIÓN). Se le ofrecerán horarios anteriores a "
+                        "esa cita, y al aceptar se mueve."
+                    ),
+                },
+                "part_of_day": {
+                    "type": "string",
+                    "enum": ["mañana", "tarde"],
+                    "description": "Solo si el paciente solo puede en la mañana o en la tarde.",
+                },
+                "patient_name": {
+                    "type": "string",
+                    "description": (
+                        "Nombre completo del paciente. Puedes omitirlo si ya aparece en PACIENTE "
+                        "ACTUAL o si pasas replaces_appointment_id."
+                    ),
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Motivo de la consulta. No hace falta con replaces_appointment_id.",
+                },
+                "intake_notes": {
+                    "type": "string",
+                    "description": (
+                        "Lo que el paciente respondió a las preguntas de ANTES DE AGENDAR, en una "
+                        "o dos líneas; llega al doctor si la cita se agenda. Omítelo si no hay."
+                    ),
+                },
+            },
+            "required": [],
+        },
+    },
+    {
         "name": "cancel_appointment",
         "description": (
             "Cancela una cita existente. El paciente debe haber identificado cuál cita "
@@ -356,6 +415,30 @@ class ToolContext:
         # A draft prepared at or after this moment was never shown to the
         # patient, so confirm_booking must not execute it (see there).
         self.turn_started_at = turn_started_at or now_mx()
+        # Set by prepare_booking when the writer hasn't accepted the privacy
+        # notice: the manager sends the fixed consent question after the reply.
+        self.privacy_consent_requested = False
+
+
+async def _privacy_gate(ctx: ToolContext, retry_tool: str) -> Optional[dict]:
+    """None when the writer accepted the privacy notice; otherwise the result to return.
+
+    Booking (or joining the waitlist) is where health data starts being stored
+    — a reason, intake answers — so the writer accepts the notice first. The
+    question itself is a fixed message the manager sends, not model text.
+    """
+    if await has_consented(ctx.db, ctx.office.id, ctx.whatsapp_id):
+        return None
+    ctx.privacy_consent_requested = True
+    return {
+        "needs_privacy_consent": True,
+        "next_step": (
+            "Antes de continuar, el paciente tiene que aceptar el aviso de privacidad: el "
+            "sistema se lo manda en el siguiente mensaje, con botones. Dile en una frase que "
+            "necesitas su autorización y que la verá a continuación. Cuando la acepte, vuelve "
+            f"a llamar {retry_tool} con los mismos datos."
+        ),
+    }
 
 
 def _booking_error(error: str) -> dict:
@@ -464,6 +547,7 @@ MUTATING_TOOLS = frozenset({
     "confirm_attendance",
     "report_arrival",
     "request_urgent_appointment",
+    "join_waitlist",
 })
 
 # What a successful call of each write lets the assistant truthfully say it did.
@@ -617,6 +701,10 @@ async def _handle_prepare_booking(args: dict, ctx: ToolContext) -> dict:
     events: the slot is checked *before* the patient is told "te confirmo", and
     the exact data the patient approves is what confirm_booking later writes.
     """
+    gate = await _privacy_gate(ctx, "prepare_booking")
+    if gate:
+        return gate
+
     start_dt = parse_slot_id(args.get("slot_id", ""))
     if isinstance(start_dt, dict):
         return start_dt
@@ -778,6 +866,20 @@ async def _handle_prepare_booking(args: dict, ctx: ToolContext) -> dict:
         if not for_self and patient_phone:
             summary += f" Teléfono de contacto: {display_or_raw(patient_phone)}."
 
+    # Re-preparing the very summary the patient already read is not a new
+    # draft: keep when it was first shown. Models re-call prepare_booking right
+    # before confirm_booking, and a fresh timestamp made confirm_booking refuse
+    # ("todavía no ha visto este resumen") and the patient get asked again.
+    previous = ctx.state.draft
+    created_at = now_mx().isoformat()
+    if (
+        previous is not None
+        and previous.summary == summary
+        and previous.replaces_appointment_id == replaces_id
+        and previous.intake_notes == intake_notes
+    ):
+        created_at = previous.created_at
+
     ctx.state.draft = BookingDraft(
         slot_id=slot_id_for(start_dt),
         label=label,
@@ -789,7 +891,7 @@ async def _handle_prepare_booking(args: dict, ctx: ToolContext) -> dict:
         intake_notes=intake_notes,
         replaces_appointment_id=replaces_id,
         confirm_second_same_day=confirm_second,
-        created_at=now_mx().isoformat(),
+        created_at=created_at,
     )
     logger.info(
         "tool_booking_prepared",
@@ -911,6 +1013,7 @@ async def _execute_booking(ctx: ToolContext, draft: BookingDraft, start_dt: date
         redis_client=ctx.redis_client,
         booked_by_patient_id=ctx.patient_id,
         intake_notes=draft.intake_notes,
+        booked_via=BookedVia.PATIENT_ASSISTANT.value,
     )
     if outcome.error:
         return _booking_error(outcome.error)
@@ -999,6 +1102,7 @@ async def _execute_reschedule(ctx: ToolContext, appointment_id: str, new_start: 
         # reason to make the doctor walk in without the brief.
         intake_notes=appointment.intake_notes,
         rescheduled_from=appointment.id,
+        booked_via=BookedVia.PATIENT_ASSISTANT.value,
     )
     if outcome.error:
         return _booking_error(outcome.error)
@@ -1058,6 +1162,7 @@ async def _execute_reschedule(ctx: ToolContext, appointment_id: str, new_start: 
         "new_label": new_label,
         "reason": reason,
         "patient_name": patient_name,
+        "office_address": ctx.office.address or "",
     }
 
 
@@ -1321,3 +1426,110 @@ async def _handle_request_urgent_appointment(args: dict, ctx: ToolContext) -> di
             "dile también que no espere la respuesta: que llame al 911 o acuda a urgencias."
         ),
     }
+
+
+async def _free_slots_before(
+    ctx: ToolContext, window_end: datetime, part_of_day: Optional[str], limit: int = 3
+) -> list[dict]:
+    """Up to `limit` bookable slots before `window_end` (what a waitlist would offer)."""
+    from app.modules.waitlist.service import MIN_LEAD_MINUTES
+
+    duration_min, _ = await resolve_appointment_duration(ctx.db, ctx.office, ctx.patient_id)
+    earliest = now_mx() + timedelta(minutes=MIN_LEAD_MINUTES)
+    found: list[dict] = []
+    day = now_mx().date()
+    while day <= localize_mx(window_end).date() and len(found) < limit:
+        try:
+            slots = await slots_on_day(ctx.office.id, day, ctx.db, slot_minutes=duration_min)
+        except CalendarUnavailable:
+            return []  # can't tell; let the waitlist try later
+        for slot in slots:
+            start = parse_slot_id(slot["slot_id"])
+            if isinstance(start, dict) or start < earliest or start >= window_end:
+                continue
+            if part_of_day and slot["period"] != part_of_day:
+                continue
+            found.append({**slot, "date_label": long_date_label(start.date())})
+            if len(found) >= limit:
+                break
+        day += timedelta(days=1)
+    return found
+
+
+@_handler("join_waitlist")
+async def _handle_join_waitlist(args: dict, ctx: ToolContext) -> dict:
+    from app.modules.waitlist.service import DEFAULT_WINDOW_DAYS, MIN_LEAD_MINUTES, join
+
+    gate = await _privacy_gate(ctx, "join_waitlist")
+    if gate:
+        return gate
+
+    part_of_day = args.get("part_of_day") if args.get("part_of_day") in ("mañana", "tarde") else None
+    replaces_id = (args.get("replaces_appointment_id") or "").strip() or None
+    replaces_uuid = None
+    if replaces_id:
+        appointment, error = await _load_actionable_appointment(replaces_id, ctx)
+        if error:
+            return error
+        patient = await ctx.db.get(Patient, appointment.patient_id)
+        patient_name = (patient.name if patient else None) or "Paciente"
+        reason = appointment.consultation_reason or "Consulta"
+        window_end = appointment.start_datetime
+        replaces_uuid = appointment.id
+    else:
+        writer = await ctx.db.get(Patient, ctx.patient_id) if ctx.patient_id else None
+        patient_name = (args.get("patient_name") or "").strip() or ((writer.name or "") if writer else "")
+        reason = (args.get("reason") or "").strip()
+        if not patient_name:
+            return {"error": "Falta el nombre completo del paciente. Pídeselo."}
+        if not reason:
+            return {"error": "Falta el motivo de la consulta. Pregúntaselo."}
+        before = (args.get("before_slot_id") or "").strip()
+        if before:
+            window_end = parse_slot_id(before)
+            if isinstance(window_end, dict):
+                return window_end
+        else:
+            window_end = now_mx() + timedelta(days=DEFAULT_WINDOW_DAYS)
+
+    if window_end <= now_mx() + timedelta(minutes=MIN_LEAD_MINUTES):
+        return {"error": "Ese horario ya está muy cerca: no da tiempo de ofrecerle uno anterior."}
+
+    # A waitlist is for when nothing fits. If the window already has free
+    # slots, the patient should be offered those, not parked in a queue.
+    free = await _free_slots_before(ctx, window_end, part_of_day)
+    if free:
+        ctx.state.remember_slots([
+            OfferedSlot(slot_id=f["slot_id"], date_label=f["date_label"], time_label=f["label"])
+            for f in free
+        ])
+        return {
+            "error": "Hay horarios libres dentro de lo que pide; ofréceselos antes de anotarlo en lista de espera.",
+            "slots": free,
+        }
+
+    entry = await join(
+        ctx.db,
+        ctx.office,
+        whatsapp_id=ctx.whatsapp_id,
+        patient_name=patient_name,
+        reason=reason,
+        window_end=window_end,
+        part_of_day=part_of_day,
+        replaces_appointment_id=replaces_uuid,
+        intake_notes=(args.get("intake_notes") or "").strip() or None,
+    )
+    if isinstance(entry, str):
+        return {"error": entry}
+
+    until = format_appointment_dt(window_end)
+    when = f" por la {part_of_day}" if part_of_day else ""
+    return {
+        "success": True,
+        "summary": (
+            f"En lista de espera: si se libera un horario{when} antes del {until}, el sistema "
+            f"se lo ofrece por WhatsApp para que lo acepte."
+            + (" Su cita actual se mantiene mientras tanto." if replaces_uuid else "")
+        ),
+    }
+

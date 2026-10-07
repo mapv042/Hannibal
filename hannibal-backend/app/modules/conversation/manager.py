@@ -32,6 +32,8 @@ from app.modules.ai.tools import (
     execute_tool,
 )
 from app.modules.conversation.tracing import persist_trace
+from app.modules.privacy import consent as privacy
+from app.modules.waitlist import service as waitlist
 from app.modules.conversation.base_manager import BaseToolConversationManager
 from app.modules.conversation.session_store import SessionStore
 from app.modules.conversation.schemas import SessionContext
@@ -184,6 +186,13 @@ class ConversationManager(BaseToolConversationManager):
                 state_block=session.state.render(),
                 schedules=await self._schedules(db, office.id),
             )
+            # The answer to a pending privacy-notice question is settled here,
+            # in code: a tapped button (its id never reaches the model), or a
+            # plain yes/no typed while the question is open.
+            message_text = await self._settle_privacy_answer(
+                db, office, session, messages, extracted, message_text
+            )
+
             session.claude_history = self.sanitize_history(session.claude_history)
             session.claude_history.append({"role": "user", "content": message_text})
 
@@ -198,30 +207,39 @@ class ConversationManager(BaseToolConversationManager):
                 redis_client=self.session_store.redis_client,
                 state=session.state,
             )
-            working_messages = list(session.claude_history)
-            try:
-                response_text = await self.run_tool_loop(
-                    system_prompt,
-                    working_messages,
-                    TOOL_DEFINITIONS,
-                    execute_tool,
-                    tool_ctx,
-                    log_prefix="patient",
-                    mutating_tools=MUTATING_TOOLS,
-                    tool_claims=TOOL_CLAIMS,
-                    # One call at a time: the booking flow is sequential by
-                    # nature, and parallel writes are where duplicates came from.
-                    parallel_tool_calls=False,
-                    trace=trace,
-                )
-            except AIServiceError as e:
-                # The model is unreachable. Anything a tool already wrote this
-                # turn stands (it is committed below with the message), and the
-                # patient hears something instead of silence.
-                logger.error("patient_ai_unavailable", error=str(e), office_id=office_id)
-                trace.outcome = "error"
-                trace.error = str(e)
-                response_text = self.AI_UNAVAILABLE_REPLY
+            # A yes/no to a waitlist offer is settled in code, like a
+            # confirmation: the offer was the draft, this is the approval. The
+            # reply is fixed text, so the model is not called this turn.
+            response_text = await waitlist.settle_answer(
+                db, office, session, messages, message_text, self.session_store.redis_client
+            )
+            if response_text is None:
+                working_messages = list(session.claude_history)
+                try:
+                    response_text = await self.run_tool_loop(
+                        system_prompt,
+                        working_messages,
+                        TOOL_DEFINITIONS,
+                        execute_tool,
+                        tool_ctx,
+                        log_prefix="patient",
+                        mutating_tools=MUTATING_TOOLS,
+                        tool_claims=TOOL_CLAIMS,
+                        # One call at a time: the booking flow is sequential by
+                        # nature, and parallel writes are where duplicates came from.
+                        parallel_tool_calls=False,
+                        trace=trace,
+                    )
+                except AIServiceError as e:
+                    # The model is unreachable. Anything a tool already wrote this
+                    # turn stands (it is committed below with the message), and the
+                    # patient hears something instead of silence.
+                    logger.error("patient_ai_unavailable", error=str(e), office_id=office_id)
+                    trace.outcome = "error"
+                    trace.error = str(e)
+                    response_text = self.AI_UNAVAILABLE_REPLY
+            else:
+                tool_ctx.patient_id = session.patient_id
 
             # Update patient_id if a tool created the patient
             if tool_ctx.patient_id and tool_ctx.patient_id != session.patient_id:
@@ -280,6 +298,11 @@ class ConversationManager(BaseToolConversationManager):
                 delivery_status="failed" if send_failed else "sent",
             )
 
+            # 9b. prepare_booking found no consent to the privacy notice: ask
+            # with the fixed question and buttons, right after the reply.
+            if tool_ctx.privacy_consent_requested and not send_failed:
+                await self._send_privacy_question(db, office, session, conversation_obj, whatsapp_id)
+
             # 10. Update conversation state
             session.last_message_at = now_mx().isoformat()
             conversation_obj.last_message_at = now_mx()
@@ -308,6 +331,50 @@ class ConversationManager(BaseToolConversationManager):
         finally:
             if trace is not None:
                 await persist_trace(trace)
+
+    async def _settle_privacy_answer(
+        self, db, office, session, messages, extracted, message_text: str
+    ) -> str:
+        """Record an answer to the privacy question; return the text the model reads."""
+        pending = bool(session.collected_data.get(privacy.WAITING_PRIVACY_CONSENT))
+        answer = privacy.answer_from_messages(messages)
+        if answer is None and pending:
+            typed = privacy.answer_from_text(message_text)
+            if typed is not None:
+                answer = (typed, extracted[-1]["id"])
+        if answer is None:
+            return message_text
+
+        accepted, evidence_id = answer
+        await privacy.record_answer(db, office.id, session.whatsapp_id, accepted, evidence_id)
+        session.collected_data.pop(privacy.WAITING_PRIVACY_CONSENT, None)
+        marker = privacy.ACCEPTED_MARKER if accepted else privacy.DECLINED_MARKER
+        return f"{message_text}\n{marker}"
+
+    async def _send_privacy_question(self, db, office, session, conversation_obj, whatsapp_id) -> None:
+        """Send the consent question and remember it is pending. Never raises."""
+        try:
+            text, message_id = await privacy.send_consent_request(
+                self.meta_client, office, whatsapp_id
+            )
+        except Exception as e:
+            logger.error("privacy_question_send_failed", error=str(e), office_id=str(office.id))
+            return
+        db.add(
+            Message(
+                id=uuid.uuid4(),
+                conversation_id=conversation_obj.id,
+                content=text,
+                type="text",
+                direction="outgoing",
+                whatsapp_message_id=message_id,
+                delivery_status="sent",
+                extra_metadata={"source": "privacy_consent"},
+            )
+        )
+        session.collected_data[privacy.WAITING_PRIVACY_CONSENT] = True
+        # The model's history should show it asked, so "sí" next turn reads right.
+        session.claude_history.append({"role": "assistant", "content": text})
 
     async def _has_prior_messages(self, db: AsyncSession, conversation_id) -> bool:
         result = await db.execute(

@@ -33,12 +33,11 @@ export default function PatientDetailPage() {
         setPatient(patientResponse.data)
 
         // Load appointments for this patient
-        const appointmentsResponse = await api.getAppointments(patientResponse.data.office_id)
+        const appointmentsResponse = await api.getAppointments(patientResponse.data.office_id, {
+          patient_id: patientId,
+        })
         if (appointmentsResponse.success && appointmentsResponse.data) {
-          const patientAppointments = appointmentsResponse.data.filter(
-            (c) => c.patient_id === patientId
-          )
-          setAppointments(patientAppointments)
+          setAppointments(appointmentsResponse.data)
         }
       } else {
         setPatient(null)
@@ -252,7 +251,7 @@ export default function PatientDetailPage() {
                       <div>
                         <p className="font-medium text-gray-900">
                           {formatDateSafe(appointment.start_datetime, 'MMMM d, yyyy')}{' '}
-                          - {formatDateSafe(appointment.start_datetime, 'HH:mm')}
+                          - {formatDateSafe(appointment.start_datetime, 'h:mm a')}
                         </p>
                         <p className="text-sm text-gray-600">
                           {appointment.consultation_reason

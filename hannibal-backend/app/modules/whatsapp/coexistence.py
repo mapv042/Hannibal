@@ -1,4 +1,10 @@
-"""Coexistence mode handling for bot and doctor message echoes."""
+"""Coexistence: the doctor's own WhatsApp and the assistant on the same number.
+
+Two ways to keep the bot quiet: the office-wide pause (pause_bot / the
+dashboard switch), and a per-conversation hold (take_over_conversation) set
+when the doctor writes to a patient from the WhatsApp Business app (an
+`smb_message_echoes` webhook) or asks the assistant to let them handle one.
+"""
 
 from __future__ import annotations
 
@@ -18,74 +24,57 @@ logger = get_logger(__name__)
 
 # Redis key patterns
 BOT_PAUSE_KEY_TEMPLATE = "whatsapp:bot_paused:{office_id}"
-LAST_DOCTOR_MESSAGE_KEY_TEMPLATE = "whatsapp:last_doctor_message:{office_id}:{whatsapp_id}"
+# One patient's thread held by the doctor (see take_over_conversation).
+CONV_TAKEOVER_KEY = "conv_takeover:{office_id}:{whatsapp_id}"
 
-# Default pause duration in minutes when doctor takes control
+# Default office-wide pause (pause_bot) when no duration is given
 DEFAULT_DOCTOR_TAKEOVER_PAUSE_MINUTES = 60
+# How long a thread stays with the doctor after their last message to it
+DEFAULT_CONVERSATION_TAKEOVER_MINUTES = 120
 
 
-async def handle_echo(
+async def take_over_conversation(
     office_id: uuid.UUID,
-    conversation_id: uuid.UUID,
-    content: str,
-    db: AsyncSession,
+    whatsapp_id: str,
     redis_client: redis.Redis,
-    pause_minutes: int = DEFAULT_DOCTOR_TAKEOVER_PAUSE_MINUTES,
+    minutes: int = DEFAULT_CONVERSATION_TAKEOVER_MINUTES,
+) -> datetime:
+    """The doctor is talking to this patient: the bot stays out of this one thread.
+
+    Unlike pause_bot (office-wide), every other patient keeps being answered.
+    Each call restarts the window, so an ongoing exchange keeps it alive; when
+    it lapses the assistant picks the conversation up again.
+    """
+    key = CONV_TAKEOVER_KEY.format(office_id=office_id, whatsapp_id=whatsapp_id)
+    await redis_client.setex(key, timedelta(minutes=minutes), "doctor")
+    logger.info("conversation_taken_over", office_id=str(office_id), minutes=minutes)
+    return now_mx() + timedelta(minutes=minutes)
+
+
+async def release_conversation(
+    office_id: uuid.UUID, whatsapp_id: str, redis_client: redis.Redis
 ) -> bool:
-    """
-    Handle doctor takeover: pause bot and mark conversation as taken by doctor.
+    """Hand the thread back to the assistant. Returns whether it was taken."""
+    key = CONV_TAKEOVER_KEY.format(office_id=office_id, whatsapp_id=whatsapp_id)
+    removed = await redis_client.delete(key)
+    logger.info("conversation_released", office_id=str(office_id), was_taken=bool(removed))
+    return bool(removed)
 
-    When a doctor sends a message in a coexistence setup, we:
-    1. Pause the bot for a configured duration
-    2. Mark the conversation as taken by doctor in database
-    3. Log the takeover event
-    4. Store in Redis for fast pause checks
 
-    Args:
-        office_id: ID of the office
-        conversation_id: ID of the conversation
-        content: Doctor's message content (for logging)
-        db: Database session
-        redis_client: Redis client for pause state
-        pause_minutes: Duration to pause bot in minutes
-
-    Returns:
-        True if takeover was successfully handled
-
-    Raises:
-        SQLAlchemy errors if database update fails
-    """
+async def conversation_taken_until(
+    office_id: uuid.UUID, whatsapp_id: str, redis_client: redis.Redis
+) -> Optional[datetime]:
+    """When the doctor's hold on this thread lapses, or None when the bot answers."""
+    key = CONV_TAKEOVER_KEY.format(office_id=office_id, whatsapp_id=whatsapp_id)
     try:
-        # Update conversation in database
-        conversation = await db.get(Conversation, conversation_id)
-        if conversation:
-            conversation.taken_by_doctor = True
-            conversation.doctor_took_control_at = now_mx()
-            conversation.status = "paused"
-            db.add(conversation)
-            await db.commit()
-
-        # Set pause in Redis
-        await pause_bot(office_id, pause_minutes, redis_client)
-
-        logger.info(
-            "doctor_takeover_handled",
-            office_id=str(office_id),
-            conversation_id=str(conversation_id),
-            pause_minutes=pause_minutes,
-            content_preview=content[:100] if content else None,
-        )
-
-        return True
-
+        ttl = await redis_client.ttl(key)
     except Exception as e:
-        logger.error(
-            "doctor_takeover_error",
-            office_id=str(office_id),
-            conversation_id=str(conversation_id),
-            error=str(e),
-        )
-        return False
+        # Conservative, like check_pause: on error the bot keeps answering.
+        logger.error("conversation_takeover_check_error", error=str(e))
+        return None
+    if ttl is None or ttl < 0:
+        return None
+    return now_mx() + timedelta(seconds=ttl)
 
 
 async def check_pause(
@@ -118,6 +107,29 @@ async def check_pause(
         )
         # Conservative: assume NOT paused on error to keep bot running
         return False
+
+
+async def get_pause_until(
+    office_id: uuid.UUID,
+    redis_client: redis.Redis,
+) -> Optional[datetime]:
+    """When the office-wide pause ends, or None when the bot is answering.
+
+    Derived from the pause key's TTL, so the dashboard and the webhook read the
+    same single source of truth.
+    """
+    key = BOT_PAUSE_KEY_TEMPLATE.format(office_id=office_id)
+    try:
+        ttl = await redis_client.ttl(key)
+    except Exception as e:
+        logger.error("pause_ttl_error", office_id=str(office_id), error=str(e))
+        return None
+    # -2: no key (not paused); -1: key without expiry (should not happen).
+    if ttl is None or ttl == -2:
+        return None
+    if ttl == -1:
+        return now_mx() + timedelta(days=365)
+    return now_mx() + timedelta(seconds=ttl)
 
 
 async def pause_bot(

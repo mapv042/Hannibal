@@ -15,8 +15,10 @@ import { getStatus } from '@/lib/status'
 import { byStartTime } from '@/lib/appointments'
 import { NextAppointmentCard } from '@/components/dashboard/NextAppointmentCard'
 import { PracticeHealthCard } from '@/components/dashboard/PracticeHealthCard'
+import { PendingUrgenciesCard } from '@/components/dashboard/PendingUrgenciesCard'
+import { AssistantImpactCard } from '@/components/dashboard/AssistantImpactCard'
 import { Calendar, CheckCircle, AlertCircle, Users } from 'lucide-react'
-import type { OfficeStats } from '@/lib/api'
+import type { OfficeStats, PendingUrgency } from '@/lib/api'
 import type { Appointment, Office } from '@/lib/supabase'
 
 export default function DashboardPage() {
@@ -29,6 +31,7 @@ export default function DashboardPage() {
   })
   const [office, setOffice] = useState<Office | null>(null)
   const [health, setHealth] = useState<OfficeStats | null>(null)
+  const [urgencies, setUrgencies] = useState<PendingUrgency[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(false)
   const api = useApi()
@@ -51,10 +54,14 @@ export default function DashboardPage() {
       setOffice(currentOffice)
 
       if (currentOffice) {
-        // Practice health is secondary: a failure here must not blank the
-        // agenda, so it is not folded into the page's error state.
-        const statsResponse = await api.getStats(currentOffice.id, 'month')
+        // Practice health and urgencies are secondary: a failure here must not
+        // blank the agenda, so they are not folded into the page's error state.
+        const [statsResponse, urgenciesResponse] = await Promise.all([
+          api.getStats(currentOffice.id, 'month'),
+          api.getPendingUrgencies(),
+        ])
         setHealth(statsResponse.data ?? null)
+        setUrgencies(urgenciesResponse.data ?? [])
       }
 
       // Load today's appointments
@@ -116,6 +123,8 @@ export default function DashboardPage() {
     <div className="space-y-6">
       <PageHeader title="Hoy" subtitle={capitalizedToday} />
 
+      {!loading && <PendingUrgenciesCard urgencies={urgencies} />}
+
       {!loading && !error && (
         <NextAppointmentCard
           appointment={nextAppointment}
@@ -143,6 +152,8 @@ export default function DashboardPage() {
           ))}
         </div>
       )}
+
+      {!loading && <AssistantImpactCard stats={health} />}
 
       {!loading && <PracticeHealthCard stats={health} />}
 

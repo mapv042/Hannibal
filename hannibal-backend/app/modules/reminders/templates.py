@@ -5,6 +5,17 @@ from __future__ import annotations
 from typing import Optional
 
 
+def office_location(office) -> str:
+    """Where the cita is, as one line: "Consultorio Demo, Av. Insurgentes Sur 1234".
+
+    Goes into reminders and into the `location` param of the approved Meta
+    templates (a single line: Meta rejects newlines in params), so a patient
+    reading a reminder knows where to go without asking.
+    """
+    address = (getattr(office, "address", None) or "").strip()
+    return f"{office.name}, {address}" if address else office.name
+
+
 def reminder_day_before(appointment_data: dict, tone: str = "formal") -> str:
     """Generate day-before reminder."""
     patient_name = appointment_data.get("patient_name", "estimado cliente")

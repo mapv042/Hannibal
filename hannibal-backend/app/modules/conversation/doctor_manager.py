@@ -28,6 +28,9 @@ from app.modules.whatsapp.transport import WhatsAppClient
 from app.modules.whatsapp.window import record_doctor_inbound
 from app.modules.scheduling.waiting_room import get_waiting_room
 from app.modules.urgencies.service import get_pending_urgencies
+from app.modules.google_calendar.inbound_changes import (
+    get_pending as get_pending_calendar_changes,
+)
 
 logger = get_logger(__name__)
 
@@ -113,11 +116,13 @@ class DoctorConversationManager(BaseToolConversationManager):
             # this turn.
             pending_urgencies = await get_pending_urgencies(office.id, db)
             waiting_room = await get_waiting_room(office.id, db)
+            calendar_changes = await get_pending_calendar_changes(self.redis_client, office.id)
             system_prompt = build_doctor_system_prompt(
                 office,
                 pending_urgencies=pending_urgencies,
                 waiting_room=waiting_room,
                 state_block=state.render(),
+                calendar_changes=calendar_changes,
             )
             tool_ctx = DoctorToolContext(
                 db=db,

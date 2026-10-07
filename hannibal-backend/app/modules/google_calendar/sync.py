@@ -19,6 +19,10 @@ from app.modules.google_calendar.service import (
     list_events_incremental,
     mark_event_cancelled,
 )
+from app.modules.google_calendar.inbound_changes import (
+    appointment_for_event,
+    apply_calendar_change,
+)
 from app.modules.scheduling.availability import invalidate_availability_cache
 from app.core.exceptions import GoogleCalendarError
 from app.utils.logger import get_logger
@@ -439,13 +443,43 @@ async def import_calendar_changes(
         )
 
         affected_dates: set[date] = set()
+        calendar_notices: list[dict] = []
 
         for event in items:
             event_id = event.get("id")
             if not event_id:
                 continue
 
-            # Skip events Hannibal created itself (avoid re-importing our own).
+            # One of our citas: the doctor may have moved or deleted it in
+            # Google. Bring the appointment in line (inbound_changes) — never
+            # mirror it as a block, which is what happened before.
+            appointment = await appointment_for_event(db, office_id, event_id)
+            if appointment is not None:
+                # Heal the mirror blocks earlier syncs created for our own citas.
+                mirrored = (
+                    await db.execute(
+                        select(TimeBlock).where(
+                            TimeBlock.office_id == office_id,
+                            TimeBlock.google_event_id == event_id,
+                            TimeBlock.origin == "google_calendar",
+                        )
+                    )
+                ).scalars().all()
+                for block in mirrored:
+                    affected_dates.add(block.start_date.astimezone(MX_TIMEZONE).date())
+                    await db.delete(block)
+
+                old_date = appointment.start_datetime.astimezone(MX_TIMEZONE).date()
+                notice = await apply_calendar_change(db, office, appointment, event, redis_client)
+                if notice is not None:
+                    calendar_notices.append(notice)
+                    affected_dates.add(old_date)
+                    start_node = event.get("start") or {}
+                    if "dateTime" in start_node:
+                        affected_dates.add(_parse_gcal_datetime(start_node)[0].astimezone(MX_TIMEZONE).date())
+                continue
+
+            # Skip other events Hannibal created itself (blocks).
             own = (
                 await db.execute(
                     select(GoogleCalendarEvent).where(
@@ -507,6 +541,9 @@ async def import_calendar_changes(
         for d in affected_dates:
             await invalidate_availability_cache(office_id, d, redis_client)
 
+        if calendar_notices:
+            await _hand_to_doctor(office, calendar_notices, redis_client)
+
         logger.info(
             "calendar_changes_imported",
             office_id=str(office_id),
@@ -520,3 +557,25 @@ async def import_calendar_changes(
             office_id=str(office_id),
             error=str(e),
         )
+
+
+async def _hand_to_doctor(office: Office, notices: list[dict], redis_client) -> None:
+    """Queue the "¿le aviso al paciente?" and ask the doctor. Never raises:
+    the change itself is already committed."""
+    from app.modules.google_calendar.inbound_changes import (
+        MOVED,
+        CANCELLED,
+        alert_doctor,
+        store_pending,
+    )
+    from app.modules.whatsapp.transport import get_meta_client
+
+    try:
+        # Only applied changes wait for an answer; a rejected move is a
+        # heads-up, there is nothing to tell the patient.
+        await store_pending(
+            redis_client, office.id, [n for n in notices if n["kind"] in (MOVED, CANCELLED)]
+        )
+        await alert_doctor(redis_client, get_meta_client(), office, notices)
+    except Exception as e:
+        logger.error("calendar_change_doctor_alert_failed", office_id=str(office.id), error=str(e))

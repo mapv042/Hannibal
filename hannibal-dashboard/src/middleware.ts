@@ -6,12 +6,14 @@ export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl
 
   // Skip middleware for the public landing, auth pages and OAuth callback.
+  // /aviso/<office> is a practice's privacy notice: patients open it from
+  // WhatsApp with no account.
   // /forgot-password must be listed: it is requested precisely by people with
   // no session, so guarding it would bounce them to /login and make password
   // recovery unreachable. /update-password is listed so it can render its own
   // "link expired" message rather than a bare redirect when the recovery
   // session is missing.
-  if (pathname === '/' || pathname.startsWith('/login') || pathname.startsWith('/register') || pathname.startsWith('/forgot-password') || pathname.startsWith('/update-password') || pathname.startsWith('/auth/callback') || pathname === '/onboarding/preview' || pathname === '/privacy' || pathname === '/terms') {
+  if (pathname === '/' || pathname.startsWith('/login') || pathname.startsWith('/register') || pathname.startsWith('/forgot-password') || pathname.startsWith('/update-password') || pathname.startsWith('/auth/callback') || pathname === '/onboarding/preview' || pathname === '/privacy' || pathname === '/terms' || pathname.startsWith('/aviso/')) {
     return NextResponse.next()
   }
 

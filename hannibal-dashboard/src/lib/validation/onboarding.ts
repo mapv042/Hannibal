@@ -55,6 +55,12 @@ export function validateOfficeInfo(data: OnboardingData): FieldErrors {
     errors.ownerPhone = 'Escribe un número de 10 dígitos'
   }
 
+  // Optional, but a typo means patients' privacy requests go nowhere.
+  const email = o.privacyContactEmail?.trim()
+  if (email && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
+    errors.privacyContactEmail = 'Escribe un correo válido'
+  }
+
   // Optional, but a typo here means the secretary silently gets nothing.
   if (o.secondaryOwnerPhone?.trim() && !isValidMxPhone(o.secondaryOwnerPhone)) {
     errors.secondaryOwnerPhone = 'Escribe un número de 10 dígitos'

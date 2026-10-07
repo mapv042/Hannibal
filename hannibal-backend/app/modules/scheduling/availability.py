@@ -412,6 +412,27 @@ async def invalidate_availability_cache(
         logger.warning("cache_delete_error", error=str(e))
 
 
+async def invalidate_office_availability_cache(
+    office_id: UUID,
+    redis_client: aioredis.Redis,
+) -> None:
+    """Drop every cached day of an office.
+
+    For changes that move the whole grid (the weekly hours, durations or
+    buffer): without it the assistant keeps offering the old hours until each
+    day's cache expires.
+    """
+    try:
+        keys = [
+            k async for k in redis_client.scan_iter(match=f"avail_cache:{office_id}:*", count=500)
+        ]
+        if keys:
+            await redis_client.delete(*keys)
+        logger.info("office_cache_invalidated", office_id=str(office_id), keys=len(keys))
+    except Exception as e:
+        logger.warning("office_cache_delete_error", office_id=str(office_id), error=str(e))
+
+
 async def lock_slot_temporarily(
     office_id: UUID,
     start_time: datetime,

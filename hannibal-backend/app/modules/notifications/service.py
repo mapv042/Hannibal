@@ -30,7 +30,7 @@ from app.modules.reminders.wa_templates import (
     TEMPLATE_DOCTOR_NEW_PATIENT,
     TEMPLATE_DOCTOR_NEW_PATIENT_APPOINTMENT,
     TEMPLATE_DOCTOR_PATIENT_ARRIVED,
-    TEMPLATE_DOCTOR_UNCONFIRMED_SUMMARY,
+    TEMPLATE_DOCTOR_DAILY_AGENDA,
     TEMPLATE_RESCHEDULE_NOTICE,
     build_doctor_appointment_brief_params,
     build_doctor_cancellation_params,
@@ -38,7 +38,7 @@ from app.modules.reminders.wa_templates import (
     build_doctor_new_patient_appointment_params,
     build_doctor_new_patient_params,
     build_doctor_patient_arrived_params,
-    build_doctor_unconfirmed_summary_params,
+    build_doctor_daily_agenda_params,
     build_reschedule_notice_params,
 )
 from app.modules.whatsapp.doctor_notify import send_doctor_alert
@@ -314,47 +314,72 @@ async def notify_appointment_brief(
     )
 
 
-async def notify_unconfirmed_summary(
+async def notify_daily_agenda(
     db: AsyncSession,
     redis_client: aioredis.Redis,
     meta_client,
     office: Office,
 ) -> str:
-    """Send the doctor a digest of today's still-unconfirmed appointments.
+    """Send the doctor the summary of their day: citas, urgencies, free slots.
 
-    The caller (beat task) decides WHEN to run this and guards idempotency; here
-    we just gather today's scheduled (unconfirmed) appointments and send.
+    The caller (beat task) decides WHEN to run this and guards idempotency.
+    Skipped on a day with nothing to report (no citas, no urgencies).
     """
-    if not office.notify_unconfirmed:
+    if not office.notify_unconfirmed:  # the "Resumen del día" toggle
         return "skipped"
+
+    from app.modules.scheduling.availability import compute_day_availability
+    from app.modules.urgencies.service import get_pending_urgencies
 
     now = now_mx()
     start_of_day = datetime.combine(now.date(), time.min, tzinfo=MX_TIMEZONE)
     end_of_day = datetime.combine(now.date(), time.max, tzinfo=MX_TIMEZONE)
 
-    result = await db.execute(
-        select(Appointment)
-        .where(
-            (Appointment.office_id == office.id)
-            & (Appointment.status == "scheduled")
-            & (Appointment.start_datetime >= start_of_day)
-            & (Appointment.start_datetime <= end_of_day)
+    rows = (
+        await db.execute(
+            select(Appointment, Patient.name)
+            .join(Patient, Appointment.patient_id == Patient.id)
+            .where(
+                (Appointment.office_id == office.id)
+                & (Appointment.status.in_(("scheduled", "confirmed")))
+                & (Appointment.start_datetime >= start_of_day)
+                & (Appointment.start_datetime <= end_of_day)
+            )
+            .order_by(Appointment.start_datetime.asc())
         )
-        .order_by(Appointment.start_datetime.asc())
-    )
-    appointments = result.scalars().all()
-    if not appointments:
+    ).all()
+    urgencies = len(await get_pending_urgencies(office.id, db))
+    if not rows and not urgencies:
         return "skipped"
 
-    slots = [templates.format_slot(a.start_datetime) for a in appointments]
-    text = templates.doctor_unconfirmed_summary(slots, office.assistant_tone)
+    lines = [
+        templates.agenda_line(
+            time_label(appointment.start_datetime.astimezone(MX_TIMEZONE)),
+            name or "Paciente",
+            first_visit=appointment.type == "first_visit",
+            unconfirmed=appointment.status == "scheduled",
+        )
+        for appointment, name in rows
+    ]
+
+    free_slots = None
+    try:
+        day = await compute_day_availability(
+            office.id, now.date(), db, redis_client=redis_client, only_future=True
+        )
+        if day.has_schedule:
+            free_slots = len(day.slots)
+    except Exception as e:  # a calendar hiccup must not cost the doctor the summary
+        logger.warning("daily_agenda_free_slots_failed", office_id=str(office.id), error=str(e))
 
     return await send_doctor_alert(
         redis_client,
         meta_client,
         office,
-        text=text,
-        template_name=TEMPLATE_DOCTOR_UNCONFIRMED_SUMMARY,
-        template_params=build_doctor_unconfirmed_summary_params(str(len(slots))),
-        log_event="doctor_unconfirmed_summary",
+        text=templates.doctor_daily_agenda(lines, urgencies, free_slots, office.assistant_tone),
+        template_name=TEMPLATE_DOCTOR_DAILY_AGENDA,
+        template_params=build_doctor_daily_agenda_params(
+            str(len(lines)), templates.daily_agenda_detail(lines)
+        ),
+        log_event="doctor_daily_agenda",
     )

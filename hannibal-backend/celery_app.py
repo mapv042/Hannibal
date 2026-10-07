@@ -70,6 +70,16 @@ celery_app.conf.update(
             "schedule": crontab(minute=30, hour=3),  # daily, off-hours
             "options": {"queue": "celery"},
         },
+        "offer-waitlist-slots": {
+            "task": "app.modules.waitlist.tasks.offer_waitlist_slots",
+            "schedule": crontab(minute="*/5"),
+            "options": {"queue": "celery"},
+        },
+        "prune-old-messages": {
+            "task": "app.modules.conversation.tasks.prune_old_messages",
+            "schedule": crontab(minute=45, hour=3),  # daily, off-hours
+            "options": {"queue": "celery"},
+        },
     },
 )
 
@@ -83,6 +93,7 @@ celery_app.autodiscover_tasks([
     "app.modules.urgencies",
     "app.modules.audit",
     "app.modules.conversation",
+    "app.modules.waitlist",
 ])
 
 # Ensure task modules are imported so Celery registers them
@@ -93,6 +104,7 @@ import app.modules.notifications.tasks  # noqa: F401
 import app.modules.google_calendar.tasks  # noqa: F401
 import app.modules.audit.tasks  # noqa: F401
 import app.modules.conversation.tasks  # noqa: F401
+import app.modules.waitlist.tasks  # noqa: F401
 
 # --------------------------------------------------------------------------- #
 # Simulated clock

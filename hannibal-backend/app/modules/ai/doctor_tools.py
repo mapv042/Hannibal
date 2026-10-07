@@ -5,12 +5,12 @@ from __future__ import annotations
 import json
 import uuid
 from datetime import datetime, date as date_cls, time as time_type, timedelta
-from typing import Any
+from typing import Any, Optional
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 import redis.asyncio as redis
 
-from app.core.constants import DAYS_ES, MX_TIMEZONE
+from app.core.constants import BookedVia, DAYS_ES, MX_TIMEZONE
 from app.db.models import Appointment, Conversation, Message, Office, Patient, TimeBlock
 from app.modules.google_calendar.service import (
     update_event_color, update_calendar_event,
@@ -131,6 +131,46 @@ DOCTOR_TOOL_DEFINITIONS = [
         "input_schema": {
             "type": "object",
             "properties": {},
+        },
+    },
+    {
+        "name": "take_over_conversation",
+        "description": (
+            "El doctor atiende personalmente a UN paciente por WhatsApp: el asistente deja de "
+            "contestarle solo a ese paciente (los demás siguen atendidos) durante el tiempo "
+            "indicado y luego retoma solo. Sus mensajes se siguen guardando. Pasa también "
+            "automáticamente cuando el doctor le escribe desde su WhatsApp Business."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "patient_name": {
+                    "type": "string",
+                    "description": "Nombre (o parte del nombre) del paciente.",
+                },
+                "minutes": {
+                    "type": "integer",
+                    "description": "Por cuántos minutos. Si el doctor no dice, 120.",
+                },
+            },
+            "required": ["patient_name"],
+        },
+    },
+    {
+        "name": "release_conversation",
+        "description": (
+            "Regresa la conversación de un paciente al asistente, que vuelve a contestarle "
+            "desde su siguiente mensaje."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "patient_name": {
+                    "type": "string",
+                    "description": "Nombre (o parte del nombre) del paciente.",
+                },
+            },
+            "required": ["patient_name"],
         },
     },
     {
@@ -476,6 +516,30 @@ DOCTOR_TOOL_DEFINITIONS = [
             "required": ["request_id", "approved"],
         },
     },
+    {
+        "name": "resolve_calendar_change",
+        "description": (
+            "Decide si se le avisa al paciente de un cambio que el doctor hizo directamente en su "
+            "Google Calendar (listados en CAMBIOS EN TU CALENDARIO cuando existan). La cita ya "
+            "está movida o cancelada en el sistema; esto solo decide el aviso. Con notify=true se "
+            "le manda al paciente un aviso fijo del consultorio (no un texto tuyo) con la nueva "
+            "hora o la cancelación; con notify=false no se le avisa."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "change_id": {
+                    "type": "string",
+                    "description": "ID del cambio (de la lista CAMBIOS EN TU CALENDARIO).",
+                },
+                "notify": {
+                    "type": "boolean",
+                    "description": "true si el doctor quiere que se le avise al paciente.",
+                },
+            },
+            "required": ["change_id", "notify"],
+        },
+    },
 ]
 
 
@@ -521,8 +585,11 @@ DOCTOR_MUTATING_TOOLS = frozenset({
     "send_message_to_patient",
     "confirm_send_messages",
     "resolve_urgent_request",
+    "resolve_calendar_change",
     "pause_bot",
     "resume_bot",
+    "take_over_conversation",
+    "release_conversation",
 })
 
 # What a successful call of each write lets the assistant truthfully say it did
@@ -537,6 +604,7 @@ DOCTOR_TOOL_CLAIMS: dict[str, frozenset[str]] = {
     # Reporting a delivery states that the message was sent.
     "check_message_delivery": frozenset({"message_sent"}),
     "resolve_urgent_request": frozenset({"book", "notify_patient"}),
+    "resolve_calendar_change": frozenset({"notify_patient"}),
 }
 
 _HANDLERS: dict[str, Any] = {}
@@ -1154,6 +1222,31 @@ async def _clear_message_drafts(ctx: DoctorToolContext) -> None:
         logger.warning("doctor_message_drafts_clear_error", office_id=str(ctx.office.id), error=str(e))
 
 
+async def _find_patient_by_name(
+    ctx: DoctorToolContext, patient_name: str
+) -> tuple[Optional[Patient], Optional[dict]]:
+    """One patient of this office by (partial) name, or the error to return."""
+    patients = (
+        await ctx.db.execute(
+            select(Patient).where(
+                (Patient.office_id == ctx.office.id)
+                & (Patient.name.ilike(f"%{patient_name}%"))
+            )
+        )
+    ).scalars().all()
+    if not patients:
+        logger.warning("doctor_patient_lookup_none", office_id=str(ctx.office.id), query=patient_name)
+        return None, {"error": f"No se encontró paciente con nombre '{patient_name}'."}
+    if len(patients) > 1:
+        names = [p.name for p in patients]
+        logger.warning("doctor_patient_lookup_multiple", office_id=str(ctx.office.id), query=patient_name, matches=names)
+        return None, {
+            "error": "Se encontraron múltiples pacientes. Sé más específico.",
+            "matches": names,
+        }
+    return patients[0], None
+
+
 @_handler("send_message_to_patient")
 async def _handle_send_message(args: dict, ctx: DoctorToolContext) -> dict:
     patient_name = args.get("patient_name", "").strip()
@@ -1162,27 +1255,10 @@ async def _handle_send_message(args: dict, ctx: DoctorToolContext) -> dict:
     if not patient_name or not message:
         return {"error": "Se requiere nombre del paciente y mensaje."}
 
-    # Search patient by name (partial match)
-    stmt = select(Patient).where(
-        (Patient.office_id == ctx.office.id)
-        & (Patient.name.ilike(f"%{patient_name}%"))
-    )
-    result = await ctx.db.execute(stmt)
-    patients = result.scalars().all()
+    patient, error = await _find_patient_by_name(ctx, patient_name)
+    if error:
+        return error
 
-    if not patients:
-        logger.warning("doctor_send_message_no_patient", office_id=str(ctx.office.id), query=patient_name)
-        return {"error": f"No se encontró paciente con nombre '{patient_name}'."}
-
-    if len(patients) > 1:
-        names = [p.name for p in patients]
-        logger.warning("doctor_send_message_multiple_patients", office_id=str(ctx.office.id), query=patient_name, matches=names)
-        return {
-            "error": "Se encontraron múltiples pacientes. Sé más específico.",
-            "matches": names,
-        }
-
-    patient = patients[0]
     if not patient.whatsapp_id:
         logger.warning("doctor_send_message_no_whatsapp", office_id=str(ctx.office.id), patient_id=str(patient.id), patient_name=patient.name)
         return {"error": f"El paciente {patient.name} no tiene WhatsApp registrado."}
@@ -1659,6 +1735,7 @@ async def _handle_create_appointment(args: dict, ctx: DoctorToolContext) -> dict
         ),
         redis_client=ctx.redis_client,
         allow_conflict=bool(args.get("allow_conflict", False)),
+        booked_via=BookedVia.DOCTOR_ASSISTANT.value,
     )
     if outcome.error:
         return _doctor_booking_error(outcome)
@@ -1746,6 +1823,7 @@ async def _handle_reschedule_appointment(args: dict, ctx: DoctorToolContext) -> 
         booked_by_patient_id=appointment.booked_by_patient_id,
         intake_notes=appointment.intake_notes,
         rescheduled_from=appointment.id,
+        booked_via=BookedVia.DOCTOR_ASSISTANT.value,
     )
     if outcome.error:
         return _doctor_booking_error(outcome)
@@ -1832,3 +1910,82 @@ async def _handle_resolve_urgent_request(args: dict, ctx: DoctorToolContext) -> 
     return await resolve_urgency_request(
         ctx.db, ctx.office, ctx.meta_client, req_id, approved, start_dt, note
     )
+
+
+@_handler("resolve_calendar_change")
+async def _handle_resolve_calendar_change(args: dict, ctx: DoctorToolContext) -> dict:
+    from app.modules.google_calendar.inbound_changes import CANCELLED, pop_pending
+    from app.modules.scheduling.tasks import (
+        enqueue_patient_cancellation_notice,
+        enqueue_patient_reschedule_notice,
+    )
+
+    change_id = (args.get("change_id") or "").strip()
+    change = await pop_pending(ctx.redis_client, ctx.office.id, change_id)
+    if change is None:
+        return {"error": "Ese cambio ya no está pendiente (ya se resolvió o venció)."}
+
+    appointment_id = uuid.UUID(change["appointment_id"])
+    appointment = await ctx.db.get(Appointment, appointment_id)
+    if appointment is None or appointment.office_id != ctx.office.id:
+        return {"error": "No se encontró la cita de ese cambio."}
+
+    if not args.get("notify"):
+        logger.info("calendar_change_not_notified", change_id=change_id)
+        return {"success": True, "notified": False, "patient_name": change["patient_name"]}
+
+    # The same deterministic, retried notices as a dashboard change (Rule 9).
+    if change["kind"] == CANCELLED:
+        enqueue_patient_cancellation_notice(appointment_id)
+    else:
+        enqueue_patient_reschedule_notice(appointment_id)
+    logger.info("calendar_change_notified", change_id=change_id, kind=change["kind"])
+    return {
+        "success": True,
+        "notified": True,
+        "patient_name": change["patient_name"],
+        "what": "cancelación" if change["kind"] == CANCELLED else f"nueva hora: {change['new_label']}",
+    }
+
+
+@_handler("take_over_conversation")
+async def _handle_take_over_conversation(args: dict, ctx: DoctorToolContext) -> dict:
+    from app.modules.whatsapp.coexistence import (
+        DEFAULT_CONVERSATION_TAKEOVER_MINUTES,
+        take_over_conversation,
+    )
+
+    patient, error = await _find_patient_by_name(ctx, (args.get("patient_name") or "").strip())
+    if error:
+        return error
+    if not patient.whatsapp_id:
+        return {"error": f"El paciente {patient.name} no tiene WhatsApp registrado."}
+
+    minutes = args.get("minutes") or DEFAULT_CONVERSATION_TAKEOVER_MINUTES
+    minutes = max(5, min(int(minutes), 24 * 60))
+    until = await take_over_conversation(
+        ctx.office.id, patient.whatsapp_id, ctx.redis_client, minutes
+    )
+    return {
+        "success": True,
+        "patient_name": patient.name,
+        "until": time_label(until),
+        "summary": f"El asistente no le contestará a {patient.name} hasta las {time_label(until)}",
+    }
+
+
+@_handler("release_conversation")
+async def _handle_release_conversation(args: dict, ctx: DoctorToolContext) -> dict:
+    from app.modules.whatsapp.coexistence import release_conversation
+
+    patient, error = await _find_patient_by_name(ctx, (args.get("patient_name") or "").strip())
+    if error:
+        return error
+    was_taken = await release_conversation(ctx.office.id, patient.whatsapp_id or "", ctx.redis_client)
+    return {
+        "success": True,
+        "patient_name": patient.name,
+        "was_with_doctor": was_taken,
+        "summary": f"El asistente vuelve a atender a {patient.name}",
+    }
+

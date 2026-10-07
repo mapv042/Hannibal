@@ -58,12 +58,12 @@ TEMPLATE_RESCHEDULE_NOTICE = "reschedule_notice"
 #   doctor_new_patient_appointment  -> "Nuevo paciente: {{patient_name}}. Agendó su primera cita para el {{slot}}. Revisa tu agenda."
 #   doctor_cancellation             -> "El paciente {{patient_name}} canceló su cita del {{slot}}. El espacio quedó libre."
 #   doctor_new_patient              -> "Se registró un nuevo paciente: {{patient_name}}. Ya está en tu lista."
-#   doctor_unconfirmed_summary      -> "Recordatorio: hoy tienes {{count}} cita(s) que tus pacientes aún no han confirmado."
+#   doctor_daily_agenda             -> "Buen día. Hoy tienes {{count}} cita(s): {{detail}}. Responde a este mensaje si necesitas mover algo."
 TEMPLATE_DOCTOR_NEW_APPOINTMENT = "doctor_new_appointment"
 TEMPLATE_DOCTOR_NEW_PATIENT_APPOINTMENT = "doctor_new_patient_appointment"
 TEMPLATE_DOCTOR_CANCELLATION = "doctor_cancellation"
 TEMPLATE_DOCTOR_NEW_PATIENT = "doctor_new_patient"
-TEMPLATE_DOCTOR_UNCONFIRMED_SUMMARY = "doctor_unconfirmed_summary"
+TEMPLATE_DOCTOR_DAILY_AGENDA = "doctor_daily_agenda"
 #   doctor_patient_arrived          -> "El paciente {{patient_name}} avisó: {{detail}}. Revisa tu sala de espera."
 #   doctor_sync_warning             -> "Aviso sobre la cita de {{patient_name}}: {{detail}}. Conviene revisarla."
 #   doctor_appointment_brief        -> "En breve tienes cita con {{patient_name}}. Resumen: {{detail}}. Revisa tu agenda."
@@ -75,6 +75,11 @@ TEMPLATE_DOCTOR_APPOINTMENT_BRIEF = "doctor_appointment_brief"
 #   doctor_calendar_disconnected    -> "Tu Google Calendar se desconectó de ArgosAI. Sigo agendando citas con la agenda del sistema, pero no veo los eventos que tengas solo en Google. Reconéctalo aquí: {{detail}} y las citas agendadas mientras tanto se agregarán a tu calendario."
 #   (Meta rejects a body that starts or ends with a variable — keep text after {{detail}}.)
 TEMPLATE_DOCTOR_CALENDAR_DISCONNECTED = "doctor_calendar_disconnected"
+# Doctor-facing question after they moved or deleted a cita in Google Calendar:
+# the system already applied it, and asks before telling the patient. Create it
+# in WhatsApp Manager (Utility). Suggested body:
+#   doctor_calendar_change          -> "Vi un cambio en tu Google Calendar en la cita de {{patient_name}}: {{detail}}. ¿Le aviso al paciente? Respóndeme por aquí."
+TEMPLATE_DOCTOR_CALENDAR_CHANGE = "doctor_calendar_change"
 
 # Set to False if the templates were created with positional params ({{1}}, {{2}})
 # instead of named params ({{patient_name}}). Named is the modern default and
@@ -248,6 +253,16 @@ def build_doctor_sync_warning_params(
     ]
 
 
+def build_doctor_calendar_change_params(
+    patient_name: str, detail: str
+) -> List[Dict[str, str]]:
+    """doctor_calendar_change: patient_name, detail (what changed, one line)."""
+    return [
+        _param("patient_name", patient_name),
+        _param("detail", detail),
+    ]
+
+
 def build_doctor_calendar_disconnected_params(detail: str) -> List[Dict[str, str]]:
     """doctor_calendar_disconnected: detail (where to reconnect)."""
     return [_param("detail", detail)]
@@ -263,8 +278,9 @@ def build_doctor_appointment_brief_params(
     ]
 
 
-def build_doctor_unconfirmed_summary_params(count: str) -> List[Dict[str, str]]:
-    """doctor_unconfirmed_summary: count (today's unconfirmed appointments)."""
+def build_doctor_daily_agenda_params(count: str, detail: str) -> List[Dict[str, str]]:
+    """doctor_daily_agenda: count (today's citas), detail (the citas on one line)."""
     return [
         _param("count", count),
+        _param("detail", detail),
     ]

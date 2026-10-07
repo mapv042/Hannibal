@@ -38,6 +38,9 @@ from app.modules.scheduling.router import router as scheduling_router
 from app.modules.offices.router import router as offices_router
 from app.modules.offices.catalogs_router import router as catalogs_router
 from app.modules.patients.router import router as patients_router
+from app.modules.conversation.router import router as conversations_router
+from app.modules.urgencies.router import router as urgencies_router
+from app.modules.privacy.router import router as privacy_router
 from app.modules.google_calendar.router import router as google_calendar_router
 
 logger = get_logger(__name__)
@@ -281,6 +284,10 @@ app.include_router(scheduling_router, prefix="/api/scheduling", tags=["schedulin
 app.include_router(offices_router, prefix="/api/offices", tags=["offices"])
 app.include_router(catalogs_router, prefix="/api/catalogs", tags=["catalogs"])
 app.include_router(patients_router, prefix="/api/patients", tags=["patients"])
+app.include_router(conversations_router, prefix="/api/conversations", tags=["conversations"])
+app.include_router(urgencies_router, prefix="/api/urgencies", tags=["urgencies"])
+# Public: the privacy notice a patient opens from WhatsApp (no login).
+app.include_router(privacy_router, prefix="/api/public/privacy-notice", tags=["privacy"])
 app.include_router(
     google_calendar_router,
     prefix="/api/google-calendar",

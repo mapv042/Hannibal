@@ -1,8 +1,6 @@
 import React from 'react'
-import { Card, CardBody } from '@/components/ui/Card'
-import { Button } from '@/components/ui/Button'
 import { FieldError } from '@/components/ui/FieldError'
-import { StepHeader } from '@/components/onboarding/StepHeader'
+import { StepFrame, type StepVariant } from '@/components/onboarding/StepFrame'
 import { Plus, X } from 'lucide-react'
 import type {
   CatalogOption,
@@ -20,10 +18,13 @@ export interface ConsultationData {
 }
 
 interface StepConsultationDetailsProps {
+  /** Onboarding wizard (default) or the Settings page. */
+  variant?: StepVariant
   data: ConsultationData
   onUpdate: (data: Partial<ConsultationData>) => void
   onNext: () => void
   onBack: () => void
+  loading?: boolean
   errors?: FieldErrors
   /** Suggested services for the chosen specialty. */
   suggestedServices?: string[]
@@ -37,10 +38,12 @@ const INSURANCE_OPTIONS: { value: InsuranceChoice; label: string; desc: string }
 ]
 
 export const StepConsultationDetails: React.FC<StepConsultationDetailsProps> = ({
+  variant = 'wizard',
   data,
   onUpdate,
   onNext,
   onBack,
+  loading,
   errors = {},
   suggestedServices = [],
   insurers = [],
@@ -89,13 +92,16 @@ export const StepConsultationDetails: React.FC<StepConsultationDetailsProps> = (
     .filter(({ service }) => !suggestedServices.includes(service.name))
 
   return (
-    <Card>
-      <CardBody className="space-y-6 p-8">
-        <StepHeader
-          eyebrow="Paso 3"
-          title="Costos y seguros"
-          subtitle="Para que el asistente pueda contestar preguntas sobre precios y formas de pago."
-        />
+    <StepFrame
+      variant={variant}
+      eyebrow="Paso 3"
+      title="Costos y seguros"
+      subtitle="Para que el asistente pueda contestar preguntas sobre precios y formas de pago."
+      onNext={onNext}
+      onBack={onBack}
+      loading={loading}
+      bodyClassName="space-y-6 p-8"
+    >
 
         <div>
           <label className="block text-sm font-semibold text-slate mb-1">
@@ -251,15 +257,6 @@ export const StepConsultationDetails: React.FC<StepConsultationDetailsProps> = (
           </div>
         )}
 
-        <div className="flex gap-3 pt-2">
-          <Button variant="secondary" onClick={onBack}>
-            Atrás
-          </Button>
-          <Button onClick={onNext} className="flex-1">
-            Continuar
-          </Button>
-        </div>
-      </CardBody>
-    </Card>
+    </StepFrame>
   )
 }

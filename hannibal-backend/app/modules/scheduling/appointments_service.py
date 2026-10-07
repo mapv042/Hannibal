@@ -11,7 +11,7 @@ from sqlalchemy import select, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.core.constants import MX_TIMEZONE
+from app.core.constants import BookedVia, MX_TIMEZONE
 from app.db.models import Appointment, Office, Patient
 from app.modules.scheduling.schemas import CreateAppointmentRequest, UpdateAppointmentRequest
 from app.modules.scheduling.availability import (
@@ -86,6 +86,7 @@ async def create_appointment(
             f"Motivo: {data.consultation_reason}\n{phone_line}Agendada desde el dashboard"
         ),
         redis_client=redis_client,
+        booked_via=BookedVia.DASHBOARD.value,
     )
     if outcome.error:
         raise SlotNotAvailableError(outcome.error)
@@ -385,6 +386,7 @@ async def get_appointments(
     end_date: Optional[datetime],
     status: Optional[str],
     db: AsyncSession,
+    patient_id: Optional[UUID] = None,
 ) -> List[Appointment]:
     """
     Get appointments with filtering.
@@ -406,6 +408,8 @@ async def get_appointments(
         .options(selectinload(Appointment.patient))
         .where(Appointment.office_id == office_id)
     )
+    if patient_id:
+        query = query.where(Appointment.patient_id == patient_id)
 
     # A bare date ("2026-09-27") arrives naive, and Postgres would read it as
     # UTC midnight — 6 PM the day before in Mexico — so "today" dropped the

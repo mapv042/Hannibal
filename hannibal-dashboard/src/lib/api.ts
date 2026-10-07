@@ -30,12 +30,63 @@ export interface PeriodStats {
   no_show_rate: number | null
 }
 
+/** The assistant's own work in the period — what the doctor gets for the fee. */
+export interface AssistantActivity {
+  conversations_handled: number
+  booked_by_assistant: number
+  rescheduled_by_assistant: number
+  /** Share of the assistant's bookings made while the office was closed; null with none. */
+  after_hours_pct: number | null
+  reminders_sent: number
+  /** Conservative estimate (backend: offices/stats.py). */
+  hours_saved_estimate: number
+}
+
 export interface OfficeStats extends PeriodStats {
   period: StatsPeriod
   period_days: number
   previous: PeriodStats
   /** Change in volume vs. the previous period; null when it had none. */
   change_pct: number | null
+  assistant: AssistantActivity
+}
+
+export interface BotStatus {
+  bot_status: 'active' | 'paused'
+  /** ISO timestamp when an office-wide pause lifts on its own. */
+  paused_until: string | null
+}
+
+export interface ConversationSummary {
+  id: string
+  whatsapp_id: string
+  patient_id: string | null
+  patient_name: string | null
+  last_message_at: string | null
+  last_message_preview: string | null
+  last_message_direction: 'incoming' | 'outgoing' | null
+  /** Set while the doctor handles this patient personally (the assistant is silent in this thread). */
+  taken_over_until: string | null
+}
+
+export interface InboxMessage {
+  id: string
+  content: string
+  direction: 'incoming' | 'outgoing'
+  /** Who produced the text: the bot, the doctor (approved draft), an automatic reminder, or the patient. */
+  author: 'assistant' | 'doctor' | 'doctor_app' | 'reminder' | 'system' | 'patient'
+  delivery_status: string | null
+  created_at: string
+}
+
+export interface PendingUrgency {
+  id: string
+  patient_id: string
+  patient_name: string
+  reason: string
+  /** Already a Spanish label: "lo antes posible" or the requested date/time. */
+  preferred: string
+  created_at: string | null
 }
 
 export interface ReminderRule {
@@ -192,9 +243,10 @@ export class ApiClient {
   // Appointments
   async getAppointments(
     _office_id: string,
-    filters?: { start_date?: string; end_date?: string; status?: string }
+    filters?: { start_date?: string; end_date?: string; status?: string; patient_id?: string }
   ): Promise<ApiResponse<Appointment[]>> {
     const params = new URLSearchParams()
+    if (filters?.patient_id) params.append('patient_id', filters.patient_id)
     if (filters?.start_date) params.append('start_date', filters.start_date)
     if (filters?.end_date) params.append('end_date', filters.end_date)
     if (filters?.status) params.append('status', filters.status)
@@ -274,6 +326,34 @@ export class ApiClient {
     })
   }
 
+  // Urgencies (read-only: the doctor resolves them over WhatsApp)
+  async getPendingUrgencies(): Promise<ApiResponse<PendingUrgency[]>> {
+    return this.fetch<PendingUrgency[]>('/api/urgencies/pending', { method: 'GET' })
+  }
+
+  // Conversations (read-only)
+  async getConversations(search?: string): Promise<ApiResponse<ConversationSummary[]>> {
+    const params = new URLSearchParams()
+    if (search) params.append('search', search)
+    const qs = params.toString()
+    return this.fetch<ConversationSummary[]>(`/api/conversations${qs ? `?${qs}` : ''}`, {
+      method: 'GET',
+    })
+  }
+
+  async getConversationMessages(
+    conversation_id: string,
+    before?: string
+  ): Promise<ApiResponse<InboxMessage[]>> {
+    const params = new URLSearchParams()
+    if (before) params.append('before', before)
+    const qs = params.toString()
+    return this.fetch<InboxMessage[]>(
+      `/api/conversations/${conversation_id}/messages${qs ? `?${qs}` : ''}`,
+      { method: 'GET' }
+    )
+  }
+
   // Availability Schedules
   async getAvailabilitySchedules(): Promise<ApiResponse<AvailabilitySchedule[]>> {
     return this.fetch<AvailabilitySchedule[]>('/api/scheduling/schedules', {
@@ -308,14 +388,21 @@ export class ApiClient {
   }
 
   // Bot Control
-  async pauseBot(office_id: string): Promise<ApiResponse<{ bot_status: string }>> {
-    return this.fetch<{ bot_status: string }>(`/api/offices/${office_id}/pause`, {
-      method: 'POST',
+  async getBotStatus(office_id: string): Promise<ApiResponse<BotStatus>> {
+    return this.fetch<BotStatus>(`/api/offices/${office_id}/bot-status`, {
+      method: 'GET',
     })
   }
 
-  async resumeBot(office_id: string): Promise<ApiResponse<{ bot_status: string }>> {
-    return this.fetch<{ bot_status: string }>(`/api/offices/${office_id}/resume`, {
+  async pauseBot(office_id: string, minutes = 60): Promise<ApiResponse<BotStatus>> {
+    return this.fetch<BotStatus>(`/api/offices/${office_id}/pause`, {
+      method: 'POST',
+      body: JSON.stringify({ minutes }),
+    })
+  }
+
+  async resumeBot(office_id: string): Promise<ApiResponse<BotStatus>> {
+    return this.fetch<BotStatus>(`/api/offices/${office_id}/resume`, {
       method: 'POST',
     })
   }

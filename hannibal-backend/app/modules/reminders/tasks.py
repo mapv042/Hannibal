@@ -40,6 +40,7 @@ from app.modules.reminders.templates import (
     arrival_check,
     post_appointment_followup,
     confirmation_request,
+    office_location,
     reminder_day_before,
 )
 from app.modules.reminders.wa_templates import (
@@ -313,7 +314,7 @@ async def _send_reminder(appointment_id: str, reminder_type: str) -> None:
             "patient_name": patient.name or "paciente",
             "time": appointment_time,
             "date": appointment_date,
-            "office_name": office.name,
+            "office_name": office_location(office),
             "assistant_name": office.assistant_name,
         }
         free_text = FREETEXT_REMINDER_MAP[reminder_type](
@@ -323,7 +324,7 @@ async def _send_reminder(appointment_id: str, reminder_type: str) -> None:
             patient_name=patient.name or "paciente",
             appointment_date=appointment_date,
             appointment_time=appointment_time,
-            location=office.name,
+            location=office_location(office),
         )
 
         via = await _send_free_or_template(
@@ -371,7 +372,7 @@ async def _send_day_before(appointment_id: str) -> None:
             "patient_name": patient_name,
             "time": appointment_time,
             "date": format_explicit_date(start_local),
-            "office_name": office.name,
+            "office_name": office_location(office),
             "assistant_name": office.assistant_name,
         }
 
@@ -394,7 +395,7 @@ async def _send_day_before(appointment_id: str) -> None:
                         patient_name=patient_name,
                         appointment_date=appointment_data["date"],
                         appointment_time=appointment_time,
-                        location=office.name,
+                        location=office_location(office),
                     ),
                 )
             else:
@@ -432,7 +433,7 @@ async def _send_day_before(appointment_id: str) -> None:
                         template_name=TEMPLATE_CONFIRMATION_DAY_BEFORE,
                         params=build_confirmation_params(
                             patient_name=patient_name,
-                            location=office.name,
+                            location=office_location(office),
                             appointment_date=appointment_data["date"],
                             appointment_time=appointment_time,
                         ),

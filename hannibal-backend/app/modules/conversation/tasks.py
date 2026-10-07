@@ -17,6 +17,20 @@ async def _prune_turn_traces_async() -> int:
         return await prune_old_traces(db)
 
 
+async def _prune_old_messages_async() -> int:
+    from app.modules.privacy.retention import prune_old_messages
+
+    async with get_async_session_maker()() as db:
+        return await prune_old_messages(db)
+
+
+@shared_task(name="app.modules.conversation.tasks.prune_old_messages")
+def prune_old_messages() -> None:
+    """Drop WhatsApp messages past the retention window the privacy notice promises."""
+    deleted = run_task(_prune_old_messages_async())
+    logger.info("messages_pruned", deleted=deleted)
+
+
 @shared_task(name="app.modules.conversation.tasks.prune_turn_traces")
 def prune_turn_traces() -> None:
     """Drop ai_turn_traces older than the retention window (patient data)."""

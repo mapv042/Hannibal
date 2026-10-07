@@ -44,6 +44,14 @@ class Settings(BaseSettings):
     # answering it as one turn (see whatsapp/router.INBOX_KEY). 0 disables it.
     message_coalesce_seconds: float = 2.5
 
+    # Privacy (LFPDPPP). Health data is sensitive personal data: a patient
+    # accepts the office's privacy notice before the assistant books (and so
+    # stores a reason for consultation). Off only for local tooling that can't
+    # tap a button. See app/modules/privacy/consent.py.
+    privacy_consent_required: bool = True
+    # WhatsApp messages older than this are deleted by a nightly task.
+    message_retention_days: int = 365
+
     # Meta/WhatsApp
     # "meta" sends through the Cloud API; "fake" records outbound messages in
     # Redis for the conversation simulator. Ignored (treated as "meta") when

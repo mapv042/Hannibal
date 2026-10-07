@@ -74,6 +74,8 @@ async def book_appointment(
     booked_by_patient_id: Optional[uuid.UUID] = None,
     intake_notes: Optional[str] = None,
     rescheduled_from: Optional[uuid.UUID] = None,
+    booked_via: Optional[str] = None,
+    existing_google_event_id: Optional[str] = None,
 ) -> BookingOutcome:
     """Validate, lock and create an appointment (plus GCal event and cache).
 
@@ -92,6 +94,10 @@ async def book_appointment(
     `rescheduled_from` is the appointment this one replaces. Every reschedule
     sets it: it is what lets a stale id still resolve to the live appointment,
     and what the doctor's "se movió una cita" notice reads to say what changed.
+
+    `existing_google_event_id` adopts an event that is already where the new
+    appointment goes — the doctor dragged it there in Google Calendar — instead
+    of creating a second one.
 
     The slot lock is deliberately NOT released on success — its 60s TTL covers
     the window until the caller's transaction commits; releasing earlier would
@@ -117,10 +123,14 @@ async def book_appointment(
             return BookingOutcome(error=LOCKED_SLOT_MESSAGE)
 
     # Google Calendar event (best-effort: a GCal hiccup must not block the booking)
-    google_event_id = None
+    google_event_id = existing_google_event_id
     from app.modules.google_calendar import connection
 
-    if office.google_calendar_token and not connection.should_skip_google(office.id):
+    if (
+        google_event_id is None
+        and office.google_calendar_token
+        and not connection.should_skip_google(office.id)
+    ):
         try:
             google_event_id = await create_calendar_event(
                 office_id=office.id,
@@ -155,6 +165,7 @@ async def book_appointment(
         # only when someone booked on another person's behalf.
         booked_by_patient_id=booked_by_patient_id or patient_id,
         rescheduled_from=rescheduled_from,
+        booked_via=booked_via,
     )
     db.add(appointment)
     await db.flush()

@@ -43,6 +43,8 @@ from app.modules.sim import seed as sim_seed  # noqa: E402
 from app.utils.dates import now_mx  # noqa: E402
 
 PATIENT = sim_seed.DEFAULT_PATIENT_PHONE
+# Someone who never wrote before: no Patient row, no privacy consent.
+NEW_NUMBER = "5215550000099"
 
 
 class Recorder:
@@ -50,9 +52,19 @@ class Recorder:
 
     def __init__(self):
         self.sent: list[str] = []
+        self.buttons: list[list[str]] = []
 
     async def send_text_message(self, phone_number_id, token, to, text):
         self.sent.append(text)
+        return f"wamid.test.{uuid.uuid4().hex}"
+
+    async def send_template_message(self, phone_number_id, token, to, template_name, params, language_code):
+        self.sent.append(f"[template {template_name}]")
+        return f"wamid.test.{uuid.uuid4().hex}"
+
+    async def send_interactive_buttons(self, phone_number_id, token, to, body_text, buttons):
+        self.sent.append(body_text)
+        self.buttons.append([b["id"] for b in buttons])
         return f"wamid.test.{uuid.uuid4().hex}"
 
 
@@ -100,10 +112,10 @@ async def env():
     ai, wa = ScriptedAI(), Recorder()
     manager = ConversationManager(SessionStore(redis_client), wa, ai_service=ai)
 
-    async def turn(text):
+    async def turn(text, sender=PATIENT):
         async with get_async_session_maker()() as db:
             fresh_office = await db.get(type(office), office.id)
-            msg = {"from": PATIENT, "id": f"wamid.in.{uuid.uuid4().hex}", "type": "text",
+            msg = {"from": sender, "id": f"wamid.in.{uuid.uuid4().hex}", "type": "text",
                    "text": {"body": text}}
             await manager.process(fresh_office, msg, db)
         return wa.sent[-1]
@@ -115,11 +127,12 @@ async def env():
                 .order_by(Appointment.created_at)
             )).scalars().all())
 
-    async def session():
-        return await SessionStore(redis_client).get_session(PATIENT, str(office.id))
+    async def session(sender=PATIENT):
+        return await SessionStore(redis_client).get_session(sender, str(office.id))
 
+    await redis_client.delete(f"session:{NEW_NUMBER}:{office.id}")
     yield {"office": office, "ai": ai, "turn": turn, "appointments": appointments,
-           "session": session, "redis": redis_client}
+           "session": session, "redis": redis_client, "wa": wa}
     await redis_client.aclose()
     await dispose_engine()
 
@@ -533,3 +546,224 @@ async def test_sweep_skips_reminders_whose_moment_passed_before_booking(env, mon
 
     assert ("week_before", fresh_id) not in dispatched
     assert ("week_before", old_id) in dispatched
+
+
+async def test_new_number_accepts_the_privacy_notice_before_booking(env):
+    from app.db.models import PrivacyConsent
+    from app.modules.privacy import consent
+
+    ai, turn, wa = env["ai"], env["turn"], env["wa"]
+    tue = next_weekday(1).isoformat()
+    seen = {}
+
+    def remember(results):
+        seen["first"] = results[0]
+        return say("Para agendar necesito tu autorización; te la mando enseguida.")
+
+    # Turn 1: no consent yet — nothing is drafted, the fixed question goes out.
+    ai.then(
+        call("prepare_booking", slot_id=f"{tue}T09:00", for_self=True,
+             patient_name="Laura Díaz", reason="chequeo"),
+        remember,
+    )
+    reply = await turn("quiero cita el martes a las 9, soy Laura Díaz", sender=NEW_NUMBER)
+    assert seen["first"].get("needs_privacy_consent") is True
+    assert wa.buttons[-1] == [consent.BUTTON_ACCEPT, consent.BUTTON_DECLINE]
+    assert f"/aviso/{env['office'].id}" in reply
+    assert (await env["session"](NEW_NUMBER)).state.draft is None
+
+    # Turn 2: a typed yes while the question is open is recorded, and the
+    # model reads the marker next to the patient's words.
+    ai.then(
+        call("prepare_booking", slot_id=f"{tue}T09:00", for_self=True,
+             patient_name="Laura Díaz", reason="chequeo"),
+        lambda results: say(results[0]["summary"] + " ¿Confirmas?"),
+    )
+    reply = await turn("Sí, acepto", sender=NEW_NUMBER)
+    assert "9:00 AM" in reply
+    session = await env["session"](NEW_NUMBER)
+    assert session.state.draft is not None
+    assert consent.ACCEPTED_MARKER in session.claude_history[-2]["content"]
+
+    async with get_async_session_maker()() as db:
+        row = (await db.execute(
+            select(PrivacyConsent).where(PrivacyConsent.whatsapp_id == NEW_NUMBER)
+        )).scalar_one()
+    assert row.accepted is True and row.notice_version == consent.PRIVACY_NOTICE_VERSION
+
+
+
+async def test_deleting_a_patient_purges_what_the_assistant_kept(env):
+    from app.db.models import Conversation, Message, Patient
+    from app.modules.patients.service import delete_patient
+
+    ai, turn = env["ai"], env["turn"]
+    ai.then(say("Hola Juan, ¿en qué te ayudo?"))
+    await turn("hola")
+    assert await env["session"]() is not None
+
+    async with get_async_session_maker()() as db:
+        juan = (await db.execute(
+            select(Patient).where(Patient.whatsapp_id == PATIENT)
+        )).scalar_one()
+        await delete_patient(juan.id, env["office"].id, db, redis_client=env["redis"])
+
+    async with get_async_session_maker()() as db:
+        convs = (await db.execute(
+            select(Conversation).where(Conversation.whatsapp_id == PATIENT)
+        )).scalars().all()
+        msgs = (await db.execute(select(Message))).scalars().all()
+        traces = (await db.execute(
+            select(AiTurnTrace).where(AiTurnTrace.whatsapp_id == PATIENT)
+        )).scalars().all()
+    assert convs == [] and msgs == [] and traces == []
+    assert await env["session"]() is None
+
+
+async def test_re_preparing_the_same_summary_does_not_block_the_confirmation(env):
+    ai, turn = env["ai"], env["turn"]
+    tue = next_weekday(1).isoformat()
+    prepare = call("prepare_booking", slot_id=f"{tue}T09:00", for_self=True, reason="chequeo")
+
+    ai.then(prepare, lambda results: say(results[0]["summary"] + " ¿Confirmas?"))
+    await turn("cita el martes a las 9")
+
+    # The model re-prepares the identical booking before confirming.
+    ai.then(
+        call("prepare_booking", slot_id=f"{tue}T09:00", for_self=True, reason="chequeo"),
+        call("confirm_booking"),
+        say("Listo, quedó agendada para el martes a las 9:00 AM."),
+    )
+    await turn("sí, confírmala")
+    assert len(await env["appointments"]()) == 1
+
+
+async def test_a_changed_summary_still_needs_the_patients_yes(env):
+    ai, turn = env["ai"], env["turn"]
+    tue = next_weekday(1).isoformat()
+    ai.then(
+        call("prepare_booking", slot_id=f"{tue}T09:00", for_self=True, reason="chequeo"),
+        lambda results: say(results[0]["summary"] + " ¿Confirmas?"),
+    )
+    await turn("cita el martes a las 9")
+
+    # A different time is a different draft: it has to be shown first.
+    ai.then(
+        call("prepare_booking", slot_id=f"{tue}T09:50", for_self=True, reason="chequeo"),
+        call("confirm_booking"),
+        say("Te propongo el martes a las 9:50 AM, ¿te parece?"),
+    )
+    await turn("mejor 9:50 y agéndala")
+    assert await env["appointments"]() == []
+
+
+async def _sweep(env):
+    from app.modules.waitlist.service import sweep_office
+
+    async with get_async_session_maker()() as db:
+        office = await db.get(type(env["office"]), env["office"].id)
+        return await sweep_office(db, env["redis"], env["wa"], office)
+
+
+async def _entry(env):
+    from app.db.models import WaitlistEntry
+
+    async with get_async_session_maker()() as db:
+        return (await db.execute(
+            select(WaitlistEntry).where(WaitlistEntry.office_id == env["office"].id)
+        )).scalar_one()
+
+
+async def _fill_agenda_until(env, iso_slot: str):
+    """Block everything from now to `iso_slot`: nothing earlier is free."""
+    from datetime import datetime as dt
+
+    from app.core.constants import MX_TIMEZONE
+    from app.db.models import TimeBlock
+
+    async with get_async_session_maker()() as db:
+        block = TimeBlock(
+            id=uuid.uuid4(), office_id=env["office"].id, start_date=now_mx(),
+            end_date=dt.fromisoformat(iso_slot).replace(tzinfo=MX_TIMEZONE),
+            reason="agenda llena", origin="manual",
+        )
+        db.add(block)
+        await db.commit()
+        return block.id
+
+
+async def _free_agenda(env, block_id):
+    """Something frees up: the block goes away."""
+    from app.db.models import TimeBlock
+
+    async with get_async_session_maker()() as db:
+        await db.delete(await db.get(TimeBlock, block_id))
+        await db.commit()
+
+
+async def test_waitlist_refuses_when_slots_are_free(env):
+    ai, turn = env["ai"], env["turn"]
+    thu = next_weekday(3).isoformat()
+    seen = {}
+
+    def remember(results):
+        seen["r"] = results[0]
+        return say("Tengo lugar antes, ¿te sirve?")
+
+    ai.then(call("join_waitlist", before_slot_id=f"{thu}T16:00", reason="chequeo"), remember)
+    await turn("avísame si hay algo antes del jueves")
+    assert "error" in seen["r"] and seen["r"]["slots"]
+    assert (await env["session"]()).state.offered_slots  # the free slots are remembered
+
+
+async def test_waitlist_offer_accepted_books_without_the_model(env):
+    ai, turn, wa = env["ai"], env["turn"], env["wa"]
+    thu = next_weekday(3).isoformat()
+    block_id = await _fill_agenda_until(env, f"{thu}T16:00")
+
+    ai.then(
+        call("join_waitlist", before_slot_id=f"{thu}T16:00", reason="chequeo"),
+        lambda results: say(results[0]["summary"]),
+    )
+    reply = await turn("no me acomoda, ¿me avisan si se libera algo antes?")
+    assert "lista de espera" in reply
+    assert (await _entry(env)).status == "waiting"
+    assert await _sweep(env) == 0  # nothing free yet
+
+    await _free_agenda(env, block_id)
+    assert await _sweep(env) == 1
+    entry = await _entry(env)
+    assert entry.status == "offered" and entry.offered_slot is not None
+    assert wa.buttons[-1][0].startswith("waitlist_accept:")
+
+    # A typed yes books it — no model step is queued, so calling it would fail.
+    reply = await turn("Sí, lo quiero")
+    assert "quedó agendada" in reply
+    appts = await env["appointments"]()
+    assert len(appts) == 1 and appts[0].start_datetime == entry.offered_slot
+    assert (await _entry(env)).status == "booked"
+
+
+async def test_waitlist_decline_keeps_the_place_and_skips_that_slot(env):
+    ai, turn = env["ai"], env["turn"]
+    thu = next_weekday(3).isoformat()
+    block_id = await _fill_agenda_until(env, f"{thu}T16:00")
+    ai.then(
+        call("join_waitlist", before_slot_id=f"{thu}T16:00", reason="chequeo"),
+        say("Listo, quedaste en lista de espera."),
+    )
+    await turn("avísame si hay algo antes")
+    await _free_agenda(env, block_id)
+    await _sweep(env)
+    first = (await _entry(env)).offered_slot
+
+    reply = await turn("no, gracias")
+    assert "Sigues en la lista de espera" in reply
+    entry = await _entry(env)
+    from app.modules.ai.tool_helpers import slot_id_for
+
+    assert entry.status == "waiting" and slot_id_for(first) in entry.declined_slots
+
+    await _sweep(env)
+    assert (await _entry(env)).offered_slot != first
+    assert await env["appointments"]() == []

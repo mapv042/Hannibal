@@ -17,6 +17,7 @@ import {
   Menu,
   X,
   Clock,
+  MessageCircle,
 } from 'lucide-react'
 import type { Office } from '@/lib/supabase'
 
@@ -35,6 +36,11 @@ const navItems = [
     label: 'Pacientes',
     href: '/dashboard/patients',
     icon: Users,
+  },
+  {
+    label: 'Conversaciones',
+    href: '/dashboard/conversations',
+    icon: MessageCircle,
   },
   {
     label: 'Configuración',
@@ -147,10 +153,7 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
             <p className="text-[11px] font-bold text-gray-600 mb-2 uppercase tracking-wider">
               Estado del bot
             </p>
-            <BotStatusBadge
-              officeId={office.id}
-              currentStatus={office.is_active ? 'active' : 'paused'}
-            />
+            <BotStatusBadge officeId={office.id} />
           </div>
         )}
 
