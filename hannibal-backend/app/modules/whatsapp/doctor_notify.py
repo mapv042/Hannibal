@@ -46,7 +46,7 @@ async def send_doctor_alert(
     office: Office,
     *,
     text: str,
-    template_name: str,
+    template_name: Optional[str],
     template_params: List[Dict[str, str]],
     log_event: str = "doctor_alert",
 ) -> str:
@@ -55,6 +55,8 @@ async def send_doctor_alert(
     Returns "notified" if a message was sent, or "skipped" when the office is
     missing WhatsApp config or the send fails. Loading the entity and deciding
     whether the notification is enabled is the caller's responsibility.
+    `template_name=None` means no approved template says this truthfully, so
+    out of the window the alert is skipped rather than sent with wrong copy.
     """
     recipients = doctor_recipients(office)
     if not (recipients and office.whatsapp_phone_id and office.whatsapp_token):
@@ -62,6 +64,9 @@ async def send_doctor_alert(
         return "skipped"
 
     in_window = await doctor_service_window_open(redis_client, office.id)
+    if not in_window and template_name is None:
+        logger.info(f"{log_event}_no_template_out_of_window", office_id=str(office.id))
+        return "skipped"
     via = "text" if in_window else "template"
 
     # One recipient failing must not silence the others, so each send is

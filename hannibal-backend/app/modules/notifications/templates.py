@@ -76,15 +76,6 @@ def doctor_patient_arrived(
     return f"{headline}\n\n{body}"
 
 
-def arrival_detail(arrival_status: str, eta_minutes: int | None) -> str:
-    """One-line arrival state for the out-of-window template parameter."""
-    if arrival_status == "arrived":
-        return "ya está en el consultorio"
-    if eta_minutes:
-        return f"viene en camino, llega en unos {eta_minutes} minutos"
-    return "viene en camino"
-
-
 def agenda_line(slot: str, patient_name: str, first_visit: bool, unconfirmed: bool) -> str:
     """One cita of the day summary: "9:00 AM — María García (primera vez) · sin confirmar"."""
     line = f"{slot} — {patient_name}"
@@ -166,6 +157,11 @@ def doctor_appointment_brief(
     return f"{headline}\n\n{body}"
 
 
-def brief_detail(brief_lines: List[str]) -> str:
-    """One-line brief for the out-of-window template parameter."""
-    return "; ".join(brief_lines) if brief_lines else "sin notas previas"
+def brief_detail(brief_lines: List[str], limit: int = 700) -> str:
+    """One-line brief for the out-of-window template parameter.
+
+    Meta rejects a param with newlines, tabs or long runs of spaces, and the
+    intake answers and internal note are free text that can carry them.
+    """
+    detail = " ".join("; ".join(brief_lines).split()) if brief_lines else "sin notas previas"
+    return detail if len(detail) <= limit else detail[: limit - 1].rstrip() + "…"

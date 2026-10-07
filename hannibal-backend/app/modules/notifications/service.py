@@ -252,9 +252,10 @@ async def notify_arrival(
 
     patient_name = patient.name or "El paciente"
     brief_lines = await _build_patient_brief(db, appointment, patient)
-    detail = templates.arrival_detail(
-        appointment.arrival_status, appointment.arrival_eta_minutes
-    )
+    # The approved template says the patient is already waiting, so it only
+    # fits "arrived"; "on the way" goes out in-window only.
+    arrived = appointment.arrival_status == "arrived"
+    appointment_time = time_label(appointment.start_datetime.astimezone(MX_TIMEZONE))
 
     return await send_doctor_alert(
         redis_client,
@@ -267,8 +268,8 @@ async def notify_arrival(
             brief_lines,
             office.assistant_tone,
         ),
-        template_name=TEMPLATE_DOCTOR_PATIENT_ARRIVED,
-        template_params=build_doctor_patient_arrived_params(patient_name, detail),
+        template_name=TEMPLATE_DOCTOR_PATIENT_ARRIVED if arrived else None,
+        template_params=build_doctor_patient_arrived_params(patient_name, appointment_time),
         log_event="doctor_patient_arrived",
     )
 

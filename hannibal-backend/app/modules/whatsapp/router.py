@@ -611,6 +611,8 @@ async def _persist_incoming_while_paused(
         msg_type = message.get("type", "text")
         if msg_type == "text":
             content = message.get("text", {}).get("body", "")
+        elif msg_type == "button":
+            content = (message.get("button") or {}).get("text") or "[Respuesta de botón]"
         else:
             content = f"[Mensaje de tipo {msg_type}]"
 

@@ -71,7 +71,8 @@ class BaseToolConversationManager:
         """Turn a raw webhook message dict into {from, text, id}.
 
         Handles text, interactive replies (button/list — the chosen title
-        becomes the text), voice notes (transcribed via Whisper when
+        becomes the text), template quick-reply taps (the button text),
+        voice notes (transcribed via Whisper when
         available) and captioned media. Anything else becomes a placeholder
         the LLM knows how to answer.
         """
@@ -88,6 +89,11 @@ class BaseToolConversationManager:
                     or {}
                 )
                 text = reply.get("title") or reply.get("id") or "[Respuesta interactiva]"
+            elif msg_type == "button":
+                # Quick-reply button of a template (e.g. the day-before
+                # confirmation's Confirmar / Cancelar / Reagendar).
+                button = message.get("button") or {}
+                text = button.get("text") or button.get("payload") or "[Respuesta de botón]"
             elif msg_type == "audio":
                 media_id = (message.get("audio") or {}).get("id", "")
                 transcript = None

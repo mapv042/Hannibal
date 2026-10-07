@@ -8,9 +8,13 @@ parameter builders so the Celery tasks just call build_*_params().
 The template NAMES and parameter ORDER here must match exactly what is approved
 in the WhatsApp Manager. Current approved templates (language es_MX):
 
-  office_message                      -> patient_name, location, text
-  appointment_follow_up               -> patient_name, location
+  office_message_v2                   -> patient_name, location, text
+  appointment_follow_up_v3            -> patient_name, location
   appointment_confirmation_day_before -> patient_name, location, appointment_date, appointment_time
+      body: "Hola {{patient_name}}, te escribimos de {{location}} para confirmar tu
+             cita de mañana {{appointment_date}} a las {{appointment_time}}. Saludos."
+      quick-reply buttons: Confirmar / Cancelar / Reagendar. A tap arrives as an
+      incoming message of type "button" whose text is the button title.
   appointment_reminder                -> patient_name, appointment_date, appointment_time, location
   arrival_check_in                    -> patient_name, location
   urgency_alert                       -> patient_name   (doctor-facing, out-of-window)
@@ -27,10 +31,10 @@ from app.core.constants import DAYS_ES
 TEMPLATE_LANGUAGE = "es_MX"
 
 # Approved template names. Keep in sync with the WhatsApp Manager.
-TEMPLATE_OFFICE_MESSAGE = "office_message"
-TEMPLATE_FOLLOW_UP = "appointment_follow_up"
-TEMPLATE_CONFIRMATION_DAY_BEFORE = "appointment_confirmation_day_before"
-TEMPLATE_REMINDER = "appointment_reminder"
+TEMPLATE_OFFICE_MESSAGE = "office_message_v2"
+TEMPLATE_FOLLOW_UP = "appointment_follow_up_v3"
+TEMPLATE_CONFIRMATION_DAY_BEFORE = "appointment_confirmation_day_before_v3"
+TEMPLATE_REMINDER = "appointment_reminder_v3"
 # Waiting-room check-in sent at the appointment's start time when the patient's
 # 24h window is closed (in-window it goes out as interactive buttons instead).
 # Suggested body:
@@ -42,13 +46,13 @@ TEMPLATE_ARRIVAL_CHECK_IN = "arrival_check_in"
 # urgency details as free text. Suggested body:
 #   "Tienes una solicitud de cita urgente de {{patient_name}} pendiente.
 #    Responde a este mensaje para gestionarla."
-TEMPLATE_URGENCY_ALERT = "urgency_alert"
+TEMPLATE_URGENCY_ALERT = "urgency_alert_v3"
 # Doctor-facing notice sent when a patient reschedules a slot the DOCTOR had
 # cancelled, and the doctor's 24h window is closed. Lets the doctor see how the
 # freed slot ended up. Suggested body:
 #   "{{patient_name}} reagendó su cita. Nueva cita: {{new_slot}}.
 #    Responde aquí si necesitas ajustarla."
-TEMPLATE_RESCHEDULE_NOTICE = "reschedule_notice"
+TEMPLATE_RESCHEDULE_NOTICE = "reschedule_notice_v3"
 
 # Doctor-facing notifications (configurable per office) sent when the doctor's
 # 24h window is closed. In-window the same events are sent as free text. Each is
@@ -59,22 +63,23 @@ TEMPLATE_RESCHEDULE_NOTICE = "reschedule_notice"
 #   doctor_cancellation             -> "El paciente {{patient_name}} canceló su cita del {{slot}}. El espacio quedó libre."
 #   doctor_new_patient              -> "Se registró un nuevo paciente: {{patient_name}}. Ya está en tu lista."
 #   doctor_daily_agenda             -> "Buen día. Hoy tienes {{count}} cita(s): {{detail}}. Responde a este mensaje si necesitas mover algo."
-TEMPLATE_DOCTOR_NEW_APPOINTMENT = "doctor_new_appointment"
-TEMPLATE_DOCTOR_NEW_PATIENT_APPOINTMENT = "doctor_new_patient_appointment"
-TEMPLATE_DOCTOR_CANCELLATION = "doctor_cancellation"
-TEMPLATE_DOCTOR_NEW_PATIENT = "doctor_new_patient"
+TEMPLATE_DOCTOR_NEW_APPOINTMENT = "doctor_new_appointment_v3"
+TEMPLATE_DOCTOR_NEW_PATIENT_APPOINTMENT = "doctor_new_patient_appointment_v3"
+TEMPLATE_DOCTOR_CANCELLATION = "doctor_cancellation_v2"
+TEMPLATE_DOCTOR_NEW_PATIENT = "doctor_new_patient_v2"
 TEMPLATE_DOCTOR_DAILY_AGENDA = "doctor_daily_agenda"
-#   doctor_patient_arrived          -> "El paciente {{patient_name}} avisó: {{detail}}. Revisa tu sala de espera."
+#   doctor_patient_arrived          -> "El paciente {{patient_name}} avisó: {{detail}}. ¿Lo hacemos pasar?"
+#                                      (only for "arrived"; "on the way" has no template and goes out in-window only)
 #   doctor_sync_warning             -> "Aviso sobre la cita de {{patient_name}}: {{detail}}. Conviene revisarla."
 #   doctor_appointment_brief        -> "En breve tienes cita con {{patient_name}}. Resumen: {{detail}}. Revisa tu agenda."
-TEMPLATE_DOCTOR_PATIENT_ARRIVED = "doctor_patient_arrived"
+TEMPLATE_DOCTOR_PATIENT_ARRIVED = "doctor_patient_arrived_v3"
 TEMPLATE_DOCTOR_SYNC_WARNING = "doctor_sync_warning"
 TEMPLATE_DOCTOR_APPOINTMENT_BRIEF = "doctor_appointment_brief"
 # Doctor-facing notice that Google rejected the calendar credentials. Create it
 # in WhatsApp Manager (Utility). Suggested body:
 #   doctor_calendar_disconnected    -> "Tu Google Calendar se desconectó de ArgosAI. Sigo agendando citas con la agenda del sistema, pero no veo los eventos que tengas solo en Google. Reconéctalo aquí: {{detail}} y las citas agendadas mientras tanto se agregarán a tu calendario."
 #   (Meta rejects a body that starts or ends with a variable — keep text after {{detail}}.)
-TEMPLATE_DOCTOR_CALENDAR_DISCONNECTED = "doctor_calendar_disconnected"
+TEMPLATE_DOCTOR_CALENDAR_DISCONNECTED = "doctor_calendar_disconnected_v3"
 # Doctor-facing question after they moved or deleted a cita in Google Calendar:
 # the system already applied it, and asks before telling the patient. Create it
 # in WhatsApp Manager (Utility). Suggested body:

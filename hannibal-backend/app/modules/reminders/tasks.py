@@ -408,9 +408,11 @@ async def _send_day_before(appointment_id: str) -> None:
                         token=office.whatsapp_token,
                         to=patient.whatsapp_id,
                         body_text=free_text,
+                        # Same three choices as the template's quick replies.
                         buttons=[
-                            {"id": f"confirm_{appointment.id}", "title": "Sí, confirmo"},
-                            {"id": f"cancel_{appointment.id}", "title": "No podré asistir"},
+                            {"id": f"confirm_{appointment.id}", "title": "Confirmar"},
+                            {"id": f"cancel_{appointment.id}", "title": "Cancelar"},
+                            {"id": f"reschedule_{appointment.id}", "title": "Reagendar"},
                         ],
                     )
                     await _record_outgoing_message(

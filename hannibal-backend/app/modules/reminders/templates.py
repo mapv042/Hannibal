@@ -138,7 +138,7 @@ def confirmation_request(appointment_data: dict, tone: str = "formal") -> str:
     office_name = appointment_data.get("office_name", "nuestro consultorio")
 
     # Short and warm: this text is the body of an interactive message with
-    # "Sí, confirmo" / "No podré asistir" buttons, so no reply instructions.
+    # Confirmar / Cancelar / Reagendar buttons, so no reply instructions.
     if tone == "informal":
         return (
             f"Hola {patient_name}, te saludamos de {office_name}.\n\n"
