@@ -51,6 +51,26 @@ export interface OfficeStats extends PeriodStats {
   assistant: AssistantActivity
 }
 
+/** The office's WhatsApp connection, as GET /api/auth/whatsapp/status reports it. */
+export interface WhatsAppStatus {
+  active: boolean
+  phone_number: string | null
+  phone_number_id: string | null
+  waba_id: string | null
+  mode: string | null
+  /** Why the token is unusable (invalid, or its refresh failed); null = fine. */
+  token_error: string | null
+  token_expires_at: string | null
+  /** Approval of the message templates on the office's WABA. */
+  templates: {
+    total: number
+    approved: number
+    pending: string[]
+    problems: Record<string, string>
+    synced_at: string | null
+  }
+}
+
 export interface BotStatus {
   bot_status: 'active' | 'paused'
   /** ISO timestamp when an office-wide pause lifts on its own. */
@@ -432,13 +452,7 @@ export class ApiClient {
     })
   }
 
-  async getWhatsAppStatus(office_id: string): Promise<ApiResponse<{
-    active: boolean
-    phone_number: string | null
-    phone_number_id: string | null
-    waba_id: string | null
-    mode: string | null
-  }>> {
+  async getWhatsAppStatus(office_id: string): Promise<ApiResponse<WhatsAppStatus>> {
     return this.fetch(`/api/auth/whatsapp/status/${office_id}`, {
       method: 'GET',
     })

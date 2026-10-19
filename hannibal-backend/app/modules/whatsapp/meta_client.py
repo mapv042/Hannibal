@@ -22,6 +22,15 @@ SEND_MAX_ATTEMPTS = 3
 SEND_BACKOFF_SECONDS = 1.0
 
 
+def _is_token_rejection(response: httpx.Response) -> bool:
+    """Meta's answer for an expired, revoked or otherwise invalid token (code 190)."""
+    try:
+        code = response.json().get("error", {}).get("code")
+    except ValueError:
+        code = None
+    return code == 190 or response.status_code == 401
+
+
 class MetaCloudClient:
     """
     Async HTTP client for Meta Cloud API (WhatsApp Business Account).
@@ -93,6 +102,14 @@ class MetaCloudClient:
                     response_body=response.text,
                     **log_context,
                 )
+                if _is_token_rejection(response):
+                    # Every send of this office will fail until the doctor
+                    # reconnects: a distinct event so an alert can key on it.
+                    logger.error(
+                        "whatsapp_token_rejected",
+                        status_code=response.status_code,
+                        phone_number_id=log_context.get("phone_number_id"),
+                    )
             response.raise_for_status()
             return response
 

@@ -814,6 +814,12 @@ async def complete_whatsapp_onboarding(
             db=db,
         )
 
+        # The doctor's WABA has none of our templates yet: create them now
+        # (and follow their review), or reminders can't leave the 24h window.
+        from app.modules.whatsapp.tasks import enqueue_template_provisioning
+
+        enqueue_template_provisioning(str(office.id))
+
         logger.info(
             "whatsapp_onboarding_complete",
             office_id=payload.office_id,

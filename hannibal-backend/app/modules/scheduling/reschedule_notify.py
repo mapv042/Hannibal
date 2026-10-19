@@ -24,8 +24,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.constants import MX_TIMEZONE
 from app.db.models import Appointment, Office, Patient
 from app.modules.reminders.wa_templates import (
-    TEMPLATE_RESCHEDULE_NOTICE,
-    build_reschedule_notice_params,
+    TEMPLATE_DOCTOR_CANCELLATION,
+    build_doctor_cancellation_params,
 )
 from app.modules.whatsapp.doctor_notify import send_doctor_alert
 from app.utils.dates import long_date_label, now_mx, time_label
@@ -157,11 +157,9 @@ async def notify_doctor_of_abandoned_reschedule(
         meta_client,
         office,
         text=_doctor_gave_up_text(patient_name, old_slot),
-        # Reuses the reschedule_notice template: same shape (patient + slot),
-        # and the free-text path carries the nuance when the window is open.
-        template_name=TEMPLATE_RESCHEDULE_NOTICE,
-        template_params=build_reschedule_notice_params(
-            patient_name, f"canceló en definitiva ({old_slot})"
-        ),
+        # Out of window it reads as a plain cancellation ("canceló su cita del
+        # …, el espacio quedó libre"); the free-text path carries the nuance.
+        template_name=TEMPLATE_DOCTOR_CANCELLATION,
+        template_params=build_doctor_cancellation_params(patient_name, old_slot),
         log_event="abandoned_reschedule_notify_doctor",
     )

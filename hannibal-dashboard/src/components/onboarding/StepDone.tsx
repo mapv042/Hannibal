@@ -11,7 +11,7 @@ interface StepDoneProps {
 
 const nextSteps = [
   { icon: Calendar, label: 'Ve tu agenda del día en el panel' },
-  { icon: MessageSquare, label: 'Conecta WhatsApp cuando estés listo' },
+  { icon: MessageSquare, label: 'Conecta WhatsApp desde Configuración cuando estés listo' },
   { icon: Settings, label: 'Ajusta horarios desde Configuración' },
 ]
 

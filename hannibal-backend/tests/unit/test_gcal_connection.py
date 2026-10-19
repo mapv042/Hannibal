@@ -8,6 +8,7 @@ import pytest
 
 from app.core.exceptions import GoogleCalendarAuthError
 from app.modules.google_calendar import connection
+from app.modules.reminders.wa_templates import TEMPLATE_DOCTOR_CALENDAR_DISCONNECTED
 
 
 class FakeRedis:
@@ -62,7 +63,7 @@ async def test_doctor_is_told_once_a_day(monkeypatch):
     second = await connection.mark_disconnected_and_notify(DB(), redis, None, office_id)
     assert (first, second) == ("notified", "already_alerted")
     assert len(sent) == 1 and "Reconéctalo" in sent[0][0]
-    assert sent[0][1] == "doctor_calendar_disconnected"
+    assert sent[0][1] == TEMPLATE_DOCTOR_CALENDAR_DISCONNECTED
     assert await connection.is_disconnected(redis, office_id)
 
     await connection.mark_reconnected(redis, office_id)

@@ -11,6 +11,19 @@ from app.utils.logger import configure_logging, get_logger
 # Structured JSON logs (same format as the API) for workers and beat
 configure_logging("INFO")
 
+# Error tracking for the worker too. Most silent-outage alerts (an expiring
+# WhatsApp token, a rejected template, a write-audit divergence) are logged at
+# error level from tasks, and only the API process used to report to Sentry.
+if settings.sentry_dsn:
+    import sentry_sdk
+    from sentry_sdk.integrations.celery import CeleryIntegration
+
+    sentry_sdk.init(
+        dsn=settings.sentry_dsn,
+        traces_sample_rate=0.0,
+        integrations=[CeleryIntegration()],
+    )
+
 # Create Celery app.
 #
 # The result backend is optional and off by default. Nothing in this codebase
@@ -80,6 +93,12 @@ celery_app.conf.update(
             "schedule": crontab(minute=45, hour=3),  # daily, off-hours
             "options": {"queue": "celery"},
         },
+        "maintain-whatsapp-accounts": {
+            # Refreshes 60-day tokens ~30 days ahead and syncs templates.
+            "task": "app.modules.whatsapp.tasks.maintain_whatsapp_accounts",
+            "schedule": crontab(minute=15, hour=4),  # daily, off-hours
+            "options": {"queue": "celery"},
+        },
     },
 )
 
@@ -105,6 +124,7 @@ import app.modules.google_calendar.tasks  # noqa: F401
 import app.modules.audit.tasks  # noqa: F401
 import app.modules.conversation.tasks  # noqa: F401
 import app.modules.waitlist.tasks  # noqa: F401
+import app.modules.whatsapp.tasks  # noqa: F401
 
 # --------------------------------------------------------------------------- #
 # Simulated clock

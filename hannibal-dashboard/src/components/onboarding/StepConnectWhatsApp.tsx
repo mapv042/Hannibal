@@ -6,10 +6,7 @@ import { Button } from '@/components/ui/Button'
 import { StepHeader } from '@/components/onboarding/StepHeader'
 import { Check } from 'lucide-react'
 import { useApi } from '@/lib/api'
-import {
-  launchWhatsAppSignup,
-  EmbeddedSignupCancelledError,
-} from '@/lib/metaEmbeddedSignup'
+import { useWhatsAppConnect } from '@/lib/useWhatsAppConnect'
 
 interface StepConnectWhatsAppProps {
   onNext: () => void
@@ -31,8 +28,7 @@ export const StepConnectWhatsApp: React.FC<StepConnectWhatsAppProps> = ({
 }) => {
   const [connected, setConnected] = useState(false)
   const [phoneNumber, setPhoneNumber] = useState<string | null>(null)
-  const [connecting, setConnecting] = useState(false)
-  const [error, setError] = useState('')
+  const { connect, connecting, error } = useWhatsAppConnect(officeId)
   const api = useApi()
 
   // A doctor returning to this step (or reloading) sees their real state.
@@ -52,31 +48,10 @@ export const StepConnectWhatsApp: React.FC<StepConnectWhatsAppProps> = ({
   }, [officeId, api])
 
   const handleConnect = async () => {
-    if (!officeId) return
-    setError('')
-    setConnecting(true)
-    try {
-      const signup = await launchWhatsAppSignup('coexistence')
-      const res = await api.completeWhatsAppSignup({
-        office_id: officeId,
-        code: signup.code,
-        phone_number_id: signup.phoneNumberId,
-        waba_id: signup.wabaId,
-        mode: 'coexistence',
-      })
-      if (!res.success) {
-        throw new Error(res.error || 'No se pudo completar la conexión')
-      }
+    const result = await connect()
+    if (result) {
       setConnected(true)
-      setPhoneNumber(res.data?.phone_number ?? null)
-    } catch (err) {
-      if (!(err instanceof EmbeddedSignupCancelledError)) {
-        setError(
-          err instanceof Error ? err.message : 'Error al conectar WhatsApp'
-        )
-      }
-    } finally {
-      setConnecting(false)
+      setPhoneNumber(result.phoneNumber)
     }
   }
 

@@ -14,6 +14,7 @@ from app.config import settings
 from app.utils.logger import get_logger
 from app.db.models import Office
 from app.core.exceptions import WhatsAppError
+from app.utils.dates import real_now
 
 logger = get_logger(__name__)
 
@@ -200,10 +201,23 @@ async def complete_embedded_signup(
         WhatsAppError: On any non-recoverable Meta API failure
         ValueError: If the office doesn't exist or the mode is invalid
     """
+    # Imported here: token_lifecycle imports GRAPH_BASE_URL from this module.
+    from app.modules.whatsapp.token_lifecycle import inspect_token
+
     access_token = await exchange_code_for_token(code)
     phone_info = await fetch_phone_info(phone_number_id, access_token)
     await subscribe_app_to_waba(waba_id, access_token)
     registered = await register_phone_for_cloud_api(phone_number_id, access_token)
+
+    # Record when the token expires so the daily refresh knows. Best-effort:
+    # if Meta can't say right now, the daily maintenance task asks again.
+    token_expires_at = None
+    token_checked = False
+    try:
+        info = await inspect_token(access_token)
+        token_expires_at, token_checked = info.expires_at, True
+    except WhatsAppError as e:
+        logger.warning("es_token_inspect_failed", office_id=str(office_id), error=str(e))
 
     display_number = phone_info.get("display_phone_number") or ""
     await register_meta_number(
@@ -214,6 +228,8 @@ async def complete_embedded_signup(
         mode=mode,
         db=db,
         phone_number=_compact_phone(display_number) if display_number else None,
+        token_expires_at=token_expires_at,
+        token_checked=token_checked,
     )
 
     return {
@@ -320,6 +336,8 @@ async def register_meta_number(
     mode: str,
     db: AsyncSession,
     phone_number: Optional[str] = None,
+    token_expires_at: Optional[datetime] = None,
+    token_checked: bool = False,
 ) -> bool:
     """
     Register a WhatsApp number with Meta Business Account.
@@ -340,6 +358,8 @@ async def register_meta_number(
         mode: Operating mode (coexistence|dedicated|new)
         db: Database session
         phone_number: Display phone number to store (compact, e.g. +5213312345678)
+        token_expires_at: When Meta says the token expires (None = never/unknown)
+        token_checked: Whether token_expires_at came from Meta
 
     Returns:
         True if registration was successful
@@ -365,6 +385,13 @@ async def register_meta_number(
         office.whatsapp_app_active = True
         if phone_number:
             office.whatsapp_phone = phone_number
+        # A (re)connection starts a new token and possibly a different WABA:
+        # forget the old token state and template statuses.
+        office.whatsapp_token_expires_at = token_expires_at
+        office.whatsapp_token_checked_at = real_now() if token_checked else None
+        office.whatsapp_token_error = None
+        office.whatsapp_templates = None
+        office.whatsapp_templates_synced_at = None
 
         db.add(office)
         await db.commit()
@@ -411,10 +438,15 @@ async def get_whatsapp_status(
         - mode: str - Operating mode (coexistence|dedicated|new)
         - registered_at: datetime - When WhatsApp was registered
         - configured_at: datetime - Last configuration update
+        - token_expires_at / token_error: the token's lifecycle (see token_lifecycle)
+        - templates: approval summary of the office's message templates
 
     Raises:
         ValueError: If office not found
     """
+    # Imported here: template_provisioning imports GRAPH_BASE_URL from this module.
+    from app.modules.whatsapp.template_provisioning import template_health
+
     try:
         office = await db.get(Office, office_id)
         if not office:
@@ -428,6 +460,9 @@ async def get_whatsapp_status(
             "mode": office.whatsapp_mode,
             "registered_at": office.created_at,
             "configured_at": office.updated_at,
+            "token_expires_at": office.whatsapp_token_expires_at,
+            "token_error": office.whatsapp_token_error,
+            "templates": template_health(office),
         }
 
     except Exception as e:

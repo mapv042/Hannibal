@@ -84,6 +84,24 @@ class Office(Base):
     whatsapp_token: Mapped[Optional[str]] = mapped_column(
         EncryptedText, nullable=True
     )  # Fernet-encrypted at rest (see app/db/types.py)
+    # Embedded Signup issues 60-day business tokens; the daily
+    # maintain_whatsapp_accounts task reads their expiry from Meta and refreshes
+    # them well before it (whatsapp/token_lifecycle.py). None = never expires,
+    # or not checked yet (then checked_at is None too).
+    whatsapp_token_expires_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    whatsapp_token_checked_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # Why the token is unusable (Meta says invalid, or a refresh failed); None = fine.
+    whatsapp_token_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # {template_name: Meta status} for every template in wa_templates.TEMPLATE_SPECS,
+    # as last read from the office's WABA (whatsapp/template_provisioning.py).
+    whatsapp_templates: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    whatsapp_templates_synced_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     whatsapp_mode: Mapped[Optional[str]] = mapped_column(
         String(50), nullable=True
     )  # coexistence|dedicated|new
