@@ -547,6 +547,9 @@ class Appointment(Base):
     doctor_brief_sent: Mapped[bool] = mapped_column(Boolean, default=False)
     follow_up_sent: Mapped[bool] = mapped_column(Boolean, default=False)
     arrival_check_sent: Mapped[bool] = mapped_column(Boolean, default=False)
+    # The doctor was told the patient didn't answer the check-in. Not a
+    # ReminderType: it follows the check-in (ARRIVAL_NO_RESPONSE_MINUTES).
+    arrival_no_response_sent: Mapped[bool] = mapped_column(Boolean, default=False)
 
     # Waiting room: how the patient answered the check-in sent at appointment
     # time. arrival_status is on_the_way | arrived | no_answer (NULL = not asked

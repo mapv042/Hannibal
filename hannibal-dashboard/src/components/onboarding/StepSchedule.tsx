@@ -40,7 +40,7 @@ export const REMINDER_DEFS: {
   { type: '6h', label: '6 horas antes', description: 'Recordatorio el mismo día de la cita', offsetMinutes: -360 },
   { type: 'doctor_brief', label: 'Resumen antes de la consulta', description: 'Te mandamos a ti el motivo, las notas y la última visita 15 minutos antes de cada cita', offsetMinutes: -15 },
   { type: 'at_time', label: 'Aviso de llegada', description: 'A la hora de la cita le preguntamos al paciente si ya llegó y te avisamos', offsetMinutes: 0 },
-  { type: 'post_appointment', label: 'Seguimiento post-consulta', description: 'Mensaje de seguimiento después de la cita', offsetMinutes: 120 },
+  { type: 'post_appointment', label: 'Invitación a la siguiente cita', description: '10 minutos después de terminar la consulta le agradecemos la visita y le ofrecemos agendar su próxima cita', offsetMinutes: 10 },
 ]
 
 export type ReminderToggles = Record<ReminderType, boolean>

@@ -25,12 +25,14 @@ from app.modules.ai.tool_helpers import (
     resolve_appointment_duration,
     slot_id_for,
     slots_on_day,
+    ended_appointment_error,
 )
 from app.modules.conversation.state import (
     BookingDraft,
     ConversationState,
     KnownAppointment,
     OfferedSlot,
+    PendingCancellation,
 )
 from app.modules.google_calendar.service import update_event_color
 from app.modules.google_calendar.sync import (
@@ -275,8 +277,10 @@ TOOL_DEFINITIONS = [
     {
         "name": "cancel_appointment",
         "description": (
-            "Cancela una cita existente. El paciente debe haber identificado cuál cita "
-            "cancelar y dado un motivo. Cancelar libera el horario."
+            "Cancela una cita existente, en dos pasos. La primera llamada NO cancela: registra "
+            "la solicitud y te indica que le pidas al paciente confirmar cuál cita se cancela y "
+            "le preguntes una sola vez cuál es el motivo. Cuando responda que sí, vuelve a "
+            "llamarla y entonces se cancela, haya dado motivo o no. Cancelar libera el horario."
         ),
         "input_schema": {
             "type": "object",
@@ -290,10 +294,13 @@ TOOL_DEFINITIONS = [
                 },
                 "reason": {
                     "type": "string",
-                    "description": "Motivo de la cancelación que dio el paciente.",
+                    "description": (
+                        "Motivo de la cancelación que dio el paciente. Omítelo si no lo dijo "
+                        "o no quiso decirlo."
+                    ),
                 },
             },
-            "required": ["appointment_id", "reason"],
+            "required": ["appointment_id"],
         },
     },
     {
@@ -486,10 +493,12 @@ async def _find_same_day_appointment(
     start_dt: datetime,
     exclude_id: Optional[uuid.UUID] = None,
 ) -> Optional[Appointment]:
-    """An active appointment this patient already has on the same MX day, if any.
+    """An upcoming appointment this patient already has on the same MX day, if any.
 
     Compared on the Mexico City calendar day rather than a UTC range, so an
-    evening appointment isn't counted against the following day.
+    evening appointment isn't counted against the following day. One that
+    already started doesn't count: offering to "move this morning's" visit
+    that already happened is how a past cita got rescheduled.
     """
     day = start_dt.astimezone(MX_TIMEZONE).date()
     day_start = datetime.combine(day, time.min, tzinfo=MX_TIMEZONE)
@@ -499,7 +508,7 @@ async def _find_same_day_appointment(
         (Appointment.office_id == ctx.office.id)
         & (Appointment.patient_id == patient_id)
         & (Appointment.status.in_(["scheduled", "confirmed"]))
-        & (Appointment.start_datetime >= day_start)
+        & (Appointment.start_datetime >= max(day_start, now_mx()))
         & (Appointment.start_datetime <= day_end)
     )
     if exclude_id is not None:
@@ -717,7 +726,7 @@ async def _handle_prepare_booking(args: dict, ctx: ToolContext) -> dict:
 
     if replaces_id:
         # A move: patient, reason and duration come from the appointment itself.
-        appointment, error = await _load_actionable_appointment(replaces_id, ctx)
+        appointment, error = await _load_changeable_appointment(replaces_id, ctx)
         if error:
             return error
         if localize_mx(appointment.start_datetime) == start_dt:
@@ -1064,7 +1073,7 @@ async def _execute_booking(ctx: ToolContext, draft: BookingDraft, start_dt: date
 
 async def _execute_reschedule(ctx: ToolContext, appointment_id: str, new_start: datetime) -> dict:
     """Move an appointment to `new_start` (book the new slot, then cancel the old)."""
-    appointment, error = await _load_actionable_appointment(appointment_id, ctx)
+    appointment, error = await _load_changeable_appointment(appointment_id, ctx)
     if error:
         return error
     appt_id = appointment.id
@@ -1203,11 +1212,36 @@ async def _load_actionable_appointment(
     return live, None
 
 
+async def _load_changeable_appointment(
+    appt_id_str: str, ctx: ToolContext
+) -> tuple[Optional[Appointment], Optional[dict]]:
+    """Like _load_actionable_appointment, for a cancel or a move.
+
+    Arrival reports and attendance confirmations act on an appointment that is
+    under way; cancelling or moving one whose time is already over never makes
+    sense. (One under way still can be: "no voy a llegar" answers the check-in.)
+    """
+    appointment, error = await _load_actionable_appointment(appt_id_str, ctx)
+    if error:
+        return None, error
+    ended_error = ended_appointment_error(appointment)
+    if ended_error:
+        return None, {
+            "error": ended_error,
+            "next_step": (
+                "Díselo al paciente así. Si lo que quiere es otra cita, ofrécele agendar "
+                "una nueva."
+            ),
+        }
+    return appointment, None
+
+
 @_handler("cancel_appointment")
 async def _handle_cancel_appointment(args: dict, ctx: ToolContext) -> dict:
-    reason = args.get("reason", "")
+    # Optional: a patient who doesn't want to say why still gets to cancel.
+    reason = (args.get("reason") or "").strip() or None
 
-    appointment, error = await _load_actionable_appointment(
+    appointment, error = await _load_changeable_appointment(
         args.get("appointment_id", ""), ctx
     )
     if error:
@@ -1218,6 +1252,40 @@ async def _handle_cancel_appointment(args: dict, ctx: ToolContext) -> dict:
     # Format before cancelling
     dt = localize_mx(appointment.start_datetime)
     label = format_appointment_dt(appointment.start_datetime)
+
+    # Two steps, like booking: the first call asks, a later turn's call cancels.
+    # That one question also asks the reason, so it is asked exactly once and
+    # never blocks — a patient who won't say why still cancels with a plain "sí". Asked in an earlier turn = the patient has
+    # already answered it; asked this turn = they haven't seen it yet.
+    pending = ctx.state.pending_cancellation
+    if pending is None or pending.appointment_id != appt_id_str:
+        pending = PendingCancellation(
+            appointment_id=appt_id_str, label=label, asked_at=now_mx().isoformat()
+        )
+        ctx.state.pending_cancellation = pending
+    if datetime.fromisoformat(pending.asked_at) >= ctx.turn_started_at:
+        pending.reason = reason or pending.reason
+        return {
+            "confirmation_needed": True,
+            "summary": f"Cancelación por confirmar: {label} (todavía NO se canceló)",
+            "appointment_id": appt_id_str,
+            "label": label,
+            "withheld_claims": ["cancel"],
+            "reason_given": pending.reason is not None,
+            "next_step": (
+                "La cita NO se ha cancelado. En un solo mensaje, con tus palabras, pídele que "
+                f"confirme la cancelación de su cita del {label}"
+                + (
+                    "."
+                    if pending.reason is not None
+                    else " y pregúntale directamente cuál es el motivo de la cancelación."
+                )
+                + " Cuando responda que sí, vuelve a llamar cancel_appointment, con el motivo "
+                "si lo dio; si no quiso darlo, cancela igual y no se lo vuelvas a preguntar."
+            ),
+        }
+    ctx.state.pending_cancellation = None
+    reason = reason or pending.reason
 
     # Cancel
     appointment.status = "cancelled"
@@ -1311,8 +1379,9 @@ async def _handle_confirm_attendance(args: dict, ctx: ToolContext) -> dict:
 
 @_handler("report_arrival")
 async def _handle_report_arrival(args: dict, ctx: ToolContext) -> dict:
-    # Local import keeps Celery out of this module's import graph.
-    from app.modules.notifications.tasks import enqueue_arrival_notification
+    # Local imports keep the WhatsApp transport out of this module's import graph.
+    from app.modules.notifications.service import notify_arrival
+    from app.modules.whatsapp.transport import get_meta_client
 
     status = args.get("status", "")
 
@@ -1343,7 +1412,24 @@ async def _handle_report_arrival(args: dict, ctx: ToolContext) -> dict:
         eta_minutes if status == ArrivalStatus.ON_THE_WAY.value else None
     )
 
-    enqueue_arrival_notification(appointment.id)
+    # Sent here, not queued: the patient is told whether the doctor heard,
+    # and that answer has to come from the send. The queued version replied
+    # "le avisé al doctor" before anything left — and an "on the way" with the
+    # doctor's window closed (no template fits it) was never sent at all.
+    try:
+        alert = await notify_arrival(
+            ctx.db, ctx.redis_client, get_meta_client(), appointment.id
+        )
+    except Exception as e:
+        logger.error(
+            "tool_arrival_alert_failed",
+            appointment_id=appt_id_str,
+            office_id=str(ctx.office.id),
+            error=str(e),
+            exc_info=True,
+        )
+        alert = "failed"
+    doctor_notified = alert == "notified"
 
     logger.info(
         "tool_arrival_reported",
@@ -1351,18 +1437,28 @@ async def _handle_report_arrival(args: dict, ctx: ToolContext) -> dict:
         office_id=str(ctx.office.id),
         arrival_status=status,
         eta_minutes=eta_minutes,
+        doctor_alert=alert,
     )
 
     state_label = "ya llegó" if status == ArrivalStatus.ARRIVED.value else "viene en camino"
-    return {
+    result = {
         "success": True,
-        "summary": f"Se avisó al doctor que el paciente {state_label}",
         "appointment_id": appt_id_str,
         "status": status,
         "eta_minutes": eta_minutes,
         "office_name": ctx.office.name,
-        "doctor_notified": True,
+        "doctor_notified": doctor_notified,
     }
+    if doctor_notified:
+        result["summary"] = f"Se avisó al doctor que el paciente {state_label}"
+        return result
+    result["summary"] = f"Quedó registrado que el paciente {state_label}; el aviso al doctor no salió"
+    result["withheld_claims"] = ["notify_doctor"]
+    result["next_step"] = (
+        "No le digas que le avisaste al doctor: el aviso no salió. Dile que su llegada "
+        "quedó registrada y que, si ya está en el consultorio, avise en recepción."
+    )
+    return result
 
 
 @_handler("request_urgent_appointment")

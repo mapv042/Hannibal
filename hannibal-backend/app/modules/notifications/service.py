@@ -30,6 +30,9 @@ from app.modules.reminders.wa_templates import (
     TEMPLATE_DOCTOR_NEW_PATIENT,
     TEMPLATE_DOCTOR_NEW_PATIENT_APPOINTMENT,
     TEMPLATE_DOCTOR_PATIENT_ARRIVED,
+    TEMPLATE_DOCTOR_PATIENT_DELAYED,
+    TEMPLATE_DOCTOR_PATIENT_NO_RESPONSE,
+    TEMPLATE_DOCTOR_PATIENT_NOSHOW_CANCEL,
     TEMPLATE_DOCTOR_DAILY_AGENDA,
     TEMPLATE_RESCHEDULE_NOTICE,
     build_doctor_appointment_brief_params,
@@ -38,6 +41,9 @@ from app.modules.reminders.wa_templates import (
     build_doctor_new_patient_appointment_params,
     build_doctor_new_patient_params,
     build_doctor_patient_arrived_params,
+    build_doctor_patient_delayed_params,
+    build_doctor_patient_no_response_params,
+    build_doctor_patient_noshow_cancel_params,
     build_doctor_daily_agenda_params,
     build_reschedule_notice_params,
 )
@@ -111,7 +117,12 @@ async def notify_cancellation(
     meta_client,
     appointment_id: UUID,
 ) -> str:
-    """Notify the doctor that a patient cancelled their appointment."""
+    """Notify the doctor that a patient cancelled their appointment.
+
+    A cancellation after the check-in went out is the patient answering "no voy
+    a llegar" at the appointment's time: the doctor is waiting for them, so it
+    is worded (and templated) as a last-minute cancellation, not a routine one.
+    """
     appointment = await db.get(Appointment, appointment_id)
     if not appointment:
         return "not_found"
@@ -125,6 +136,17 @@ async def notify_cancellation(
 
     patient_name = patient.name or "El paciente"
     slot = templates.format_slot(appointment.start_datetime)
+
+    if appointment.arrival_check_sent:
+        return await send_doctor_alert(
+            redis_client,
+            meta_client,
+            office,
+            text=templates.doctor_noshow_cancellation(patient_name, slot, office.assistant_tone),
+            template_name=TEMPLATE_DOCTOR_PATIENT_NOSHOW_CANCEL,
+            template_params=build_doctor_patient_noshow_cancel_params(patient_name, slot),
+            log_event="doctor_noshow_cancellation",
+        )
 
     return await send_doctor_alert(
         redis_client,
@@ -252,10 +274,19 @@ async def notify_arrival(
 
     patient_name = patient.name or "El paciente"
     brief_lines = await _build_patient_brief(db, appointment, patient)
-    # The approved template says the patient is already waiting, so it only
-    # fits "arrived"; "on the way" goes out in-window only.
+    # Each state has its own template: "arrived" says the patient is waiting,
+    # "on the way" carries the ETA.
     arrived = appointment.arrival_status == "arrived"
     appointment_time = time_label(appointment.start_datetime.astimezone(MX_TIMEZONE))
+    if arrived:
+        template_name = TEMPLATE_DOCTOR_PATIENT_ARRIVED
+        template_params = build_doctor_patient_arrived_params(patient_name, appointment_time)
+    else:
+        template_name = TEMPLATE_DOCTOR_PATIENT_DELAYED
+        template_params = build_doctor_patient_delayed_params(
+            patient_name,
+            templates.delayed_detail(appointment.arrival_eta_minutes, appointment_time),
+        )
 
     return await send_doctor_alert(
         redis_client,
@@ -268,9 +299,46 @@ async def notify_arrival(
             brief_lines,
             office.assistant_tone,
         ),
-        template_name=TEMPLATE_DOCTOR_PATIENT_ARRIVED if arrived else None,
-        template_params=build_doctor_patient_arrived_params(patient_name, appointment_time),
+        template_name=template_name,
+        template_params=template_params,
         log_event="doctor_patient_arrived",
+    )
+
+
+async def notify_arrival_no_response(
+    db: AsyncSession,
+    redis_client: aioredis.Redis,
+    meta_client,
+    appointment_id: UUID,
+) -> str:
+    """Tell the doctor the patient hasn't answered the waiting-room check-in.
+
+    Part of the same "Aviso de llegada" feature as notify_arrival, so the same
+    toggle governs it. Returns "disabled" when the office turned it off, so the
+    caller can stop asking.
+    """
+    appointment = await db.get(Appointment, appointment_id)
+    if not appointment:
+        return "not_found"
+
+    office = await db.get(Office, appointment.office_id)
+    patient = await db.get(Patient, appointment.patient_id)
+    if not office or not patient:
+        return "skipped"
+    if not office.notify_arrival:
+        return "disabled"
+
+    patient_name = patient.name or "El paciente"
+    appointment_time = time_label(appointment.start_datetime.astimezone(MX_TIMEZONE))
+
+    return await send_doctor_alert(
+        redis_client,
+        meta_client,
+        office,
+        text=templates.doctor_patient_no_response(patient_name, appointment_time),
+        template_name=TEMPLATE_DOCTOR_PATIENT_NO_RESPONSE,
+        template_params=build_doctor_patient_no_response_params(patient_name, appointment_time),
+        log_event="doctor_patient_no_response",
     )
 
 

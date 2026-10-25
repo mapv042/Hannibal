@@ -45,6 +45,29 @@ def doctor_cancellation(patient_name: str, slot: str, tone: str = "informal") ->
     return f"{patient_name} canceló su cita del {slot}."
 
 
+def doctor_noshow_cancellation(patient_name: str, slot: str, tone: str = "informal") -> str:
+    """Alert: the patient answered the check-in by cancelling ("no voy a llegar")."""
+    return (
+        f"{patient_name} avisó que no llegará a su cita del {slot}. "
+        "La cita quedó cancelada y el espacio está libre."
+    )
+
+
+def doctor_patient_no_response(patient_name: str, appointment_time: str) -> str:
+    """Alert: the check-in went out and the patient hasn't answered it."""
+    return (
+        f"{patient_name} no ha respondido al aviso de llegada de su cita de las "
+        f"{appointment_time}. Puede que venga tarde o que no llegue."
+    )
+
+
+def delayed_detail(eta_minutes: int | None, appointment_time: str) -> str:
+    """One line for the delayed template: "llega en unos 15 minutos a su cita de las 10:30 AM"."""
+    if eta_minutes:
+        return f"llega en unos {eta_minutes} minutos a su cita de las {appointment_time}"
+    return f"va hacia su cita de las {appointment_time}"
+
+
 def doctor_new_patient(patient_name: str, tone: str = "informal") -> str:
     """Alert: a new patient was registered (without a booked appointment)."""
     return f"Nuevo paciente registrado: {patient_name}."

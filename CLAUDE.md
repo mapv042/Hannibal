@@ -23,7 +23,7 @@ hannibal/
 │   │   │   ├── conversation/         # Session store (Redis), base_manager + managers (patient + doctor), state (working memory), grounding (reply validator), tracing
 │   │   │   ├── scheduling/           # Availability engine, unified booking engine (booking.py), appointments CRUD, blocks
 │   │   │   ├── urgencies/            # Urgent-appointment requests (doctor-in-the-loop overbooking): service, templates, Celery notify + timeout
-│   │   │   ├── reminders/            # One periodic sweep dispatches every due reminder (week/day-before+confirm, 6h, doctor brief, check-in, follow-up)
+│   │   │   ├── reminders/            # One periodic sweep dispatches every due reminder (week/day-before+confirm, 6h, doctor brief, check-in + no-response alert, after-visit invitation)
 │   │   │   ├── offices/              # Office/practice CRUD
 │   │   │   ├── patients/             # Patient CRUD
 │   │   │   ├── notifications/        # Configurable doctor notifications (new appointment/patient, cancellation, reschedule, pre-consultation brief, unconfirmed summary, arrival)
@@ -94,7 +94,7 @@ All enums use string values in English:
 - `AppointmentStatus`: scheduled, confirmed, cancelled, completed, no_show
 - `WhatsAppMode`: coexistence, dedicated, new
 - `ConversationStatus`: active, waiting_confirmation, paused_by_doctor, completed, abandoned
-- `ReminderType`: week_before, day_before, 6h, doctor_brief, at_time, post_appointment (timing via `ReminderRule` / `DEFAULT_REMINDER_RULES`). `day_before` is one message that reminds *and* asks to confirm (interactive buttons in-window) — there is no separate confirmation-request job. `doctor_brief` (-15 min) is doctor-facing. Those two and `at_time` skip the clamp; every other patient-facing reminder is clamped into the sending window (Rule 15, `reminders/scheduler.clamp_to_sending_window`) so a 6h offset on a 9am cita goes out at 8am, never at 3am
+- `ReminderType`: week_before, day_before, 6h, doctor_brief, at_time, post_appointment (timing via `ReminderRule` / `DEFAULT_REMINDER_RULES`). `day_before` is one message that reminds *and* asks to confirm (interactive buttons in-window) — there is no separate confirmation-request job. `doctor_brief` (-15 min) is doctor-facing. Those two and `at_time` skip the clamp; every other patient-facing reminder is clamped into the sending window (Rule 15, `reminders/scheduler.clamp_to_sending_window`) so a 6h offset on a 9am cita goes out at 8am, never at 3am. `post_appointment` counts from the cita's **end** (`scheduler.anchor`, default +10 min): thanks + «Agendar cita» / «Ahora no» (`appointment_follow_up`)
 - `ArrivalStatus`: on_the_way, arrived, no_answer (waiting room; stored on `Appointment.arrival_status`)
 - `BlockOrigin`: manual, google_calendar, holiday (statutory MX holidays seeded as full-day `TimeBlock`s at office creation)
 
@@ -113,7 +113,7 @@ The doctor can use WhatsApp on their phone simultaneously with the bot. Two ways
 ### WhatsApp tokens & templates (per doctor WABA)
 Embedded Signup connects the **doctor's own WABA** and issues a token that **expires 60 days** after it is generated or refreshed. Two things keep an office reachable, both in `whatsapp/tasks.maintain_whatsapp_accounts` (beat, daily) for every office with a token:
 - `token_lifecycle.maintain_office_token`: `debug_token` (valid? expires when?) → refresh via `oauth/access_token?grant_type=fb_exchange_token&set_token_expires_in_60_days=true` once fewer than `REFRESH_WHEN_DAYS_LEFT` (30) days remain. Stores `Office.whatsapp_token_expires_at` / `_checked_at` / `_error`; every failure logs at error level (the worker reports to Sentry). A Meta outage is "couldn't check", never "invalid". Once a token expires only the doctor re-running Embedded Signup recovers it. Sends rejected with code 190 log `whatsapp_token_rejected`.
-- `template_provisioning.sync_office_templates`: creates every spec in `reminders/wa_templates.TEMPLATE_SPECS` missing from the WABA (named params, es_MX) and stores `{name: status}` in `Office.whatsapp_templates`. Right after signup `provision_office_templates` does the same and re-checks every 10 min (×6) while Meta reviews. A body change needs a new `_vN` name — the daily sync then creates it on every WABA. Settings → Estado de WhatsApp shows the approval state.
+- `template_provisioning.sync_office_templates`: creates every spec in `reminders/wa_templates.TEMPLATE_SPECS` missing from the WABA (named params, es_MX) and stores `{name: status}` in `Office.whatsapp_templates`. Right after signup `provision_office_templates` does the same and re-checks every 10 min (×6) while Meta reviews. Every name carries the catalogue version as a prefix (`TEMPLATE_NAME_PREFIX`, now `v1_0_0_`, e.g. `v1_0_0_appointment_reminder`); a body change needs new names (Meta blocks a deleted name for weeks) — bump the prefix and the daily sync creates the new set on every WABA. Settings → Estado de WhatsApp shows the approval state.
 
 ### Availability engine (modules/scheduling/availability.py)
 Calculates free slots by: getting weekly schedules → generating all possible slots → subtracting existing appointments → subtracting time blocks → checking Google Calendar freebusy. Results cached in Redis (5 min TTL). Slot locking via Redis SETNX (60s) prevents double-booking.
@@ -145,8 +145,12 @@ The doctor gets their pre-consultation brief at `doctor_brief` (-15 min) whether
 button id is dropped on the way in — so the task primes the patient's session
 (`active_appointment_id` + status `waiting_arrival_report`), which gates the `LLEGADA PENDIENTE`
 prompt block. The patient tool `report_arrival` writes `arrival_status` / `arrival_reported_at` /
-`arrival_eta_minutes` and enqueues the doctor alert, which carries the pre-consultation brief
-(motivo, last visit, internal note) in the same message. `scheduling/waiting_room.get_waiting_room`
+`arrival_eta_minutes` and sends the doctor alert in the same call (the reply says "le avisé" only if
+it went out), which carries the pre-consultation brief (motivo, last visit, internal note):
+`doctor_patient_arrived` / `doctor_patient_delayed` out of window. No answer
+`ARRIVAL_NO_RESPONSE_MINUTES` (10) after the check-in → `doctor_patient_no_response` (sweep-derived from
+the `at_time` rule, flag `arrival_no_response_sent`, toggle `notify_arrival`). A patient cancellation
+after the check-in reaches the doctor as `doctor_patient_noshow_cancel`. `scheduling/waiting_room.get_waiting_room`
 reads today's reports back into the doctor prompt as `SALA DE ESPERA`, so the doctor can ask who is
 outside; telling a patient to wait needs no new code — it is the existing `send_message_to_patient`
 draft-and-approve flow.

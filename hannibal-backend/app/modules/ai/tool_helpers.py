@@ -146,6 +146,33 @@ def format_appointment_dt(dt: datetime) -> str:
     return f"{long_date_label(local.date())} a las {time_label(local)}"
 
 
+def has_ended(appointment: Appointment) -> bool:
+    """True once the appointment's time is over (start + duration, MX clock).
+
+    The end, not the start: at the start time the check-in asks "¿ya llegaste?"
+    and "no voy a llegar" must still cancel the cita.
+    """
+    duration = timedelta(minutes=appointment.duration_minutes or 30)
+    return localize_mx(appointment.start_datetime) + duration <= now_mx()
+
+
+def ended_appointment_error(appointment: Appointment) -> Optional[str]:
+    """Error message when an appointment can no longer be cancelled or moved.
+
+    An appointment whose time is over is history: cancelling it frees a slot in
+    the past, and "moving" it turned a 9:00 visit that already happened into a
+    new afternoon booking when the patient only asked for a second one. The
+    listing tools used to hand these back as candidates (they filtered by day,
+    not by hour), so the guard lives here, at the write, for both flows.
+    """
+    if not has_ended(appointment):
+        return None
+    return (
+        f"Esa cita ya concluyó (fue el {format_appointment_dt(appointment.start_datetime)}): "
+        "ya no se puede cancelar ni cambiar."
+    )
+
+
 def slot_id_for(dt: datetime) -> str:
     """Canonical slot id for a datetime (Mexico City wall time)."""
     return localize_mx(dt).strftime(SLOT_ID_FORMAT)

@@ -18,10 +18,12 @@ from app.modules.google_calendar.service import (
 from app.modules.ai.tool_helpers import (
     availability_for_dates,
     format_appointment_dt,
+    has_ended,
     localize_mx,
     offered_slots_from,
     resolve_appointment_duration,
     resolve_requested_days,
+    ended_appointment_error,
 )
 from app.modules.conversation.state import ConversationState
 from app.modules.scheduling.availability import (
@@ -788,9 +790,18 @@ async def _handle_get_appointments(args: dict, ctx: DoctorToolContext) -> dict:
             "status": appt.status,
             "notes": appt.post_consultation_notes or "",
         }
+        if has_ended(appt):
+            # Still scheduled/confirmed because nobody marked attendance, not
+            # because it can be acted on: it used to be offered for a cancel.
+            entry["already_happened"] = True
         appt_list.append(entry)
 
     result_dict = {"total": len(appt_list), "appointments": appt_list}
+    if any(e.get("already_happened") for e in appt_list):
+        result_dict["note"] = (
+            "Las citas con already_happened ya ocurrieron: no las ofrezcas para cancelar "
+            "o mover. Si el paciente no llegó, se marca con mark_appointment_status."
+        )
     if is_range:
         result_dict["start_date"] = start_date.isoformat()
         result_dict["end_date"] = end_date.isoformat()
@@ -798,6 +809,20 @@ async def _handle_get_appointments(args: dict, ctx: DoctorToolContext) -> dict:
         result_dict["date"] = start_date.isoformat()
         result_dict["day_name"] = DAYS_ES[start_date.weekday()]
     return result_dict
+
+
+def _doctor_ended_error(appointment: Appointment) -> Optional[dict]:
+    """The refusal for cancelling or moving an appointment whose time is over."""
+    message = ended_appointment_error(appointment)
+    if message is None:
+        return None
+    return {
+        "error": message,
+        "next_step": (
+            "Díselo al doctor. Si el paciente no llegó, ofrécele marcarla como no_show "
+            "con mark_appointment_status; si quiere verlo otro día, agenda una cita nueva."
+        ),
+    }
 
 
 @_handler("cancel_appointment")
@@ -816,6 +841,9 @@ async def _handle_cancel_appointment(args: dict, ctx: DoctorToolContext) -> dict
 
     if appointment.status == "cancelled":
         return {"error": "La cita ya fue cancelada."}
+    ended_error = _doctor_ended_error(appointment)
+    if ended_error:
+        return ended_error
 
     dt = localize_mx(appointment.start_datetime)
     formatted = format_appointment_dt(appointment.start_datetime)
@@ -1783,6 +1811,9 @@ async def _handle_reschedule_appointment(args: dict, ctx: DoctorToolContext) -> 
 
     if appointment.status == "cancelled":
         return {"error": "La cita ya fue cancelada."}
+    ended_error = _doctor_ended_error(appointment)
+    if ended_error:
+        return ended_error
 
     try:
         new_start = datetime.strptime(f"{new_date} {new_time}", "%Y-%m-%d %H:%M").replace(tzinfo=MX_TIMEZONE)

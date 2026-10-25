@@ -40,6 +40,19 @@ MAX_TOOL_ITERATIONS = 10
 CORRECTION_TOOL_ITERATIONS = 4
 
 
+def _claims_backed(name: str, result, tool_claims: dict[str, frozenset[str]]) -> frozenset[str]:
+    """What this call lets the reply say it did.
+
+    A tool's declared claims, minus any the result itself withholds: a write can
+    succeed and still not do everything its name suggests (report_arrival
+    records the arrival even when the alert to the doctor could not go out).
+    """
+    if not _succeeded(result):
+        return frozenset()
+    withheld = result.get("withheld_claims") or ()
+    return tool_claims.get(name, frozenset()) - frozenset(withheld)
+
+
 def _succeeded(result) -> bool:
     """Whether a tool result reports a completed action (or a non-empty read)."""
     if not isinstance(result, dict) or "error" in result or "existing_appointment" in result:
@@ -286,8 +299,7 @@ class BaseToolConversationManager:
         # This turn's successful calls — including reads: a lookup that found the
         # appointment backs "tu cita quedó agendada" as much as the booking did.
         for name, result in turn_results:
-            if _succeeded(result):
-                claims |= tool_claims.get(name, frozenset())
+            claims |= _claims_backed(name, result, tool_claims)
         return Evidence.build(today=now_mx().date(), claims=claims, texts=texts)
 
     async def _loop_until_text(
@@ -413,6 +425,6 @@ class BaseToolConversationManager:
             tool=tool_name,
             ok=ok,
             summary=f"{tool_name}: {summary}" if summary else tool_name,
-            claims=sorted(tool_claims.get(tool_name, ())) if ok else [],
+            claims=sorted(_claims_backed(tool_name, result, tool_claims)),
             at=now_mx(),
         )

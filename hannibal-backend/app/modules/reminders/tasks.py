@@ -33,12 +33,18 @@ from app.core.constants import (
 from app.core.task_runner import run_task
 from app.db.base import get_async_session_maker
 from app.db.models import Appointment, Office, Patient, Conversation, Message
-from app.modules.reminders.scheduler import due_at, is_still_worth_sending, was_due_after_booking
+from app.modules.reminders.scheduler import (
+    arrival_no_response_due,
+    arrival_no_response_still_useful,
+    due_at,
+    is_still_worth_sending,
+    was_due_after_booking,
+)
 from app.modules.reminders.templates import (
     reminder_week_before,
     reminder_6h,
     arrival_check,
-    post_appointment_followup,
+    post_visit_prompt,
     confirmation_request,
     office_location,
     reminder_day_before,
@@ -123,12 +129,16 @@ async def _prime_session_for_appointment(
     db: AsyncSession,
     office: Office,
     patient: Patient,
-    appointment: Appointment,
+    appointment: Appointment | None,
     outgoing_text: str,
     *,
     status: str,
 ) -> None:
     """Point the patient's session at an appointment we just asked about.
+
+    `appointment=None` opens a new topic that isn't about a pending cita (the
+    after-visit invitation): the question still becomes the history, so "ahora
+    no" has something to answer, but no confirmation/arrival block is gated on.
 
     A tapped button reaches the model as its title text — the button id is
     dropped on the way in — so the appointment being asked about has to travel
@@ -157,7 +167,7 @@ async def _prime_session_for_appointment(
         # casi") has exactly one thing to attach to.
         claude_history=[{"role": "assistant", "content": outgoing_text}],
         collected_data={},
-        active_appointment_id=appointment.id,
+        active_appointment_id=appointment.id if appointment is not None else None,
     )
 
     await session_store.save_session(patient.whatsapp_id, str(office.id), session)
@@ -573,8 +583,54 @@ async def _send_doctor_brief(appointment_id: str) -> None:
         await redis_client.close()
 
 
+async def _send_arrival_no_response(appointment_id: str) -> None:
+    """Doctor alert: the check-in went out and the patient hasn't answered it.
+
+    Doctor-facing like the brief, so it goes through the notifications service.
+    Re-checked under the row lock: an answer that landed after the sweep looked
+    means there is nothing to report.
+    """
+    import redis.asyncio as aioredis
+
+    from app.config import settings
+    from app.modules.notifications.service import notify_arrival_no_response
+    from app.modules.whatsapp.transport import get_meta_client
+
+    redis_client = aioredis.from_url(settings.redis_url, decode_responses=True)
+    try:
+        async with get_async_session_maker()() as db:
+            result = await db.execute(
+                select(Appointment)
+                .where(Appointment.id == UUID(appointment_id))
+                .with_for_update()
+            )
+            appointment = result.scalar_one_or_none()
+            if not appointment:
+                _log(f"send_arrival_no_response: not found appointment_id={appointment_id}")
+                return
+            if (
+                appointment.arrival_no_response_sent
+                or appointment.arrival_status is not None
+                or appointment.status not in ("scheduled", "confirmed")
+            ):
+                _log(f"send_arrival_no_response: nothing to report appointment_id={appointment_id}")
+                return
+
+            status = await notify_arrival_no_response(
+                db, redis_client, get_meta_client(), appointment.id
+            )
+            # "disabled" is final too: an office that turned arrival alerts off
+            # shouldn't be re-checked on every sweep until the grace runs out.
+            if status in ("notified", "disabled"):
+                appointment.arrival_no_response_sent = True
+            await db.commit()
+            _log(f"send_arrival_no_response: {status} appointment_id={appointment_id}")
+    finally:
+        await redis_client.close()
+
+
 async def _post_follow_up_async(appointment_id: str) -> None:
-    """Post-appointment follow-up, sent after the visit."""
+    """After the visit: thanks and an invitation to book the next cita."""
     from app.modules.whatsapp.transport import get_meta_client
 
     async with get_async_session_maker()() as db:
@@ -609,35 +665,60 @@ async def _post_follow_up_async(appointment_id: str) -> None:
             _log(f"post_follow_up: missing whatsapp config appointment_id={appointment_id}")
             return
 
-        appointment_data = {
-            "patient_name": patient.name or "paciente",
-            "professional_name": "el profesional",
-            "assistant_name": office.assistant_name,
-        }
-        free_text = post_appointment_followup(
-            appointment_data,
+        patient_name = patient.name or "paciente"
+        free_text = post_visit_prompt(
+            {"patient_name": patient_name, "office_name": office.name},
             instructions=appointment.instructions,
             tone=office.assistant_tone,
         )
-        params = build_follow_up_params(
-            patient_name=patient.name or "paciente",
-            location=office.name,
-        )
 
-        await _send_free_or_template(
-            get_meta_client(),
-            db,
-            office,
-            patient,
-            free_text=free_text,
-            template_name=TEMPLATE_FOLLOW_UP,
-            params=params,
-        )
+        meta_client = get_meta_client()
+        session_store = SessionStore()
+        try:
+            # In-window: the same two taps the template carries as quick replies,
+            # so a tap reads the same to the assistant whichever path sent it.
+            if await service_window_open(db, office.id, patient.whatsapp_id):
+                message_id = await meta_client.send_interactive_buttons(
+                    phone_number_id=office.whatsapp_phone_id,
+                    token=office.whatsapp_token,
+                    to=patient.whatsapp_id,
+                    body_text=free_text,
+                    buttons=[
+                        {"id": f"book_next_{appointment.id}", "title": "Agendar cita"},
+                        {"id": f"not_now_{appointment.id}", "title": "Ahora no"},
+                    ],
+                )
+                await _record_outgoing_message(
+                    db,
+                    office,
+                    patient,
+                    content=free_text,
+                    via="interactive",
+                    template_name=TEMPLATE_FOLLOW_UP,
+                    whatsapp_message_id=message_id,
+                )
+                via = "interactive"
+            else:
+                via = await _send_free_or_template(
+                    meta_client,
+                    db,
+                    office,
+                    patient,
+                    free_text=free_text,
+                    template_name=TEMPLATE_FOLLOW_UP,
+                    params=build_follow_up_params(patient_name, office.name),
+                )
+
+            await _prime_session_for_appointment(
+                session_store, db, office, patient, None, free_text, status="active",
+            )
+        finally:
+            await session_store.close()
 
         appointment.follow_up_sent = True
         await db.commit()
 
-        _log(f"post_follow_up: sent to patient_id={patient.id}")
+        _log(f"post_follow_up: sent via {via} to patient_id={patient.id}")
 
 
 # --------------------------------------------------------------------------- #
@@ -695,6 +776,16 @@ def send_doctor_brief(self, appointment_id: str):
 
 
 @shared_task(bind=True)
+def send_arrival_no_response(self, appointment_id: str):
+    """Tell the doctor the patient hasn't answered the check-in."""
+    try:
+        run_task(_send_arrival_no_response(appointment_id))
+    except Exception as e:
+        _log_exception("send_arrival_no_response", e)
+        raise
+
+
+@shared_task(bind=True)
 def post_follow_up(self, appointment_id: str):
     """Send the post-appointment follow-up."""
     try:
@@ -702,6 +793,34 @@ def post_follow_up(self, appointment_id: str):
     except Exception as e:
         _log_exception("post_follow_up", e)
         raise
+
+
+# Label for the no-response alert in dispatch logs and the simulator's report.
+ARRIVAL_NO_RESPONSE = "arrival_no_response"
+
+
+def arrival_no_response_due_for(appointment, rules) -> datetime | None:
+    """When the doctor should hear this patient didn't answer the check-in, if ever.
+
+    Only for a check-in that went out and got no answer ("voy en camino" counts
+    as one), on an active cita, not reported yet — and only for offices that
+    send the check-in at all (the at_time rule; its offset places the alert).
+    """
+    if (
+        appointment.status not in ("scheduled", "confirmed")
+        or not appointment.arrival_check_sent
+        or appointment.arrival_status is not None
+        or appointment.arrival_no_response_sent
+    ):
+        return None
+    at_time_offset = next(
+        (offset for rtype, offset in rules if rtype == ReminderType.AT_TIME.value), None
+    )
+    if at_time_offset is None:
+        return None
+    return arrival_no_response_due(
+        at_time_offset, appointment.start_datetime.astimezone(MX_TZ)
+    )
 
 
 TASK_BY_REMINDER_TYPE = {
@@ -775,7 +894,9 @@ async def _dispatch_due_reminders_async() -> list[dict]:
                 if getattr(appointment, flag, False):
                     continue
 
-                due = due_at(reminder_type, offset_minutes, start_local)
+                due = due_at(
+                    reminder_type, offset_minutes, start_local, appointment.duration_minutes
+                )
                 if due is None or due > now:
                     continue
 
@@ -788,7 +909,7 @@ async def _dispatch_due_reminders_async() -> list[dict]:
                     continue
 
                 if not is_still_worth_sending(
-                    reminder_type, offset_minutes, start_local, now
+                    reminder_type, offset_minutes, start_local, now, appointment.duration_minutes
                 ):
                     continue
 
@@ -807,6 +928,30 @@ async def _dispatch_due_reminders_async() -> list[dict]:
                             "due_at": due.isoformat(),
                         }
                     )
+
+            no_response_due = arrival_no_response_due_for(
+                appointment, rules_cache[appointment.office_id]
+            )
+            if (
+                no_response_due is not None
+                and no_response_due <= now
+                and arrival_no_response_still_useful(no_response_due, now)
+                and dispatch(
+                    send_arrival_no_response,
+                    [str(appointment.id)],
+                    event="reminder_dispatched",
+                    appointment_id=str(appointment.id),
+                    reminder_type=ARRIVAL_NO_RESPONSE,
+                    due_at=no_response_due.isoformat(),
+                )
+            ):
+                dispatched.append(
+                    {
+                        "appointment_id": str(appointment.id),
+                        "reminder_type": ARRIVAL_NO_RESPONSE,
+                        "due_at": no_response_due.isoformat(),
+                    }
+                )
 
         _log(
             f"dispatch_due_reminders: {len(dispatched)} dispatched from "

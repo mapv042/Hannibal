@@ -30,6 +30,9 @@ BUILDERS = {
     wt.TEMPLATE_DOCTOR_NEW_PATIENT: lambda: wt.build_doctor_new_patient_params("a"),
     wt.TEMPLATE_DOCTOR_DAILY_AGENDA: lambda: wt.build_doctor_daily_agenda_params("a", "b"),
     wt.TEMPLATE_DOCTOR_PATIENT_ARRIVED: lambda: wt.build_doctor_patient_arrived_params("a", "b"),
+    wt.TEMPLATE_DOCTOR_PATIENT_DELAYED: lambda: wt.build_doctor_patient_delayed_params("a", "b"),
+    wt.TEMPLATE_DOCTOR_PATIENT_NO_RESPONSE: lambda: wt.build_doctor_patient_no_response_params("a", "b"),
+    wt.TEMPLATE_DOCTOR_PATIENT_NOSHOW_CANCEL: lambda: wt.build_doctor_patient_noshow_cancel_params("a", "b"),
     wt.TEMPLATE_DOCTOR_SYNC_WARNING: lambda: wt.build_doctor_sync_warning_params("a", "b"),
     wt.TEMPLATE_DOCTOR_APPOINTMENT_BRIEF: lambda: wt.build_doctor_appointment_brief_params("a", "b"),
     wt.TEMPLATE_DOCTOR_CALENDAR_DISCONNECTED: lambda: wt.build_doctor_calendar_disconnected_params("a"),
@@ -41,7 +44,7 @@ SPECS = {spec.name: spec for spec in wt.TEMPLATE_SPECS}
 
 def test_every_template_constant_has_exactly_one_spec():
     constants = {v for k, v in vars(wt).items() if k.startswith("TEMPLATE_") and k not in (
-        "TEMPLATE_LANGUAGE", "TEMPLATE_SPECS"
+        "TEMPLATE_LANGUAGE", "TEMPLATE_SPECS", "TEMPLATE_NAME_PREFIX"
     )}
     assert constants == set(SPECS)
     assert len(SPECS) == len(wt.TEMPLATE_SPECS)  # no duplicate names
@@ -66,6 +69,11 @@ def test_spec_body_follows_meta_rules(name):
     assert re.fullmatch(r"[a-z0-9_]+", name)
     for title in SPECS[name].quick_replies:
         assert len(title) <= 25
+
+
+def test_every_name_carries_the_catalogue_prefix_and_no_suffix():
+    assert all(name.startswith(wt.TEMPLATE_NAME_PREFIX) for name in SPECS)
+    assert not [name for name in SPECS if re.search(r"_v\d+$", name)]
 
 
 def test_create_payload_uses_named_params_and_quick_replies():

@@ -153,11 +153,12 @@ def confirmation_request(appointment_data: dict, tone: str = "formal") -> str:
         )
 
 
-def post_appointment_followup(
+def post_visit_prompt(
     appointment_data: dict, instructions: Optional[str] = None, tone: str = "formal"
 ) -> str:
     """
-    Generate post-appointment follow-up message.
+    Generate the after-visit message: thanks, any instructions, and an
+    invitation to book the next cita (sent with "Agendar cita" / "Ahora no").
 
     Args:
         appointment_data: Appointment data
@@ -165,30 +166,24 @@ def post_appointment_followup(
         tone: Message tone (formal|informal)
 
     Returns:
-        Formatted follow-up message
+        Formatted message
     """
     patient_name = appointment_data.get("patient_name", "estimado cliente")
-    professional_name = appointment_data.get("professional_name", "el profesional")
-    assistant_name = appointment_data.get("assistant_name", "Asistente")
+    office_name = appointment_data.get("office_name", "el consultorio")
 
     instructions_text = f"\n\nIndicaciones:\n{instructions}" if instructions else ""
 
     if tone == "informal":
         return (
-            f"Hola {patient_name}.\n\n"
-            f"Gracias por tu visita hoy. {professional_name} espera que te sientas mejor pronto.\n"
+            f"Hola {patient_name}, gracias por tu visita a {office_name}."
             f"{instructions_text}\n\n"
-            f"Si tienes preguntas, cuéntanos. Estamos aquí para ayudarte.\n\n"
-            f"— {assistant_name}"
+            "¿Quieres agendar tu próxima cita?"
         )
-    else:  # formal
-        return (
-            f"Estimado(a) {patient_name},\n\n"
-            f"Agradecemos su visita el día de hoy. {professional_name} le desea una pronta recuperación.\n"
-            f"{instructions_text}\n\n"
-            f"Si tiene preguntas o inquietudes, no dude en contactarnos.\n\n"
-            f"Atentamente,\n{assistant_name}"
-        )
+    return (
+        f"Estimado(a) {patient_name}, gracias por su visita a {office_name}."
+        f"{instructions_text}\n\n"
+        "¿Desea agendar su próxima cita?"
+    )
 
 
 def appointment_confirmation(appointment_data: dict, tone: str = "formal") -> str:

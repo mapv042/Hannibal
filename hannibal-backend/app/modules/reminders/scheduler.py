@@ -17,7 +17,11 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 
 from app.config import settings
-from app.core.constants import ReminderType
+from app.core.constants import (
+    ARRIVAL_NO_RESPONSE_GRACE_MINUTES,
+    ARRIVAL_NO_RESPONSE_MINUTES,
+    ReminderType,
+)
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -77,18 +81,53 @@ def clamp_to_sending_window(run_at: datetime, start_local: datetime) -> datetime
     return adjusted
 
 
+DEFAULT_DURATION_MINUTES = 30
+
+
+def anchor(reminder_type: str, start_local: datetime, duration_minutes: int | None) -> datetime:
+    """The moment a reminder's offset counts from: the start, or the end after a visit.
+
+    The post-appointment message follows the consultation, so its offset counts
+    from when the cita ends — "10 minutes after" a 60-minute cita is 70 minutes
+    after it started.
+    """
+    if reminder_type == ReminderType.POST_APPOINTMENT.value:
+        return start_local + timedelta(minutes=duration_minutes or DEFAULT_DURATION_MINUTES)
+    return start_local
+
+
 def due_at(
-    reminder_type: str, offset_minutes: int, start_local: datetime
+    reminder_type: str,
+    offset_minutes: int,
+    start_local: datetime,
+    duration_minutes: int | None = None,
 ) -> datetime | None:
     """When this reminder should go out, or None if it can't be placed.
 
     `offset_minutes` is signed relative to the appointment start (negative =
-    before). The result is in the same timezone as `start_local`.
+    before), or to its end for the post-appointment message. The result is in
+    the same timezone as `start_local`.
     """
-    run_at = start_local + timedelta(minutes=offset_minutes)
+    run_at = anchor(reminder_type, start_local, duration_minutes) + timedelta(
+        minutes=offset_minutes
+    )
     if reminder_type in UNCLAMPED_TYPES:
         return run_at
     return clamp_to_sending_window(run_at, start_local)
+
+
+def arrival_no_response_due(at_time_offset: int, start_local: datetime) -> datetime:
+    """When the doctor hears that the check-in went unanswered.
+
+    ARRIVAL_NO_RESPONSE_MINUTES after the check-in (the at_time rule, which is
+    unclamped). Doctor-facing, so no sending window either.
+    """
+    return start_local + timedelta(minutes=at_time_offset + ARRIVAL_NO_RESPONSE_MINUTES)
+
+
+def arrival_no_response_still_useful(due: datetime, now: datetime) -> bool:
+    """A late sweep reports a silent patient only while the cita is still current."""
+    return now <= due + timedelta(minutes=ARRIVAL_NO_RESPONSE_GRACE_MINUTES)
 
 
 def was_due_after_booking(due: datetime, booked_at: datetime | None) -> bool:
@@ -110,6 +149,7 @@ def is_still_worth_sending(
     offset_minutes: int,
     start_local: datetime,
     now: datetime,
+    duration_minutes: int | None = None,
 ) -> bool:
     """Whether a reminder whose due time has passed should still be delivered.
 
@@ -119,7 +159,7 @@ def is_still_worth_sending(
     if reminder_type == ReminderType.AT_TIME.value:
         return now <= start_local + timedelta(minutes=AT_TIME_GRACE_MINUTES)
     if offset_minutes > 0:
-        return now <= start_local + timedelta(
+        return now <= anchor(reminder_type, start_local, duration_minutes) + timedelta(
             minutes=offset_minutes + POST_APPOINTMENT_GRACE_HOURS * 60
         )
     # Everything announcing an appointment is worth sending until it starts.

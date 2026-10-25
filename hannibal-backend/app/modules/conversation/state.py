@@ -74,6 +74,22 @@ class BookingDraft(BaseModel):
     created_at: str
 
 
+class PendingCancellation(BaseModel):
+    """A cancellation the patient asked for, awaiting their yes.
+
+    The first cancel_appointment call only records this and asks; the cita is
+    cancelled when the patient answers in a later turn. That one question is
+    also when the reason is asked — once, never as a condition.
+    """
+
+    appointment_id: str
+    label: str
+    asked_at: str
+    # Given along with the request ("cancélala, me salió trabajo"), so the
+    # confirming call doesn't have to repeat it.
+    reason: Optional[str] = None
+
+
 class ActionRecord(BaseModel):
     """A write a tool executed, summarized by code (not by the model)."""
 
@@ -90,6 +106,7 @@ class ConversationState(BaseModel):
     offered_slots: list[OfferedSlot] = Field(default_factory=list)
     known_appointments: list[KnownAppointment] = Field(default_factory=list)
     draft: Optional[BookingDraft] = None
+    pending_cancellation: Optional[PendingCancellation] = None
     recent_actions: list[ActionRecord] = Field(default_factory=list)
 
     # ------------------------------------------------------------------
@@ -128,7 +145,11 @@ class ConversationState(BaseModel):
 
     def is_empty(self) -> bool:
         return not (
-            self.offered_slots or self.known_appointments or self.draft or self.recent_actions
+            self.offered_slots
+            or self.known_appointments
+            or self.draft
+            or self.pending_cancellation
+            or self.recent_actions
         )
 
     # ------------------------------------------------------------------
@@ -156,6 +177,13 @@ class ConversationState(BaseModel):
             lines.append(
                 "Cita preparada que espera la aprobación del paciente (todavía NO está "
                 f"agendada): {self.draft.summary}"
+            )
+
+        if self.pending_cancellation:
+            lines.append(
+                "Cancelación que espera la confirmación del paciente (todavía NO está "
+                f"cancelada): cita del {self.pending_cancellation.label} "
+                f"(ID {self.pending_cancellation.appointment_id})"
             )
 
         if self.known_appointments:

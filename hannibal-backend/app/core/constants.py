@@ -136,12 +136,14 @@ class ReminderType(str, Enum):
     SIX_HOURS = "6h"  # 6 hours before
     DOCTOR_BRIEF = "doctor_brief"  # Pre-consultation brief, to the DOCTOR
     AT_TIME = "at_time"  # At appointment time: the waiting-room check-in
-    POST_APPOINTMENT = "post_appointment"  # After the appointment (follow-up)
+    POST_APPOINTMENT = "post_appointment"  # After the visit: invitation to book the next one
 
 
 # Default reminder rules applied to every office unless overridden.
 # offset_minutes is signed relative to the appointment start:
-#   negative = before the appointment, positive = after.
+#   negative = before the appointment, positive = after. The exception is
+#   post_appointment, counted from the appointment's END: it follows the visit,
+#   so "10 minutes after" means after the consultation, whatever its length.
 # Doctors with a full agenda need more lead time than a same-day nudge, so the
 # "before" reminders are a week, a day and six hours out.
 DEFAULT_REMINDER_RULES: list[tuple[ReminderType, int]] = [
@@ -150,8 +152,15 @@ DEFAULT_REMINDER_RULES: list[tuple[ReminderType, int]] = [
     (ReminderType.SIX_HOURS, -360),  # 6h before
     (ReminderType.DOCTOR_BRIEF, -15),  # 15 min before: the doctor's brief
     (ReminderType.AT_TIME, 0),  # at the appointment time: "¿ya llegaste?"
-    (ReminderType.POST_APPOINTMENT, 120),  # 2h after
+    (ReminderType.POST_APPOINTMENT, 10),  # 10 min after the cita ends
 ]
+
+# How long after the check-in the doctor hears that the patient hasn't answered
+# it. Derived from the at_time rule (no rule of its own): an office that turned
+# the check-in off has nothing to report. Past the grace, a late sweep stays
+# quiet instead of reporting a cita that is long over.
+ARRIVAL_NO_RESPONSE_MINUTES = 10
+ARRIVAL_NO_RESPONSE_GRACE_MINUTES = 60
 
 # Bounds for a configurable offset: at most a week before, a day after. The
 # scheduler's sending window (Rule 15) still decides the hour of day.

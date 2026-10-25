@@ -654,11 +654,26 @@ async def _process_status(
             office_id=str(office.id),
         )
 
+        if status == "failed":
+            # Meta accepted the send (it returned an id) and gave up later: the
+            # only record of why is this webhook. Doctor alerts aren't stored as
+            # Message rows, so this log line is all there is for them.
+            errors = status_update.get("errors") or []
+            logger.error(
+                "whatsapp_delivery_failed",
+                message_id=message_id,
+                recipient_id=recipient_id,
+                office_id=str(office.id),
+                error_codes=[e.get("code") for e in errors],
+                errors=errors,
+            )
+
         if status in ("sent", "delivered", "read", "failed") and message_id:
             stmt = select(Message).where(Message.whatsapp_message_id == message_id)
             result = await db.execute(stmt)
             msg = result.scalar_one_or_none()
             if msg:
+                was_failed = msg.delivery_status == "failed"
                 # Only update forward: sent → delivered → read, or any → failed
                 status_order = {"sent": 1, "delivered": 2, "read": 3, "failed": 0}
                 current = status_order.get(msg.delivery_status, -1)
@@ -671,6 +686,15 @@ async def _process_status(
                         message_id=message_id,
                         status=status,
                     )
+
+                # The doctor was told "enviado, entrega no confirmada"; when it
+                # turns out it never arrived, they have to hear that too.
+                if (
+                    status == "failed"
+                    and not was_failed
+                    and (msg.extra_metadata or {}).get("source") == "doctor_send_message"
+                ):
+                    await _tell_doctor_message_failed(msg, office, db, redis_client)
 
                 # Once a doctor-sent message actually reaches the patient, mirror
                 # it into the patient's session so the bot has context if they
@@ -689,6 +713,58 @@ async def _process_status(
         logger.error(
             "process_status_error",
             message_id=status_update.get("id"),
+            error=str(e),
+            exc_info=True,
+        )
+
+
+async def _tell_doctor_message_failed(
+    msg,
+    office,
+    db: AsyncSession,
+    redis_client: redis.Redis,
+) -> None:
+    """Tell the doctor a message they approved for a patient was not delivered.
+
+    In-window only (no approved template says this): a doctor who sent the
+    message minutes ago usually still has the window open.
+    """
+    from sqlalchemy import select
+    from app.db.models import Conversation, Patient
+    from app.modules.whatsapp.doctor_notify import send_doctor_alert
+
+    try:
+        conv = await db.get(Conversation, msg.conversation_id)
+        patient = None
+        if conv is not None:
+            patient = (
+                await db.execute(
+                    select(Patient).where(
+                        (Patient.office_id == office.id)
+                        & (Patient.whatsapp_id == conv.whatsapp_id)
+                    )
+                )
+            ).scalars().first()
+        name = (patient.name if patient else None) or "el paciente"
+        preview = " ".join((msg.content or "").split())
+        if len(preview) > 80:
+            preview = preview[:77] + "..."
+        await send_doctor_alert(
+            redis_client,
+            get_meta_client(),
+            office,
+            text=(
+                f"WhatsApp no le entregó a {name} el mensaje que aprobaste: «{preview}». "
+                "Si es importante, contáctalo por otro medio."
+            ),
+            template_name=None,
+            template_params=[],
+            log_event="doctor_message_failed_notice",
+        )
+    except Exception as e:
+        logger.error(
+            "doctor_message_failed_notice_error",
+            message_id=msg.whatsapp_message_id,
             error=str(e),
             exc_info=True,
         )

@@ -962,7 +962,8 @@ _REMINDER_LABELS = {
     "6h": "Recordatorio el mismo día",
     "doctor_brief": "Resumen para el doctor antes de la consulta",
     "at_time": "Pregunta al paciente si ya llegó",
-    "post_appointment": "Seguimiento después de la consulta",
+    "post_appointment": "Invitación a agendar después de la consulta",
+    "arrival_no_response": "Aviso al doctor: el paciente no respondió el check-in",
 }
 
 
@@ -1064,7 +1065,8 @@ async def sim_office(db: AsyncSession = Depends(get_db)) -> dict:
             (
                 {
                     "que": _REMINDER_LABELS.get(r.reminder_type, r.reminder_type),
-                    "cuando": _offset_label(r.offset_minutes),
+                    "cuando": _offset_label(r.offset_minutes)
+                    + (" de terminar la consulta" if r.reminder_type == "post_appointment" else ""),
                     "orden": r.offset_minutes,
                 }
                 for r in rules

@@ -175,7 +175,7 @@ _REMINDER_PURPOSE = {
     ReminderType.DAY_BEFORE.value: "recordatorio donde puede confirmar o cancelar",
     ReminderType.SIX_HOURS.value: "recordatorio de su cita",
     ReminderType.AT_TIME.value: "mensaje para saber si ya llegó",
-    ReminderType.POST_APPOINTMENT.value: "mensaje de seguimiento",
+    ReminderType.POST_APPOINTMENT.value: "invitación a agendar la siguiente cita",
 }
 
 
@@ -195,7 +195,10 @@ def build_capabilities_section(reminder_rules: Optional[Iterable] = None) -> str
     ):
         purpose = _REMINDER_PURPOSE.get(rule.reminder_type)
         if purpose:
-            reminders.append(f"{_offset_phrase(rule.offset_minutes)}: {purpose}")
+            when = _offset_phrase(rule.offset_minutes)
+            if rule.reminder_type == ReminderType.POST_APPOINTMENT.value:
+                when += " de terminar la consulta"  # counted from the end (scheduler.anchor)
+            reminders.append(f"{when}: {purpose}")
 
     lines = [
         "\n\nLO QUE PUEDES HACER (y lo único que puedes prometer):",
@@ -230,7 +233,7 @@ def _build_confirmation_context(active_appointment_id: str | None) -> str:
         f"\nEl paciente tiene una cita pendiente de confirmar (ID: {active_appointment_id})."
         f" Usa este ID al llamar confirm_attendance o cancel_appointment."
         f"\n- Si responde afirmativamente (\"sí\", \"confirmo\", \"ahí estaré\", etc.), usa confirm_attendance"
-        f"\n- Si responde negativamente (\"no\", \"no puedo\", etc.), pregunta el motivo y usa cancel_appointment"
+        f"\n- Si responde negativamente (\"no\", \"no puedo\", etc.), usa cancel_appointment"
         f"\n- Si hace una pregunta distinta, respóndela normalmente pero recuérdale que tiene esta cita pendiente de confirmar"
     )
 
@@ -384,7 +387,6 @@ CÓMO TRABAJAR:
 - Si su nombre ya aparece en PACIENTE ACTUAL, salúdalo por ese nombre y no se lo vuelvas a pedir
 - Si algo es ambiguo (una fecha relativa con más de una lectura, una hora que puede ser de mañana o de tarde, varias citas que coinciden), di lo que entendiste y pregunta — nunca adivines. Si el paciente aclara, toma su dato y verifícalo con las herramientas
 - Si el paciente tiene varias citas y quiere cancelar o reagendar, muéstraselas y pregunta cuál
-- Para cancelar, pregunta el motivo antes de ejecutar la cancelación
 - Si el paciente pide hablar con el doctor o dice que se siente mal, no lo mandes a esperar: pregúntale si es una emergencia. Si lo es, usa request_urgent_appointment; si no, ofrécele agendar
 - NUNCA digas "déjame revisar" o "un momento" — ya tienes las herramientas, úsalas directamente{symptoms_section}{intake_section}{capabilities_section}
 

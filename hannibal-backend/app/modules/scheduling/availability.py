@@ -505,10 +505,13 @@ async def get_upcoming_slots(
         redis_client: Redis client
 
     Returns:
-        List of available slots sorted by date
+        List of available slots sorted by date, starting from now: today's
+        slots that already started are left out (the urgency timeout used to
+        offer 9, 10 and 11 AM at 1:49 PM).
     """
     all_slots = []
-    today = now_mx().date()  # Mexico City date, not the server's UTC date
+    now = now_mx()
+    today = now.date()  # Mexico City date, not the server's UTC date
 
     for i in range(days):
         check_date = today + timedelta(days=i)
@@ -519,7 +522,7 @@ async def get_upcoming_slots(
             db=db,
             redis_client=redis_client,
         )
-        all_slots.extend(slots)
+        all_slots.extend(slot for slot in slots if slot.start_time > now)
 
     logger.info(
         "upcoming_slots_generated",

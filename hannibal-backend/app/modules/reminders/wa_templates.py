@@ -8,9 +8,11 @@ with (`TEMPLATE_SPECS`), and the parameter builders the Celery tasks call.
 
 Templates live per WABA. Embedded Signup connects the doctor's own WABA, which
 starts with none of ours, so `whatsapp/template_provisioning.py` creates every
-spec below on it and tracks its approval status. A body change therefore needs
-a NEW name (Meta does not let an approved template be silently rewritten): bump
-the `_vN` suffix, and the daily sync creates it everywhere.
+spec below on it and tracks its approval status. Every name carries the
+catalogue version as a prefix (TEMPLATE_NAME_PREFIX). A body change needs a NEW
+name (Meta does not let an approved template be silently rewritten, and a
+deleted name stays blocked for weeks): bump the prefix, and the daily sync
+creates the new set everywhere.
 """
 
 from __future__ import annotations
@@ -24,37 +26,53 @@ from app.core.constants import DAYS_ES
 # Template language code as registered in Meta (Spanish - Mexico).
 TEMPLATE_LANGUAGE = "es_MX"
 
+# Version of the template catalogue, carried as a prefix on every name (Meta
+# allows only [a-z0-9_], hence underscores). A name can't be rewritten in place
+# and stays blocked for weeks after it is deleted, so a new catalogue version
+# means new names everywhere — bump this and the daily sync creates them.
+TEMPLATE_NAME_PREFIX = "v1_0_0_"
+
 # Template names, as created on every office's WABA (see TEMPLATE_SPECS).
-TEMPLATE_OFFICE_MESSAGE = "office_message_v3"
-TEMPLATE_FOLLOW_UP = "appointment_follow_up_v3"
+TEMPLATE_OFFICE_MESSAGE = f"{TEMPLATE_NAME_PREFIX}office_message"
+# After the visit: thanks and an invitation to book the next cita, with quick
+# replies (the old follow-up only asked how they felt).
+TEMPLATE_FOLLOW_UP = f"{TEMPLATE_NAME_PREFIX}appointment_follow_up"
 # Day-before confirmation; quick replies Confirmar / Cancelar / Reagendar. A tap
 # arrives as an incoming message of type "button" whose text is the title.
-TEMPLATE_CONFIRMATION_DAY_BEFORE = "appointment_confirmation_day_before_v3"
-TEMPLATE_REMINDER = "appointment_reminder_v3"
+TEMPLATE_CONFIRMATION_DAY_BEFORE = f"{TEMPLATE_NAME_PREFIX}appointment_confirmation_day_before"
+TEMPLATE_REMINDER = f"{TEMPLATE_NAME_PREFIX}appointment_reminder"
 # Waiting-room check-in at the appointment's start time when the patient's 24h
 # window is closed (in-window it goes out as interactive buttons instead).
-TEMPLATE_ARRIVAL_CHECK_IN = "arrival_check_in_v2"
+TEMPLATE_ARRIVAL_CHECK_IN = f"{TEMPLATE_NAME_PREFIX}arrival_check_in"
 # Doctor-facing "alert that opens the window": the doctor replies and the bot
 # can then send the urgency details as free text.
-TEMPLATE_URGENCY_ALERT = "urgency_alert_v3"
+TEMPLATE_URGENCY_ALERT = f"{TEMPLATE_NAME_PREFIX}urgency_alert"
 # Doctor-facing notice that a cita moved.
-TEMPLATE_RESCHEDULE_NOTICE = "reschedule_notice_v3"
+TEMPLATE_RESCHEDULE_NOTICE = f"{TEMPLATE_NAME_PREFIX}reschedule_notice"
 # Doctor-facing notifications (configurable per office), sent when the doctor's
 # 24h window is closed. In-window the same events go out as free text.
-TEMPLATE_DOCTOR_NEW_APPOINTMENT = "doctor_new_appointment_v3"
-TEMPLATE_DOCTOR_NEW_PATIENT_APPOINTMENT = "doctor_new_patient_appointment_v3"
-TEMPLATE_DOCTOR_CANCELLATION = "doctor_cancellation_v2"
-TEMPLATE_DOCTOR_NEW_PATIENT = "doctor_new_patient_v2"
-TEMPLATE_DOCTOR_DAILY_AGENDA = "doctor_daily_agenda"
-# Only for "arrived"; "on the way" has no template and goes out in-window only.
-TEMPLATE_DOCTOR_PATIENT_ARRIVED = "doctor_patient_arrived_v4"
-TEMPLATE_DOCTOR_SYNC_WARNING = "doctor_sync_warning_v2"
-TEMPLATE_DOCTOR_APPOINTMENT_BRIEF = "doctor_appointment_brief_v2"
+TEMPLATE_DOCTOR_NEW_APPOINTMENT = f"{TEMPLATE_NAME_PREFIX}doctor_new_appointment"
+TEMPLATE_DOCTOR_NEW_PATIENT_APPOINTMENT = f"{TEMPLATE_NAME_PREFIX}doctor_new_patient_appointment"
+TEMPLATE_DOCTOR_CANCELLATION = f"{TEMPLATE_NAME_PREFIX}doctor_cancellation"
+TEMPLATE_DOCTOR_NEW_PATIENT = f"{TEMPLATE_NAME_PREFIX}doctor_new_patient"
+TEMPLATE_DOCTOR_DAILY_AGENDA = f"{TEMPLATE_NAME_PREFIX}doctor_daily_agenda"
+# The patient is already waiting ("ya llegué").
+TEMPLATE_DOCTOR_PATIENT_ARRIVED = f"{TEMPLATE_NAME_PREFIX}doctor_patient_arrived"
+# "On the way" (check-in button or "voy a llegar tarde"): its own template, so
+# the doctor hears it with the window closed too.
+TEMPLATE_DOCTOR_PATIENT_DELAYED = f"{TEMPLATE_NAME_PREFIX}doctor_patient_delayed"
+# The check-in went out and the patient hasn't answered it.
+TEMPLATE_DOCTOR_PATIENT_NO_RESPONSE = f"{TEMPLATE_NAME_PREFIX}doctor_patient_no_response"
+# The patient cancelled after the check-in ("no voy a llegar"): a last-minute
+# cancellation, worded as such rather than as a routine one.
+TEMPLATE_DOCTOR_PATIENT_NOSHOW_CANCEL = f"{TEMPLATE_NAME_PREFIX}doctor_patient_noshow_cancel"
+TEMPLATE_DOCTOR_SYNC_WARNING = f"{TEMPLATE_NAME_PREFIX}doctor_sync_warning"
+TEMPLATE_DOCTOR_APPOINTMENT_BRIEF = f"{TEMPLATE_NAME_PREFIX}doctor_appointment_brief"
 # Google rejected the office's calendar credentials.
-TEMPLATE_DOCTOR_CALENDAR_DISCONNECTED = "doctor_calendar_disconnected_v3"
+TEMPLATE_DOCTOR_CALENDAR_DISCONNECTED = f"{TEMPLATE_NAME_PREFIX}doctor_calendar_disconnected"
 # The doctor moved or deleted a cita in Google Calendar: the system applied it
 # and asks before telling the patient.
-TEMPLATE_DOCTOR_CALENDAR_CHANGE = "doctor_calendar_change_v2"
+TEMPLATE_DOCTOR_CALENDAR_CHANGE = f"{TEMPLATE_NAME_PREFIX}doctor_calendar_change"
 
 
 @dataclass(frozen=True)
@@ -82,7 +100,7 @@ TEMPLATE_SPECS: Tuple[TemplateSpec, ...] = (
     TemplateSpec(
         TEMPLATE_OFFICE_MESSAGE,
         # Free text from the office: the wording ties it to the patient's care
-        # so Meta files it as UTILITY (v2 was reclassified as MARKETING).
+        # so Meta files it as UTILITY (an earlier wording was reclassified as MARKETING).
         "Hola {{patient_name}}, tiene un aviso de {{location}} sobre su atención: "
         "{{text}} Puede responder a este mensaje si tiene alguna duda.",
         {
@@ -93,10 +111,11 @@ TEMPLATE_SPECS: Tuple[TemplateSpec, ...] = (
     ),
     TemplateSpec(
         TEMPLATE_FOLLOW_UP,
-        "Hola {{patient_name}}, gracias por tu visita en {{location}}. ¿Cómo te has "
-        "sentido? Si tienes preguntas o necesitas algo, escríbenos — estamos para "
-        "ayudarte.",
+        "Hola {{patient_name}}, gracias por tu visita a {{location}}. ¿Quieres agendar "
+        "tu próxima cita? Elige una opción o respóndenos por aquí.",
         {"patient_name": _EX_PATIENT, "location": _EX_LOCATION},
+        # Same titles as the in-window interactive buttons.
+        quick_replies=("Agendar cita", "Ahora no"),
     ),
     TemplateSpec(
         TEMPLATE_CONFIRMATION_DAY_BEFORE,
@@ -181,6 +200,24 @@ TEMPLATE_SPECS: Tuple[TemplateSpec, ...] = (
         {"patient_name": _EX_PATIENT, "detail": "ya llegó a su cita de las 10:30 AM"},
     ),
     TemplateSpec(
+        TEMPLATE_DOCTOR_PATIENT_DELAYED,
+        "El paciente {{patient_name}} avisó que viene en camino: {{detail}}. Revisa tu "
+        "agenda por si necesitas ajustar algo.",
+        {"patient_name": _EX_PATIENT, "detail": "llega en unos 15 minutos a su cita de las 10:30 AM"},
+    ),
+    TemplateSpec(
+        TEMPLATE_DOCTOR_PATIENT_NO_RESPONSE,
+        "El paciente {{patient_name}} no ha respondido al aviso de llegada de su cita de "
+        "las {{appointment_time}}. Puede que venga tarde o que no llegue.",
+        {"patient_name": _EX_PATIENT, "appointment_time": "10:30 AM"},
+    ),
+    TemplateSpec(
+        TEMPLATE_DOCTOR_PATIENT_NOSHOW_CANCEL,
+        "El paciente {{patient_name}} avisó que no llegará a su cita del {{slot}}. La "
+        "cita quedó cancelada y el espacio está libre.",
+        {"patient_name": _EX_PATIENT, "slot": _EX_SLOT},
+    ),
+    TemplateSpec(
         TEMPLATE_DOCTOR_SYNC_WARNING,
         "Aviso sobre la cita de {{patient_name}}: {{detail}}. Conviene revisarla.",
         {
@@ -190,7 +227,7 @@ TEMPLATE_SPECS: Tuple[TemplateSpec, ...] = (
     ),
     TemplateSpec(
         TEMPLATE_DOCTOR_APPOINTMENT_BRIEF,
-        # v1 was reclassified as MARKETING; this wording reads as an agenda notice.
+        # An earlier wording was reclassified as MARKETING; this one reads as an agenda notice.
         "Aviso de agenda: en unos minutos tienes cita con {{patient_name}}. Datos de "
         "la cita: {{detail}}. Responde a este mensaje si necesitas mover la cita.",
         {
@@ -327,6 +364,36 @@ def build_doctor_patient_arrived_params(
     return [
         _param("patient_name", patient_name),
         _param("detail", detail),
+    ]
+
+
+def build_doctor_patient_delayed_params(
+    patient_name: str, detail: str
+) -> List[Dict[str, str]]:
+    """doctor_patient_delayed: patient_name, detail (ETA and cita time, one line)."""
+    return [
+        _param("patient_name", patient_name),
+        _param("detail", detail),
+    ]
+
+
+def build_doctor_patient_no_response_params(
+    patient_name: str, appointment_time: str
+) -> List[Dict[str, str]]:
+    """doctor_patient_no_response: patient_name, appointment_time."""
+    return [
+        _param("patient_name", patient_name),
+        _param("appointment_time", appointment_time),
+    ]
+
+
+def build_doctor_patient_noshow_cancel_params(
+    patient_name: str, slot: str
+) -> List[Dict[str, str]]:
+    """doctor_patient_noshow_cancel: patient_name, slot."""
+    return [
+        _param("patient_name", patient_name),
+        _param("slot", slot),
     ]
 
 

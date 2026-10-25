@@ -46,7 +46,11 @@ from app.db.base import get_async_session_maker
 from app.db.models import Appointment
 from app.modules.conversation.session_store import DEFAULT_SESSION_TTL
 from app.modules.reminders.scheduler import due_at
-from app.modules.reminders.tasks import SWEEPABLE_STATUSES, _dispatch_due_reminders_async
+from app.modules.reminders.tasks import (
+    SWEEPABLE_STATUSES,
+    _dispatch_due_reminders_async,
+    arrival_no_response_due_for,
+)
 from app.utils.dates import now_mx
 from app.utils.logger import get_logger
 
@@ -224,11 +228,17 @@ async def next_event_at(office_id: UUID) -> Optional[datetime]:
                 flag = SENT_FLAG_BY_REMINDER_TYPE.get(reminder_type)
                 if flag is None or getattr(appointment, flag, False):
                     continue
-                due = due_at(reminder_type, offset_minutes, start_local)
+                due = due_at(
+                    reminder_type, offset_minutes, start_local, appointment.duration_minutes
+                )
                 if due is None or due <= now:
                     continue
                 if soonest is None or due < soonest:
                     soonest = due
+            # Not a rule of its own: it follows the check-in.
+            due = arrival_no_response_due_for(appointment, rules)
+            if due is not None and due > now and (soonest is None or due < soonest):
+                soonest = due
 
     return soonest
 
