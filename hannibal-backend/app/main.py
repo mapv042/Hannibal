@@ -41,6 +41,7 @@ from app.modules.patients.router import router as patients_router
 from app.modules.conversation.router import router as conversations_router
 from app.modules.urgencies.router import router as urgencies_router
 from app.modules.privacy.router import router as privacy_router
+from app.modules.scheduling.calendar_router import router as calendar_file_router
 from app.modules.google_calendar.router import router as google_calendar_router
 
 logger = get_logger(__name__)
@@ -288,6 +289,8 @@ app.include_router(conversations_router, prefix="/api/conversations", tags=["con
 app.include_router(urgencies_router, prefix="/api/urgencies", tags=["urgencies"])
 # Public: the privacy notice a patient opens from WhatsApp (no login).
 app.include_router(privacy_router, prefix="/api/public/privacy-notice", tags=["privacy"])
+# Public: the .ics behind the "Agregar a calendario" button (signed link, no login).
+app.include_router(calendar_file_router, prefix="/api/public/calendar", tags=["calendar"])
 app.include_router(
     google_calendar_router,
     prefix="/api/google-calendar",

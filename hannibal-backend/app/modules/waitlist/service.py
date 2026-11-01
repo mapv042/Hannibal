@@ -384,8 +384,13 @@ async def settle_answer(
     messages: list[dict[str, Any]],
     text: str,
     redis_client: aioredis.Redis,
+    ctx=None,
 ) -> Optional[str]:
-    """Book or release an offered slot. Returns the fixed reply, or None if not an answer."""
+    """Book or release an offered slot. Returns the fixed reply, or None if not an answer.
+
+    `ctx` is the turn's ToolContext when the caller has one, so what this books
+    is reported the same way as a tool's booking (booked_appointment_ids).
+    """
     from app.modules.ai.tools import ToolContext, _execute_booking, _execute_reschedule
     from app.modules.conversation.state import BookingDraft
 
@@ -422,14 +427,15 @@ async def settle_answer(
             else "Entendido. Sigues en la lista de espera; te aviso si se libera otro horario."
         )
 
-    ctx = ToolContext(
-        db=db,
-        office=office,
-        patient_id=session.patient_id,
-        whatsapp_id=session.whatsapp_id,
-        redis_client=redis_client,
-        state=session.state,
-    )
+    if ctx is None:
+        ctx = ToolContext(
+            db=db,
+            office=office,
+            patient_id=session.patient_id,
+            whatsapp_id=session.whatsapp_id,
+            redis_client=redis_client,
+            state=session.state,
+        )
     label = format_appointment_dt(slot)
     if entry.replaces_appointment_id:
         result = await _execute_reschedule(ctx, str(entry.replaces_appointment_id), slot)

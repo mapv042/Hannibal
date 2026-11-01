@@ -458,6 +458,19 @@ function messageNode(m) {
     bubble.appendChild(row);
   }
 
+  // A link button (e.g. "Agregar a calendario"): opens the URL, sends nothing.
+  if (m.kind === 'cta_url' && m.url) {
+    const row = document.createElement('div');
+    row.className = 'btns';
+    const link = document.createElement('a');
+    link.className = 'wa-btn';
+    link.style.textDecoration = 'none';
+    link.href = m.url; link.target = '_blank'; link.rel = 'noopener';
+    link.textContent = m.button_text || 'Abrir';
+    row.appendChild(link);
+    bubble.appendChild(row);
+  }
+
   const stamp = document.createElement('div');
   stamp.className = 'stamp';
   stamp.textContent = fmtShort(m.sent_at);

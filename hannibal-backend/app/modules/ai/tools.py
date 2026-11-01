@@ -425,6 +425,9 @@ class ToolContext:
         # Set by prepare_booking when the writer hasn't accepted the privacy
         # notice: the manager sends the fixed consent question after the reply.
         self.privacy_consent_requested = False
+        # Appointments this turn created (bookings and the new half of a
+        # reschedule): the manager sends each one's add-to-calendar button.
+        self.booked_appointment_ids: list[uuid.UUID] = []
 
 
 async def _privacy_gate(ctx: ToolContext, retry_tool: str) -> Optional[dict]:
@@ -1027,6 +1030,7 @@ async def _execute_booking(ctx: ToolContext, draft: BookingDraft, start_dt: date
     if outcome.error:
         return _booking_error(outcome.error)
     appointment = outcome.appointment
+    ctx.booked_appointment_ids.append(appointment.id)
 
     # If this booking answers a slot the doctor cancelled, report back to the
     # doctor via the reschedule notice (which already covers the event); otherwise
@@ -1116,6 +1120,7 @@ async def _execute_reschedule(ctx: ToolContext, appointment_id: str, new_start: 
     if outcome.error:
         return _booking_error(outcome.error)
     new_appointment = outcome.appointment
+    ctx.booked_appointment_ids.append(new_appointment.id)
 
     # Cancel old
     appointment.status = "cancelled"

@@ -144,11 +144,31 @@ class FakeMetaClient:
             buttons=buttons,
         )
 
+    async def send_cta_url(
+        self,
+        phone_number_id: str,
+        token: str,
+        to: str,
+        body_text: str,
+        button_text: str,
+        url: str,
+    ) -> str:
+        """Record a one-button link message (e.g. "Agregar a calendario")."""
+        return await self._record(
+            phone_number_id,
+            to,
+            "cta_url",
+            body=body_text,
+            button_text=button_text,
+            url=url,
+        )
+
     async def mark_as_read(
         self,
         phone_number_id: str,
         token: str,
         message_id: str,
+        typing_indicator: bool = False,
     ) -> bool:
         """No-op: nothing is delivered, so read receipts mean nothing here."""
         return True

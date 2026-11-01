@@ -378,19 +378,107 @@ class MetaCloudClient:
 
         return message_id
 
+    async def send_cta_url(
+        self,
+        phone_number_id: str,
+        token: str,
+        to: str,
+        body_text: str,
+        button_text: str,
+        url: str,
+    ) -> str:
+        """
+        Send an interactive message with one button that opens a URL.
+
+        Only works inside the 24h customer service window (like free text).
+
+        Args:
+            phone_number_id: WhatsApp Business Account phone number ID
+            token: Access token for authentication
+            to: Recipient's WhatsApp ID
+            body_text: Message body shown above the button
+            button_text: Button label (Meta caps it at 20 chars)
+            url: The address the button opens
+
+        Returns:
+            Message ID from Meta
+
+        Raises:
+            WhatsAppError: If API call fails
+        """
+        endpoint = f"{BASE_URL}/{phone_number_id}/messages"
+
+        normalized_to = to
+        if to.startswith("521") and len(to) == 13:
+            normalized_to = "52" + to[3:]
+
+        payload = {
+            "messaging_product": "whatsapp",
+            "recipient_type": "individual",
+            "to": normalized_to,
+            "type": "interactive",
+            "interactive": {
+                "type": "cta_url",
+                "body": {"text": body_text},
+                "action": {
+                    "name": "cta_url",
+                    "parameters": {"display_text": button_text[:20], "url": url},
+                },
+            },
+        }
+
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        }
+
+        try:
+            response = await self._post_with_retries(
+                endpoint,
+                payload,
+                headers,
+                log_event="send_cta_url",
+                log_context={"to": to, "phone_number_id": phone_number_id},
+            )
+        except httpx.HTTPError as e:
+            logger.error(
+                "send_cta_url_failed",
+                to=to,
+                phone_number_id=phone_number_id,
+                error=str(e),
+            )
+            raise WhatsAppError(f"Failed to send CTA message: {str(e)}") from e
+
+        data = response.json()
+        message_id = data.get("messages", [{}])[0].get("id")
+
+        if not message_id:
+            logger.error("send_cta_url_no_id", response=data)
+            raise WhatsAppError("No message ID returned by Meta")
+
+        logger.info("send_cta_url_success", message_id=message_id, to=to)
+
+        return message_id
+
     async def mark_as_read(
         self,
         phone_number_id: str,
         token: str,
         message_id: str,
+        typing_indicator: bool = False,
     ) -> bool:
         """
-        Mark a received message as read.
+        Mark a received message as read, optionally showing "escribiendo…".
+
+        Marking one message read also marks every earlier message of the thread.
+        The typing indicator disappears when the next message is sent, or after
+        ~25 seconds, whichever comes first.
 
         Args:
             phone_number_id: WhatsApp Business Account phone number ID
             token: Access token for authentication
-            message_id: ID of the message to mark as read
+            message_id: ID of the *incoming* message to mark as read
+            typing_indicator: Also show the sender that a reply is being written
 
         Returns:
             True if successful
@@ -398,11 +486,15 @@ class MetaCloudClient:
         Raises:
             WhatsAppError: If API call fails
         """
-        url = f"{BASE_URL}/{message_id}"
+        url = f"{BASE_URL}/{phone_number_id}/messages"
 
-        payload = {
+        payload: Dict[str, Any] = {
+            "messaging_product": "whatsapp",
             "status": "read",
+            "message_id": message_id,
         }
+        if typing_indicator:
+            payload["typing_indicator"] = {"type": "text"}
 
         headers = {
             "Authorization": f"Bearer {token}",

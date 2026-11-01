@@ -74,6 +74,10 @@ CONV_LOCK_POLL_SECONDS = 0.5
 INBOX_KEY = "inbox:{office_id}:{sender}"
 INBOX_TTL = 600
 
+# The read receipt + "escribiendo…" is cosmetic: a slow Meta call must never
+# hold up the answer it announces.
+ACK_TIMEOUT_SECONDS = 3
+
 
 async def _release_conversation_lock(
     redis_client: redis.Redis, key: str, token: str
@@ -472,6 +476,7 @@ async def _route_message(
             office_id=str(office.id),
         )
         meta_client = get_meta_client()
+        await _acknowledge(meta_client, office, messages)
         doctor_manager = DoctorConversationManager(meta_client, redis_client)
         await doctor_manager.process(office, messages, db)
         return
@@ -505,8 +510,39 @@ async def _route_message(
     # Route to the tool-use conversation manager
     session_store = SessionStore(redis_client)
     meta_client = get_meta_client()
+    await _acknowledge(meta_client, office, messages)
     manager = ConversationManager(session_store, meta_client)
     await manager.process(office, messages, db)
+
+
+async def _acknowledge(meta_client, office, messages: list[Dict[str, Any]]) -> None:
+    """Blue ticks + "escribiendo…" for a batch the assistant is about to answer.
+
+    Only called once it is decided the assistant answers — never while the bot
+    is paused or the doctor took the thread over: blue ticks there would tell
+    the patient someone read them when nobody did. Marking the newest message
+    read marks the whole burst. Best effort: never raises, never waits long.
+    """
+    message_id = next((m.get("id") for m in reversed(messages) if m.get("id")), None)
+    if not message_id or not office.whatsapp_phone_id or not office.whatsapp_token:
+        return
+    try:
+        await asyncio.wait_for(
+            meta_client.mark_as_read(
+                phone_number_id=office.whatsapp_phone_id,
+                token=office.whatsapp_token,
+                message_id=message_id,
+                typing_indicator=True,
+            ),
+            timeout=ACK_TIMEOUT_SECONDS,
+        )
+    except Exception as e:
+        logger.warning(
+            "typing_indicator_failed",
+            office_id=str(office.id),
+            message_id=message_id,
+            error=str(e),
+        )
 
 
 async def _open_conversation(office, whatsapp_id: str, db: AsyncSession):

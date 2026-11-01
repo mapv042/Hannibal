@@ -23,7 +23,7 @@ from app.db.models import (
     ReminderRule,
 )
 from app.modules.ai.prompts.base import WAITING_ARRIVAL_STATUS, build_system_prompt
-from app.modules.ai.tool_helpers import is_returning_patient
+from app.modules.ai.tool_helpers import format_appointment_dt, is_returning_patient
 from app.modules.ai.tools import (
     MUTATING_TOOLS,
     TOOL_CLAIMS,
@@ -33,6 +33,7 @@ from app.modules.ai.tools import (
 )
 from app.modules.conversation.tracing import persist_trace
 from app.modules.privacy import consent as privacy
+from app.modules.scheduling.calendar_file import calendar_link
 from app.modules.waitlist import service as waitlist
 from app.modules.conversation.base_manager import BaseToolConversationManager
 from app.modules.conversation.session_store import SessionStore
@@ -211,7 +212,13 @@ class ConversationManager(BaseToolConversationManager):
             # confirmation: the offer was the draft, this is the approval. The
             # reply is fixed text, so the model is not called this turn.
             response_text = await waitlist.settle_answer(
-                db, office, session, messages, message_text, self.session_store.redis_client
+                db,
+                office,
+                session,
+                messages,
+                message_text,
+                self.session_store.redis_client,
+                ctx=tool_ctx,
             )
             if response_text is None:
                 working_messages = list(session.claude_history)
@@ -309,6 +316,14 @@ class ConversationManager(BaseToolConversationManager):
 
             await db.commit()
 
+            # 10b. Every cita this turn booked gets its add-to-calendar button —
+            # after the commit, so the link already resolves when it's tapped.
+            if tool_ctx.booked_appointment_ids and not send_failed:
+                await self._send_calendar_links(
+                    db, office, session, conversation_obj, whatsapp_id,
+                    tool_ctx.booked_appointment_ids,
+                )
+
             # 11. Save session
             await self.session_store.save_session(whatsapp_id, office_id, session)
 
@@ -375,6 +390,82 @@ class ConversationManager(BaseToolConversationManager):
         session.collected_data[privacy.WAITING_PRIVACY_CONSENT] = True
         # The model's history should show it asked, so "sí" next turn reads right.
         session.claude_history.append({"role": "assistant", "content": text})
+
+    async def _send_calendar_links(
+        self, db, office, session, conversation_obj, whatsapp_id, appointment_ids
+    ) -> None:
+        """One "Agregar a calendario" button per cita booked this turn. Never raises."""
+        # Plain values: a failed iteration rolls back, which expires every
+        # loaded row, and the next one must not lazy-load from it.
+        formal = office.assistant_tone == "formal"
+        office_id = office.id
+        phone_number_id = office.whatsapp_phone_id
+        token = office.whatsapp_token
+        conversation_id = conversation_obj.id
+        for appointment_id in appointment_ids:
+            try:
+                # Re-read: a booking whose tool call was rolled back (its
+                # savepoint) left its id behind but no row.
+                appointment = (
+                    await db.execute(
+                        select(Appointment).where(
+                            Appointment.id == appointment_id,
+                            Appointment.office_id == office_id,
+                            Appointment.status.in_(("scheduled", "confirmed")),
+                        )
+                    )
+                ).scalar_one_or_none()
+                url = calendar_link(appointment_id) if appointment else None
+                if url is None:
+                    continue
+                label = format_appointment_dt(appointment.start_datetime)
+                body = (
+                    f"Para tenerla presente, puede guardar su cita del {label} en su calendario."
+                    if formal
+                    else f"Para que no se te pase, guarda tu cita del {label} en tu calendario."
+                )
+                try:
+                    message_id = await self.meta_client.send_cta_url(
+                        phone_number_id=phone_number_id,
+                        token=token,
+                        to=whatsapp_id,
+                        body_text=body,
+                        button_text="Agregar a calendario",
+                        url=url,
+                    )
+                    text = body
+                except Exception as e:
+                    # A client that can't render the button still gets the link.
+                    logger.warning("calendar_button_failed", error=str(e), office_id=str(office_id))
+                    text = f"{body}\n{url}"
+                    message_id = await self.meta_client.send_text_message(
+                        phone_number_id=phone_number_id,
+                        token=token,
+                        to=whatsapp_id,
+                        text=text,
+                    )
+                db.add(
+                    Message(
+                        id=uuid.uuid4(),
+                        conversation_id=conversation_id,
+                        content=text,
+                        type="text",
+                        direction="outgoing",
+                        whatsapp_message_id=message_id,
+                        delivery_status="sent",
+                        extra_metadata={"source": "calendar_link"},
+                    )
+                )
+                await db.commit()
+                session.claude_history.append({"role": "assistant", "content": text})
+            except Exception as e:
+                logger.error(
+                    "calendar_link_send_failed",
+                    error=str(e),
+                    office_id=str(office_id),
+                    appointment_id=str(appointment_id),
+                )
+                await db.rollback()
 
     async def _has_prior_messages(self, db: AsyncSession, conversation_id) -> bool:
         result = await db.execute(

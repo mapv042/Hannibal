@@ -57,6 +57,26 @@ def decrypt_data(encrypted_data: str) -> str:
     return _fernet().decrypt(encrypted_data.encode()).decode()
 
 
+def sign_link_value(purpose: str, value: str) -> str:
+    """Short HMAC that lets a public link carry `value` without a login.
+
+    `purpose` separates link kinds, so a signature minted for one kind of link
+    never validates another. Keyed by ENCRYPTION_KEY (which production refuses
+    to boot without): rotating it invalidates every link already sent.
+    """
+    key = hashlib.sha256(b"link-signing:" + bytes.fromhex(settings.encryption_key)).digest()
+    digest = hmac.new(key, f"{purpose}:{value}".encode(), hashlib.sha256).digest()
+    return base64.urlsafe_b64encode(digest[:16]).decode().rstrip("=")
+
+
+def verify_link_value(purpose: str, value: str, signature: str) -> bool:
+    """Whether `signature` is sign_link_value(purpose, value), in constant time."""
+    # compare_digest raises on non-ASCII str; a URL can carry anything.
+    if not signature.isascii():
+        return False
+    return hmac.compare_digest(sign_link_value(purpose, value), signature)
+
+
 # Supabase signs access tokens with an asymmetric key (ECC P-256 → ES256) since
 # the "JWT Signing Keys" migration; the legacy HS256 shared secret is kept only
 # to verify tokens minted before the rotation. Accept both, but pick the key
