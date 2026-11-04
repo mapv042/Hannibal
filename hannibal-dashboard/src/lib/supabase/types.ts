@@ -46,6 +46,7 @@ export type Office = {
   notify_unconfirmed: boolean
   notify_arrival: boolean
   notify_reschedule: boolean
+  follow_up_enabled: boolean
   // The API never returns the OAuth token itself, only whether one is stored.
   google_calendar_connected: boolean
   plan: string

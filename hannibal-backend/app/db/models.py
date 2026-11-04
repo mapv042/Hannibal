@@ -212,6 +212,11 @@ class Office(Base):
     notify_reschedule: Mapped[bool] = mapped_column(
         Boolean, default=True, nullable=False
     )
+    # Patient-facing: one nudge when a patient goes quiet with slots or a
+    # booking summary in hand (conversation/follow_up.py).
+    follow_up_enabled: Mapped[bool] = mapped_column(
+        Boolean, default=True, nullable=False
+    )
 
     # Status & Plan
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
@@ -779,6 +784,18 @@ class Conversation(Base):
     last_message_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+
+    # Follow-up when the patient goes quiet with a decision in hand
+    # (conversation/follow_up.py): when it is due, when the last one went out
+    # (one per 24h), and what was pending (kind, slot ids, the message count
+    # and active citas at that moment, to tell whether anything happened since).
+    follow_up_due_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    follow_up_sent_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    follow_up_context: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
 
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(

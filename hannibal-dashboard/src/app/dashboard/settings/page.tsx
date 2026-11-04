@@ -105,6 +105,7 @@ export default function SettingsPage() {
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
   const [reminders, setReminders] = useState<ReminderToggles>(DEFAULT_REMINDER_TOGGLES)
+  const [followUpEnabled, setFollowUpEnabled] = useState(true)
   const [savingReminders, setSavingReminders] = useState(false)
   const [remindersSaved, setRemindersSaved] = useState(false)
   const [notifications, setNotifications] = useState<Record<NotifKey, boolean>>({
@@ -153,6 +154,7 @@ export default function SettingsPage() {
             notify_arrival: officeData.notify_arrival,
             notify_reschedule: officeData.notify_reschedule,
           })
+          setFollowUpEnabled(officeData.follow_up_enabled ?? true)
 
           const rulesRes = await api.getReminderRules(officeData.id)
           if (rulesRes.success && rulesRes.data) {
@@ -236,8 +238,11 @@ export default function SettingsPage() {
     setSavingReminders(true)
     try {
       const rules: ReminderRule[] = rulesFromReminderToggles(reminders)
-      const response = await api.updateReminderRules(office.id, rules)
-      if (response.success) {
+      const [response, followUpResponse] = await Promise.all([
+        api.updateReminderRules(office.id, rules),
+        api.updateOffice(office.id, { follow_up_enabled: followUpEnabled }),
+      ])
+      if (response.success && followUpResponse.success) {
         setRemindersSaved(true)
         setTimeout(() => setRemindersSaved(false), 3000)
       }
@@ -426,6 +431,33 @@ export default function SettingsPage() {
                 </button>
               )
             })}
+            <button
+              type="button"
+              onClick={() => setFollowUpEnabled((prev) => !prev)}
+              className={`w-full flex items-center gap-3 p-3 rounded-xl border text-left transition-colors ${
+                followUpEnabled ? 'border-primary-200 bg-primary-50' : 'border-gray-200 bg-gray-50'
+              }`}
+            >
+              <span
+                className={`w-6 h-6 rounded flex items-center justify-center border-2 transition-colors flex-shrink-0 ${
+                  followUpEnabled ? 'bg-primary-600 border-primary-600 text-white' : 'bg-white border-gray-300'
+                }`}
+              >
+                {followUpEnabled && (
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+                  </svg>
+                )}
+              </span>
+              <span>
+                <span className={`block text-sm font-medium ${followUpEnabled ? 'text-gray-900' : 'text-gray-500'}`}>
+                  Seguimiento de conversaciones sin respuesta
+                </span>
+                <span className="block text-xs text-gray-500">
+                  Si un paciente vio horarios o el resumen de su cita y no contestó, el asistente le escribe una sola vez, 2 horas después y el mismo día, con los horarios que siguen libres.
+                </span>
+              </span>
+            </button>
           </div>
 
           <Button onClick={handleSaveReminders} isLoading={savingReminders} className="gap-2">

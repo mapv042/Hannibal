@@ -493,6 +493,35 @@ async def _ten_minutes_later(sim, monday: date) -> None:
     await sim.advance(10 * 60)
 
 
+async def _goes_quiet_for_a_day(sim, monday: date) -> None:
+    # Past the 2h follow-up, then most of the day: one nudge, never a second.
+    await sim.advance(2 * 3600 + 20 * 60)
+    await sim.advance(10 * 3600)
+
+
+def _check_one_follow_up(r: Result) -> list[str]:
+    follow_ups = [
+        e for e in r.outbox
+        if e.get("to") == r.whatsapp_id and "aparto" in (e.get("body") or "")
+    ]
+    _, offered = _offered_options(r)
+    tappable = [o for e in follow_ups for o, _, _ in _follow_up_options(e)]
+    return (
+        expect(len(follow_ups) == 1, f"expected exactly one follow-up, got {len(follow_ups)}")
+        + expect(bool(tappable), "the follow-up had no slots to tap")
+        + expect(all(o in offered for o in tappable), f"followed up with slots never offered: {tappable}")
+        + expect(not r.active(), "something got booked though the patient never chose")
+    )
+
+
+def _follow_up_options(entry: dict):
+    for b in entry.get("buttons") or []:
+        yield b["title"], b["title"], b["id"]
+    for section in entry.get("sections") or []:
+        for row in section.get("rows") or []:
+            yield f"{section['title']} · {row['title']}", row["title"], row["id"]
+
+
 _REMINDER_RE = re.compile(r"recordamos|recordatorio|falta una semana|confirma tu asistencia", re.I)
 
 
@@ -532,6 +561,16 @@ SCENARIOS: list[Scenario] = [
             "(no copies el texto del botón). Luego agenda."
         ),
         check=_check_option_two,
+    ),
+    Scenario(
+        name="quiet_patient_gets_one_follow_up",
+        tags=["options", "follow_up"],
+        opening=["¿Qué horarios tienes el jueves en la tarde?"],
+        persona=JUAN,
+        goal="Solo querías ver los horarios. En cuanto te los muestre, responde exactamente: FIN",
+        check=_check_one_follow_up,
+        after=_goes_quiet_for_a_day,
+        max_turns=1,
     ),
     Scenario(
         name="tap_slot_button",

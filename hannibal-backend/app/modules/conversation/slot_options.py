@@ -32,6 +32,9 @@ from typing import Iterable, Literal, Optional
 from app.core.constants import DAYS_ES, MONTHS_ES
 from app.modules.ai.tool_helpers import format_appointment_dt, parse_slot_id
 from app.modules.conversation.state import OfferedSlot
+from app.utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 # Meta's limits: 3 reply buttons, 10 list rows, 20-char button titles, 24-char
 # row and section titles, 1024-char interactive body.
@@ -109,19 +112,91 @@ def present(reply: str, offered: Iterable[OfferedSlot]) -> SlotReply:
     if not options:
         return SlotReply(text=written, history_text=written)
 
-    text = _rewrite(reply, by_id, keep=False)
+    return offer(_rewrite(reply, by_id, keep=False), options, history_text=written)
+
+
+def offer(text: str, options: list[OfferedSlot], history_text: Optional[str] = None) -> SlotReply:
+    """A message offering `options` as buttons (≤3) or a list.
+
+    `history_text` defaults to the text followed by the slots in words.
+    """
+    if history_text is None:
+        history_text = f"{text} {_in_words(options, context=text)}".strip()
     if len(options) > MAX_LIST_ROWS:
         # A whole free day doesn't fit: show a spread of it. The history keeps
         # every slot, so "¿y a las 3:40?" is still one the model offered.
         options = _spread(options, MAX_LIST_ROWS)
         text = f"{text}\n\n{MORE_SLOTS_NOTE}".strip()
-
     return SlotReply(
         text=text,
-        history_text=written,
+        history_text=history_text,
         kind="buttons" if len(options) <= MAX_BUTTONS else "list",
         options=options,
     )
+
+
+async def send_reply(meta_client, office, to: str, reply: SlotReply) -> str:
+    """Send a reply; its slots go out as reply buttons or a list.
+
+    If the interactive message is refused, the slots still reach the patient,
+    written out in plain text. Raises only if the plain text fails too.
+    """
+
+    async def send_text(text: str) -> str:
+        return await meta_client.send_text_message(
+            phone_number_id=office.whatsapp_phone_id,
+            token=office.whatsapp_token,
+            to=to,
+            text=text,
+        )
+
+    if reply.kind == "text":
+        return await send_text(reply.text)
+
+    body = reply.text
+    text_sent = False
+    try:
+        if not body or len(body) > MAX_INTERACTIVE_BODY:
+            # Too long for an interactive body: the words go first, the
+            # options follow under a short prompt.
+            if body:
+                await send_text(body)
+                text_sent = True
+            body = SHORT_BODY
+        if reply.kind == "buttons":
+            message_id = await meta_client.send_interactive_buttons(
+                phone_number_id=office.whatsapp_phone_id,
+                token=office.whatsapp_token,
+                to=to,
+                body_text=body,
+                buttons=reply.buttons(),
+            )
+        else:
+            message_id = await meta_client.send_interactive_list(
+                phone_number_id=office.whatsapp_phone_id,
+                token=office.whatsapp_token,
+                to=to,
+                body_text=body,
+                button_text=LIST_BUTTON_TEXT,
+                sections=reply.sections(),
+            )
+        logger.info(
+            "slot_options_sent",
+            office_id=str(office.id),
+            kind=reply.kind,
+            count=len(reply.options),
+        )
+        return message_id
+    except Exception as e:
+        logger.warning(
+            "slot_options_send_failed",
+            office_id=str(office.id),
+            kind=reply.kind,
+            error=str(e),
+        )
+        if text_sent:
+            return await send_text(reply.options_in_words())
+        return await send_text(reply.history_text)
 
 
 def slot_choice_text(reply_id: str, title: str) -> Optional[str]:

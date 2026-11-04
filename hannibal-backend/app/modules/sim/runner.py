@@ -43,7 +43,7 @@ from app.core.constants import (
     SENT_FLAG_BY_REMINDER_TYPE,
 )
 from app.db.base import get_async_session_maker
-from app.db.models import Appointment
+from app.db.models import Appointment, Conversation
 from app.modules.conversation.session_store import DEFAULT_SESSION_TTL
 from app.modules.reminders.scheduler import due_at
 from app.modules.reminders.tasks import (
@@ -189,7 +189,7 @@ async def _drain_queue(client: aioredis.Redis) -> bool:
 
 
 async def next_event_at(office_id: UUID) -> Optional[datetime]:
-    """When the next reminder for this office comes due, or None if nothing is pending.
+    """When the next reminder or follow-up for this office comes due, or None if nothing is pending.
 
     Pure arithmetic over `due_at` — it asks the schedule when something happens
     without running it, which is what lets the UI offer "skip to the next event"
@@ -216,11 +216,28 @@ async def next_event_at(office_id: UUID) -> Optional[datetime]:
             )
         ).scalars().all()
 
+        soonest: Optional[datetime] = None
+
+        # A follow-up is due at its time, or when the sending window next opens.
+        from app.modules.conversation.follow_up import next_sending_time
+
+        follow_ups = (
+            await db.execute(
+                select(Conversation.follow_up_due_at).where(
+                    Conversation.office_id == office_id,
+                    Conversation.follow_up_due_at.is_not(None),
+                )
+            )
+        ).scalars().all()
+        for due in follow_ups:
+            due = next_sending_time(due.astimezone(MX_TIMEZONE))
+            if now < due <= horizon and (soonest is None or due < soonest):
+                soonest = due
+
         if not appointments:
-            return None
+            return soonest
 
         rules = await get_active_reminder_rules(db, office_id)
-        soonest: Optional[datetime] = None
 
         for appointment in appointments:
             start_local = appointment.start_datetime.astimezone(MX_TIMEZONE)
@@ -273,6 +290,7 @@ async def advance_clock(office_id: UUID, seconds: int) -> dict:
 
     client = await _redis()
     dispatched: list[dict] = []
+    follow_ups_sent: list[str] = []
     seen: set[tuple[str, str]] = set()
     drained_cleanly = True
     steps = 0
@@ -291,6 +309,11 @@ async def advance_clock(office_id: UUID, seconds: int) -> dict:
         async def sweep_here() -> None:
             nonlocal drained_cleanly, steps
             steps += 1
+            from app.modules.conversation.tasks import _send_follow_ups_async
+
+            for outcome in await _send_follow_ups_async():
+                if outcome["outcome"] == "sent":
+                    follow_ups_sent.append(outcome["conversation_id"])
             just = await _dispatch_due_reminders_async()
             if not just:
                 return
@@ -345,6 +368,7 @@ async def advance_clock(office_id: UUID, seconds: int) -> dict:
         "now": now_mx().isoformat(),
         "steps": steps,
         "dispatched": dispatched,
+        "follow_ups_sent": follow_ups_sent,
     }
     if not drained_cleanly:
         result["warning"] = (

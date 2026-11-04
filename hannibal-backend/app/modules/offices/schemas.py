@@ -161,6 +161,9 @@ class UpdateOfficeRequest(BaseModel):
     notify_reschedule: Optional[bool] = Field(
         None, description="Notify the doctor when a patient moves their appointment"
     )
+    follow_up_enabled: Optional[bool] = Field(
+        None, description="One nudge to a patient who went quiet with slots or a summary in hand"
+    )
 
 
 class ReminderRuleSchema(BaseModel):
@@ -244,6 +247,7 @@ class OfficeResponse(BaseModel):
     notify_unconfirmed: bool
     notify_arrival: bool
     notify_reschedule: bool
+    follow_up_enabled: bool = True
     # Derived from the (encrypted) OAuth token, which is never returned. The
     # dashboard used to test `google_calendar_token` — a field this response
     # never had — so it showed "Conecta tu Google Calendar" to connected offices.

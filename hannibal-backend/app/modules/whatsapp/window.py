@@ -43,6 +43,14 @@ async def service_window_open(
     When open, free-form (free) text can be sent; otherwise an approved
     template is required to reach the patient at all.
     """
+    last_inbound = await last_inbound_at(db, office_id, whatsapp_id)
+    if last_inbound is None:
+        return False
+    return (now_mx() - last_inbound) < window
+
+
+async def last_inbound_at(db: AsyncSession, office_id, whatsapp_id: str) -> datetime | None:
+    """When the patient last wrote to the office (opens the 24h window)."""
     result = await db.execute(
         select(Message.created_at)
         .join(Conversation, Message.conversation_id == Conversation.id)
@@ -56,10 +64,7 @@ async def service_window_open(
         .order_by(Message.created_at.desc())
         .limit(1)
     )
-    last_inbound = result.scalar_one_or_none()
-    if last_inbound is None:
-        return False
-    return (now_mx() - last_inbound) < window
+    return result.scalar_one_or_none()
 
 
 async def record_doctor_inbound(

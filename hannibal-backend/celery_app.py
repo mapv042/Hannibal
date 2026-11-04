@@ -88,6 +88,11 @@ celery_app.conf.update(
             "schedule": crontab(minute="*/5"),
             "options": {"queue": "celery"},
         },
+        "send-follow-ups": {
+            "task": "app.modules.conversation.tasks.send_follow_ups",
+            "schedule": crontab(minute="*/15"),  # one nudge per quiet conversation
+            "options": {"queue": "celery"},
+        },
         "prune-old-messages": {
             "task": "app.modules.conversation.tasks.prune_old_messages",
             "schedule": crontab(minute=45, hour=3),  # daily, off-hours

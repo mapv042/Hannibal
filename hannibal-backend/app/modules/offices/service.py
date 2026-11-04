@@ -231,6 +231,8 @@ async def update_office(
         office.notify_reschedule = data.notify_reschedule
     if data.notify_unconfirmed is not None:
         office.notify_unconfirmed = data.notify_unconfirmed
+    if data.follow_up_enabled is not None:
+        office.follow_up_enabled = data.follow_up_enabled
 
     await db.commit()
     await db.refresh(office)

@@ -66,6 +66,7 @@ def _office(token) -> Office:
         notify_unconfirmed=True,
         notify_arrival=True,
         notify_reschedule=True,
+        follow_up_enabled=True,
         plan="basic",
         google_calendar_token=token,
     )
