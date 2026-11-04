@@ -12,6 +12,9 @@ the office config said — and reports what the reply asserts without backing:
 - unsupported_time: the reply mentions a clock time that appears nowhere in the
   evidence. This is the invented "tengo a las 11:30".
 - weekday_mismatch: "jueves 24" when the 24th is a Friday.
+- slot_marker: (patient flow) an offered-slot marker `[[slot_id]]` for a slot
+  no tool returned, or a reply that announces slots ("tengo estos horarios:")
+  and then gives none — neither markers nor times (see slot_options.py).
 
 The tool loop (base_manager.run_tool_loop) feeds violations back to the model
 for one corrective pass. The checks are a plain list: adding one means writing
@@ -51,6 +54,10 @@ class Evidence:
     claims: set[str] = field(default_factory=set)
     # Minutes-of-day of every clock time found in the evidence texts.
     known_minutes: set[int] = field(default_factory=set)
+    # Whether this flow presents slots as [[slot_id]] markers (the patient's),
+    # and the slot ids the availability tools returned so far.
+    slot_markers: bool = False
+    offered_slot_ids: set[str] = field(default_factory=set)
 
     @classmethod
     def build(
@@ -59,11 +66,19 @@ class Evidence:
         today: date,
         claims: Iterable[str],
         texts: Iterable[str],
+        slot_markers: bool = False,
+        offered_slot_ids: Iterable[str] = (),
     ) -> "Evidence":
         known: set[int] = set()
         for text in texts:
             known |= evidence_minutes(text)
-        return cls(today=today, claims=set(claims), known_minutes=known)
+        return cls(
+            today=today,
+            claims=set(claims),
+            known_minutes=known,
+            slot_markers=slot_markers,
+            offered_slot_ids=set(offered_slot_ids),
+        )
 
 
 def _fold(text: str) -> str:
@@ -321,6 +336,40 @@ def check_weekday_mismatch(reply: str, ev: Evidence) -> list[Violation]:
 
 
 # ---------------------------------------------------------------------------
+# Offered-slot markers
+# ---------------------------------------------------------------------------
+
+_MARKER_RE = re.compile(r"\[\[\s*([^\]]*?)\s*\]\]")
+# "tengo estos horarios:", "te ofrezco las siguientes opciones" — a promise of a
+# list that must then be there.
+_ANNOUNCES_SLOTS_RE = re.compile(
+    r"\b(estos|estas|los siguientes|las siguientes)\s+(horarios|opciones|espacios|lugares)\b"
+)
+
+
+def check_slot_markers(reply: str, ev: Evidence) -> list[Violation]:
+    if not ev.slot_markers:
+        return []
+    markers = _MARKER_RE.findall(reply)
+    unknown = [m for m in markers if m not in ev.offered_slot_ids]
+    if unknown:
+        return [Violation(
+            "slot_marker",
+            "Usaste marcadores de horario que ninguna herramienta te dio: "
+            + ", ".join(f"[[{m}]]" for m in unknown)
+            + ". Cada marcador debe ser el slot_id exacto de un horario que devolvió "
+            "get_available_slots (consúltala si hace falta).",
+        )]
+    if not markers and not _time_matches(reply) and _ANNOUNCES_SLOTS_RE.search(_fold(reply)):
+        return [Violation(
+            "slot_marker",
+            "Anunciaste horarios pero no incluiste ninguno. Escribe cada horario que ofreces "
+            "como [[slot_id]], con el slot_id exacto que te dio la herramienta.",
+        )]
+    return []
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
@@ -330,6 +379,7 @@ CHECKS: list[Check] = [
     check_claimed_action,
     check_unsupported_time,
     check_weekday_mismatch,
+    check_slot_markers,
 ]
 
 

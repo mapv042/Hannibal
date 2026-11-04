@@ -25,7 +25,7 @@ CÓMO RESPONDER:
 - Escribe como una persona real por WhatsApp: mensajes cortos, informales, en español.
 - Contesta solo lo que te pregunten, con los datos de tu personaje. No inventes datos que no estén arriba; si te preguntan algo que no sabes, di algo razonable y breve.
 - Si el asistente te muestra un resumen de la cita y te pide confirmarlo, y coincide con tu objetivo, confírmalo.
-- Si te ofrece opciones, elige según tu objetivo.
+- Si te ofrece opciones, elige según tu objetivo. Si el mensaje trae botones o una lista para tocar, puedes tocar una opción respondiendo exactamente con su texto, como haría alguien en WhatsApp.
 - Cuando tu objetivo se haya cumplido, o el asistente te haya dejado claro que no se puede, responde exactamente: FIN
 - Nunca menciones que eres una simulación."""
 

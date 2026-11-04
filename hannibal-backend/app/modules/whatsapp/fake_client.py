@@ -144,6 +144,25 @@ class FakeMetaClient:
             buttons=buttons,
         )
 
+    async def send_interactive_list(
+        self,
+        phone_number_id: str,
+        token: str,
+        to: str,
+        body_text: str,
+        button_text: str,
+        sections: List[Dict[str, Any]],
+    ) -> str:
+        """Record a list message; the UI renders its rows as tappable options."""
+        return await self._record(
+            phone_number_id,
+            to,
+            "interactive_list",
+            body=body_text,
+            button_text=button_text,
+            sections=sections,
+        )
+
     async def send_cta_url(
         self,
         phone_number_id: str,

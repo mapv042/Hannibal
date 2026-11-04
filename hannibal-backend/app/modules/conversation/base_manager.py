@@ -25,6 +25,7 @@ from app.modules.conversation.grounding import (
     tool_result_texts,
     validate_reply,
 )
+from app.modules.conversation.slot_options import slot_choice_text
 from app.modules.conversation.tracing import TurnTrace
 from app.utils.dates import now_mx
 from app.utils.logger import get_logger
@@ -65,6 +66,10 @@ def _succeeded(result) -> bool:
 class BaseToolConversationManager:
     """Base class: message extraction + tool-use loop + text-only history."""
 
+    # Whether replies offer slots as [[slot_id]] markers (slot_options.py): the
+    # patient flow does, so its replies are validated for them.
+    SLOT_MARKERS = False
+
     # Subclasses override to word non-text placeholders for their audience.
     def _non_text_placeholder(self, msg_type: str, caption: str) -> str:
         raise NotImplementedError
@@ -101,7 +106,14 @@ class BaseToolConversationManager:
                     or interactive.get("list_reply")
                     or {}
                 )
-                text = reply.get("title") or reply.get("id") or "[Respuesta interactiva]"
+                # A tapped slot option carries its exact slot_id, so "la de las
+                # 4" never has to be read back from a title.
+                text = (
+                    slot_choice_text(reply.get("id") or "", reply.get("title") or "")
+                    or reply.get("title")
+                    or reply.get("id")
+                    or "[Respuesta interactiva]"
+                )
             elif msg_type == "button":
                 # Quick-reply button of a template (e.g. the day-before
                 # confirmation's Confirmar / Cancelar / Reagendar).
@@ -225,7 +237,8 @@ class BaseToolConversationManager:
             violations = validate_reply(
                 text,
                 self._evidence(
-                    system_prompt, working_messages, turn_results, state, tool_claims
+                    system_prompt, working_messages, turn_results, state, tool_claims,
+                    slot_markers=self.SLOT_MARKERS,
                 ),
             )
             if not violations:
@@ -284,7 +297,8 @@ class BaseToolConversationManager:
 
     @staticmethod
     def _evidence(
-        system_prompt, working_messages, turn_results, state, tool_claims
+        system_prompt, working_messages, turn_results, state, tool_claims,
+        slot_markers: bool = False,
     ) -> Evidence:
         """What the reply may draw facts from: tools, state, prompt, user words."""
         texts = [join_system_prompt(system_prompt)]
@@ -300,7 +314,15 @@ class BaseToolConversationManager:
         # appointment backs "tu cita quedó agendada" as much as the booking did.
         for name, result in turn_results:
             claims |= _claims_backed(name, result, tool_claims)
-        return Evidence.build(today=now_mx().date(), claims=claims, texts=texts)
+        return Evidence.build(
+            today=now_mx().date(),
+            claims=claims,
+            texts=texts,
+            slot_markers=slot_markers,
+            offered_slot_ids=(
+                [s.slot_id for s in state.offered_slots] if state is not None else []
+            ),
+        )
 
     async def _loop_until_text(
         self,

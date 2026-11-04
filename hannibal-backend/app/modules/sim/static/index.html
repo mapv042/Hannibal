@@ -450,12 +450,39 @@ function messageNode(m) {
       btn.textContent = b.title;
       btn.setAttribute('data-tip',
         'Así lo vería el paciente en WhatsApp. Al pulsarlo se envía como si él lo hubiera tocado.');
-      // A tap arrives as the button's TITLE text, exactly as in production —
-      // the id is dropped on the way in.
-      btn.onclick = () => send('patient', b.title);
+      // A tap is delivered as Meta does: the button's id and title.
+      btn.onclick = () => send('patient', b.title, b.id);
       row.appendChild(btn);
     });
     bubble.appendChild(row);
+  }
+
+  // A list: one "Ver horarios" button that opens its rows; here the rows are
+  // shown right away, grouped by section, and a tap sends the row's id.
+  if (m.kind === 'interactive_list' && m.sections) {
+    const head = document.createElement('div');
+    head.className = 'btns';
+    const label = document.createElement('span');
+    label.className = 'tmpl';
+    label.textContent = '☰ ' + (m.button_text || 'Ver opciones');
+    head.appendChild(label);
+    bubble.appendChild(head);
+    m.sections.forEach(sec => {
+      const row = document.createElement('div');
+      row.className = 'btns';
+      const title = document.createElement('div');
+      title.className = 'stamp';
+      title.textContent = sec.title;
+      row.appendChild(title);
+      (sec.rows || []).forEach(r => {
+        const btn = document.createElement('button');
+        btn.className = 'wa-btn';
+        btn.textContent = r.title;
+        btn.onclick = () => send('patient', r.title, r.id);
+        row.appendChild(btn);
+      });
+      bubble.appendChild(row);
+    });
   }
 
   // A link button (e.g. "Agregar a calendario"): opens the URL, sends nothing.
@@ -561,7 +588,7 @@ async function refresh(repaintLog = false) {
   }
 }
 
-async function send(role, text) {
+async function send(role, text, replyId = null) {
   if (!text.trim()) return;
   const [provider, model] = $('model').value.split('|');
   const effort = isReasoning(model) ? $('effort').value : null;
@@ -572,6 +599,7 @@ async function send(role, text) {
       method: 'POST',
       body: JSON.stringify({
         sender: role, text,
+        reply_id: replyId,
         whatsapp_id: role === 'patient' ? patientPhone : null,
         provider, model, reasoning_effort: effort,
       }),

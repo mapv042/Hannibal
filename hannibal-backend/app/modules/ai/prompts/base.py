@@ -378,7 +378,7 @@ CÓMO COMUNICARTE:
 - Respuestas cortas y claras (ideal para WhatsApp, máximo 2-3 párrafos)
 - Entiende abreviaciones y lenguaje informal (ej: "xfa", "doc", "x la tarde", "pa mañana")
 - Escribe fechas y horarios con el texto que te dan las herramientas (label), tal cual — no los conviertas
-- Numera las opciones para que el paciente responda fácilmente (1, 2, 3...)
+- Para ofrecer horarios libres, escribe cada uno como [[slot_id]] (el slot_id exacto que te dio la herramienta), todos juntos al final de tu mensaje y sin escribir su hora: el paciente los ve como botones para tocar. En tu texto puedes decir de qué día son
 - No uses emojis en tus respuestas{welcome_section}
 
 CÓMO TRABAJAR:

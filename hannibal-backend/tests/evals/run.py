@@ -55,7 +55,37 @@ def _render_outbound(entry: dict) -> str:
     if entry.get("kind") == "template":
         params = ", ".join(str(p.get("text", p)) for p in entry.get("params") or [])
         return f"[Plantilla {entry.get('template_name')}: {params}]"
-    return entry.get("body") or entry.get("text") or json.dumps(entry, ensure_ascii=False)
+    text = entry.get("body") or entry.get("text") or ""
+    options = list(_tappable_options(entry))
+    if entry.get("kind") == "cta_url":
+        text += f"\n[Botón que abre un enlace: {entry.get('button_text')}]"
+    elif options:
+        label = "Lista" if entry.get("kind") == "interactive_list" else "Botones"
+        text += f"\n[{label} para tocar: " + " | ".join(shown for shown, _, _ in options) + "]"
+    return text or json.dumps(entry, ensure_ascii=False)
+
+
+def _tappable_options(entry: dict):
+    """(what the patient reads, title Meta delivers on a tap, option id)."""
+    for b in entry.get("buttons") or []:
+        yield b["title"], b["title"], b["id"]
+    for section in entry.get("sections") or []:
+        for row in section.get("rows") or []:
+            yield f"{section['title']} · {row['title']}", row["title"], row["id"]
+
+
+def _tap_for(message: str, options: list[tuple[str, str, str]]) -> Optional[tuple[str, str]]:
+    """(title, id) when the simulated patient answered with an option's exact text.
+
+    A real patient taps instead of typing; so does the simulated one. A list row
+    also matches by its own title ("4:00 PM") when no other row shares it.
+    """
+    wanted = message.strip().rstrip(".").casefold()
+    for shown, title, option_id in options:
+        if shown.casefold() == wanted:
+            return title, option_id
+    by_title = [(t, i) for _, t, i in options if t.casefold() == wanted]
+    return by_title[0] if len(by_title) == 1 else None
 
 
 async def run_scenario(sim: SimClient, sc: Scenario, spec: ModelSpec) -> dict:
@@ -84,11 +114,17 @@ async def run_scenario(sim: SimClient, sc: Scenario, spec: ModelSpec) -> dict:
     if sc.channel == "patient":
         send_kw["whatsapp_id"] = sc.whatsapp_id
 
+    # The options of the newest message that had any: what a tap can hit.
+    options: list[tuple[str, str, str]] = []
+
     async def collect() -> list[str]:
-        nonlocal cursor
+        nonlocal cursor, options
         box = await sim.outbox()
         new = [e for e in box[cursor:] if e.get("to") == counterpart]
         cursor = len(box)
+        for e in new:
+            if any(True for _ in _tappable_options(e)):
+                options = list(_tappable_options(e))
         texts = [_render_outbound(e) for e in new]
         transcript.extend(("assistant", t) for t in texts)
         return texts
@@ -115,7 +151,11 @@ async def run_scenario(sim: SimClient, sc: Scenario, spec: ModelSpec) -> dict:
         if not msg or msg.strip().upper().startswith("FIN"):
             break
         transcript.append(("patient", msg))
-        await sim.send(msg, **send_kw)
+        tap = _tap_for(msg, options)
+        if tap:
+            await sim.send(tap[0], reply_id=tap[1], **send_kw)
+        else:
+            await sim.send(msg, **send_kw)
         await collect()
 
     if sc.after:

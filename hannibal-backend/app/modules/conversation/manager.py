@@ -36,6 +36,8 @@ from app.modules.privacy import consent as privacy
 from app.modules.scheduling.calendar_file import calendar_link
 from app.modules.waitlist import service as waitlist
 from app.modules.conversation.base_manager import BaseToolConversationManager
+from app.modules.conversation import slot_options
+from app.modules.conversation.slot_options import SlotReply
 from app.modules.conversation.session_store import SessionStore
 from app.modules.conversation.schemas import SessionContext
 from app.modules.whatsapp.transport import WhatsAppClient
@@ -54,6 +56,9 @@ class ConversationManager(BaseToolConversationManager):
     plain text turns (see BaseToolConversationManager.sanitize_history) — the
     tool chain lives in a per-turn working copy.
     """
+
+    # Slots are offered as [[slot_id]] markers and sent as tappable options.
+    SLOT_MARKERS = True
 
     # Human-readable labels for WhatsApp message types
     _MESSAGE_TYPE_LABELS: dict[str, str] = {
@@ -272,10 +277,13 @@ class ConversationManager(BaseToolConversationManager):
             if not response_text or not response_text.strip():
                 response_text = "Disculpa, no pude procesar tu mensaje. ¿Podrías repetirlo?"
                 logger.warning("empty_response_fallback_v2", office_id=office_id)
-            trace.reply = response_text
+            # Slot markers become tappable options for the patient; the history,
+            # the DB and the trace keep the slots written out.
+            reply = slot_options.present(response_text, session.state.offered_slots)
+            trace.reply = reply.history_text
 
             # 7. Append the assistant turn (text only) and trim
-            session.claude_history.append({"role": "assistant", "content": response_text})
+            session.claude_history.append({"role": "assistant", "content": reply.history_text})
             if len(session.claude_history) > MAX_HISTORY_TURNS:
                 session.claude_history = session.claude_history[-MAX_HISTORY_TURNS:]
 
@@ -286,12 +294,7 @@ class ConversationManager(BaseToolConversationManager):
             sent_message_id: Optional[str] = None
             send_failed = False
             try:
-                sent_message_id = await self.meta_client.send_text_message(
-                    phone_number_id=office.whatsapp_phone_id,
-                    token=office.whatsapp_token,
-                    to=whatsapp_id,
-                    text=response_text,
-                )
+                sent_message_id = await self._send_reply(office, whatsapp_id, reply)
             except Exception as e:
                 send_failed = True
                 logger.error("failed_to_send_response", error=str(e), whatsapp_id=whatsapp_id)
@@ -300,7 +303,7 @@ class ConversationManager(BaseToolConversationManager):
             await self._save_outgoing_message(
                 db,
                 conversation_obj.id,
-                response_text,
+                reply.history_text,
                 whatsapp_message_id=sent_message_id,
                 delivery_status="failed" if send_failed else "sent",
             )
@@ -390,6 +393,69 @@ class ConversationManager(BaseToolConversationManager):
         session.collected_data[privacy.WAITING_PRIVACY_CONSENT] = True
         # The model's history should show it asked, so "sí" next turn reads right.
         session.claude_history.append({"role": "assistant", "content": text})
+
+    async def _send_reply(self, office, whatsapp_id: str, reply: SlotReply) -> str:
+        """Send the reply; offered slots go out as reply buttons or a list.
+
+        If the interactive message is refused, the slots still reach the patient,
+        written out in plain text. Raises only if the plain text fails too.
+        """
+
+        async def send_text(text: str) -> str:
+            return await self.meta_client.send_text_message(
+                phone_number_id=office.whatsapp_phone_id,
+                token=office.whatsapp_token,
+                to=whatsapp_id,
+                text=text,
+            )
+
+        if reply.kind == "text":
+            return await send_text(reply.text)
+
+        body = reply.text
+        text_sent = False
+        try:
+            if not body or len(body) > slot_options.MAX_INTERACTIVE_BODY:
+                # Too long for an interactive body: the words go first, the
+                # options follow under a short prompt.
+                if body:
+                    await send_text(body)
+                    text_sent = True
+                body = slot_options.SHORT_BODY
+            if reply.kind == "buttons":
+                message_id = await self.meta_client.send_interactive_buttons(
+                    phone_number_id=office.whatsapp_phone_id,
+                    token=office.whatsapp_token,
+                    to=whatsapp_id,
+                    body_text=body,
+                    buttons=reply.buttons(),
+                )
+            else:
+                message_id = await self.meta_client.send_interactive_list(
+                    phone_number_id=office.whatsapp_phone_id,
+                    token=office.whatsapp_token,
+                    to=whatsapp_id,
+                    body_text=body,
+                    button_text=slot_options.LIST_BUTTON_TEXT,
+                    sections=reply.sections(),
+                )
+            logger.info(
+                "slot_options_sent",
+                office_id=str(office.id),
+                kind=reply.kind,
+                count=len(reply.options),
+            )
+            return message_id
+        except Exception as e:
+            logger.warning(
+                "slot_options_send_failed",
+                office_id=str(office.id),
+                kind=reply.kind,
+                error=str(e),
+            )
+            if text_sent:
+                return await send_text(reply.options_in_words())
+            return await send_text(reply.history_text)
 
     async def _send_calendar_links(
         self, db, office, session, conversation_obj, whatsapp_id, appointment_ids

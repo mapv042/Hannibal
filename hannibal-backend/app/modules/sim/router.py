@@ -87,8 +87,24 @@ async def _the_office(db: AsyncSession) -> Office:
     )
 
 
-def _meta_shaped_payload(office: Office, sender: str, text: str) -> dict[str, Any]:
-    """Build the webhook body Meta would have delivered for this message."""
+def _meta_shaped_payload(
+    office: Office, sender: str, text: str, reply_id: Optional[str] = None
+) -> dict[str, Any]:
+    """Build the webhook body Meta would have delivered for this message.
+
+    With `reply_id` it is a tap on an interactive option (button or list row):
+    Meta delivers the option's id and title, not typed text.
+    """
+    if reply_id:
+        content: dict[str, Any] = {
+            "type": "interactive",
+            "interactive": {
+                "type": "button_reply",
+                "button_reply": {"id": reply_id, "title": text},
+            },
+        }
+    else:
+        content = {"type": "text", "text": {"body": text}}
     return {
         "object": "whatsapp_business_account",
         "entry": [
@@ -111,8 +127,7 @@ def _meta_shaped_payload(office: Office, sender: str, text: str) -> dict[str, An
                                     "from": sender,
                                     "id": f"wamid.sim.in.{uuid4().hex}",
                                     "timestamp": str(int(now_mx().timestamp())),
-                                    "type": "text",
-                                    "text": {"body": text},
+                                    **content,
                                 }
                             ],
                         },
@@ -148,6 +163,8 @@ class InboundRequest(BaseModel):
     text: str = Field(min_length=1, max_length=4000)
     # Which patient is speaking. Omitted means the doctor, or the default patient.
     whatsapp_id: Optional[str] = None
+    # A tap on an interactive option: its id; `text` is then the option's title.
+    reply_id: Optional[str] = Field(default=None, max_length=200)
     # Answer this turn with a specific model instead of the configured one. This
     # is the whole point of the simulator for model comparison: the same scenario
     # run twice, once per model, with no redeploy in between.
@@ -244,7 +261,7 @@ async def sim_inbound(
 
     try:
         await _process_webhook_async(
-            _meta_shaped_payload(office, sender, body.text),
+            _meta_shaped_payload(office, sender, body.text, body.reply_id),
             redis_client,
         )
     finally:

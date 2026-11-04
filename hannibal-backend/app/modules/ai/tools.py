@@ -84,8 +84,8 @@ TOOL_DEFINITIONS = [
             "Consulta los horarios libres de uno o varios días. Cuando el paciente nombra el día "
             "con palabras, pásalas tal cual en `when` y el sistema calcula la fecha exacta; si "
             "esas palabras tienen dos lecturas, te devuelve las opciones para que le preguntes. "
-            "Cada horario trae un slot_id (lo que usas para reservar) y un label (lo que le "
-            "muestras al paciente, tal cual). Si ningún día consultado tiene lugar, el resultado "
+            "Cada horario trae un slot_id (lo que usas para ofrecerlo como [[slot_id]] y para "
+            "reservar) y un label (cómo se lee). Si ningún día consultado tiene lugar, el resultado "
             "incluye next_available con el siguiente día que sí tiene."
         ),
         "input_schema": {

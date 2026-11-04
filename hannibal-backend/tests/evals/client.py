@@ -91,8 +91,12 @@ class SimClient:
         provider: Optional[str] = None,
         model: Optional[str] = None,
         reasoning_effort: Optional[str] = None,
+        reply_id: Optional[str] = None,
     ) -> list[dict]:
+        """Send a typed message, or — with `reply_id` — a tap on an option titled `text`."""
         body = {"sender": sender, "text": text}
+        if reply_id:
+            body["reply_id"] = reply_id
         if whatsapp_id:
             body["whatsapp_id"] = whatsapp_id
         if model:

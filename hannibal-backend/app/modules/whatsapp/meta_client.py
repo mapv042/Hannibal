@@ -378,6 +378,100 @@ class MetaCloudClient:
 
         return message_id
 
+    async def send_interactive_list(
+        self,
+        phone_number_id: str,
+        token: str,
+        to: str,
+        body_text: str,
+        button_text: str,
+        sections: List[Dict[str, Any]],
+    ) -> str:
+        """
+        Send an interactive list: one button that opens a menu of rows.
+
+        Only works inside the 24h customer service window (like free text).
+        The tapped row arrives as an incoming "interactive" message whose
+        `list_reply` carries the row's id and title.
+
+        Args:
+            phone_number_id: WhatsApp Business Account phone number ID
+            token: Access token for authentication
+            to: Recipient's WhatsApp ID
+            body_text: Message body shown above the button
+            button_text: Label of the button that opens the menu (max 20 chars)
+            sections: [{"title": str, "rows": [{"id": str, "title": str}]}];
+                Meta caps the rows at 10 in all and row/section titles at 24 chars
+
+        Returns:
+            Message ID from Meta
+
+        Raises:
+            WhatsAppError: If API call fails
+        """
+        url = f"{BASE_URL}/{phone_number_id}/messages"
+
+        normalized_to = to
+        if to.startswith("521") and len(to) == 13:
+            normalized_to = "52" + to[3:]
+
+        payload = {
+            "messaging_product": "whatsapp",
+            "recipient_type": "individual",
+            "to": normalized_to,
+            "type": "interactive",
+            "interactive": {
+                "type": "list",
+                "body": {"text": body_text},
+                "action": {
+                    "button": button_text[:20],
+                    "sections": [
+                        {
+                            "title": section["title"][:24],
+                            "rows": [
+                                {"id": row["id"], "title": row["title"][:24]}
+                                for row in section["rows"]
+                            ],
+                        }
+                        for section in sections
+                    ],
+                },
+            },
+        }
+
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        }
+
+        try:
+            response = await self._post_with_retries(
+                url,
+                payload,
+                headers,
+                log_event="send_interactive_list",
+                log_context={"to": to, "phone_number_id": phone_number_id},
+            )
+        except httpx.HTTPError as e:
+            logger.error(
+                "send_interactive_list_failed",
+                to=to,
+                phone_number_id=phone_number_id,
+                error=str(e),
+            )
+            raise WhatsAppError(f"Failed to send list message: {str(e)}") from e
+
+        data = response.json()
+        message_id = data.get("messages", [{}])[0].get("id")
+
+        if not message_id:
+            logger.error("send_interactive_list_no_id", response=data)
+            raise WhatsAppError("No message ID returned by Meta")
+
+        logger.info("send_interactive_list_success", message_id=message_id, to=to)
+
+        return message_id
+
     async def send_cta_url(
         self,
         phone_number_id: str,

@@ -253,17 +253,48 @@ def _check_book_tomorrow_4pm(r: Result) -> list[str]:
     )
 
 
+_OPTIONS_RE = re.compile(r"\n\[(?:Botones|Lista) para tocar: (.*)\]$")
+
+
+def _offered_options(r: Result) -> tuple[str, list[str]]:
+    """(text the patient read, its tappable options) of the first reply that had options."""
+    for t in r.replies():
+        m = _OPTIONS_RE.search(t)
+        if m:
+            return t[: m.start()], m.group(1).split(" | ")
+    return "", []
+
+
+def _label_of(appointment: dict) -> str:
+    hhmm = _hhmm(appointment)
+    h, m = int(hhmm[:2]), hhmm[3:]
+    return f"{h % 12 or 12}:{m} {'AM' if h < 12 else 'PM'}"
+
+
 def _check_option_two(r: Result) -> list[str]:
     thu = r.active_on(3)
     if len(thu) != 1:
         return [f"expected 1 appointment on Thursday, got {len(thu)}"]
-    # The option the patient chose ("la 2") is whatever line 2 of the list said.
-    listing = next((t for t in r.replies() if re.search(r"(?m)^\s*\**2[\.\)]", t)), "")
-    line = next((l for l in listing.splitlines() if re.match(r"^\s*\**2[\.\)]", l)), "")
-    hhmm = _hhmm(thu[0])
-    h, m = int(hhmm[:2]), hhmm[3:]
-    label = f"{h % 12 or 12}:{m} {'AM' if h < 12 else 'PM'}"
-    return expect(label in line, f"booked {label} but option 2 was: {line!r}")
+    # "la segunda" is whatever the second option said.
+    _, options = _offered_options(r)
+    if len(options) < 2:
+        return [f"expected at least 2 tappable options, got {options}"]
+    label = _label_of(thu[0])
+    return expect(options[1].endswith(label), f"booked {label} but option 2 was: {options[1]!r}")
+
+
+def _check_tap_slot_button(r: Result) -> list[str]:
+    thu = r.active_on(3)
+    body, options = _offered_options(r)
+    if not options:
+        return ["the slots were not offered as buttons or a list"]
+    repeated = [o for o in options if o.rsplit(" · ", 1)[-1] in body]
+    return (
+        expect(len(thu) == 1, f"expected 1 appointment on Thursday, got {len(thu)}")
+        + expect(not thu or options[0].endswith(_label_of(thu[0])),
+                 f"tapped {options[0]!r} but booked {thu and _label_of(thu[0])}")
+        + expect(not repeated, f"the text repeats what the buttons show: {repeated}")
+    )
 
 
 def _check_this_wednesday_morning(r: Result) -> list[str]:
@@ -496,8 +527,22 @@ SCENARIOS: list[Scenario] = [
         tags=["options"],
         opening=["¿Qué horarios tienes el jueves?"],
         persona=JUAN,
-        goal="Cuando te dé la lista numerada, elige la opción 2 escribiendo solo 'la 2'. Luego agenda.",
+        goal=(
+            "Cuando te muestre los horarios, elige el segundo escribiendo solo 'la segunda' "
+            "(no copies el texto del botón). Luego agenda."
+        ),
         check=_check_option_two,
+    ),
+    Scenario(
+        name="tap_slot_button",
+        tags=["options"],
+        opening=["¿Qué horarios tienes el jueves en la tarde?"],
+        persona=JUAN,
+        goal=(
+            "Cuando te muestre horarios para tocar, toca el primero respondiendo exactamente con "
+            "su texto. Luego agenda."
+        ),
+        check=_check_tap_slot_button,
     ),
     Scenario(
         name="this_wednesday_morning",
