@@ -5,8 +5,10 @@ To offer slots the patient model writes each one as a marker with its exact id
 what each reader needs:
 
 - the patient reads the text without the markers, and taps a slot: up to
-  MAX_BUTTONS as reply buttons on the message itself, up to MAX_LIST_ROWS
-  behind a "Ver horarios" list, more than that written out as text;
+  MAX_BUTTONS as reply buttons on the message itself, more behind a "Ver
+  horarios" list — which holds MAX_LIST_ROWS at most, so a longer offer (a
+  whole free day) shows that many spread across it, plus a note that there
+  are more;
 - the model's history keeps the slots written out ("4:00 PM y 5:00 PM"),
   because history is plain text: with only the markers stripped, next turn it
   wouldn't know what it offered.
@@ -23,6 +25,7 @@ extraction turns into text carrying the exact slot_id for prepare_booking.
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from typing import Iterable, Literal, Optional
 
@@ -38,6 +41,8 @@ MAX_INTERACTIVE_BODY = 1024
 LIST_BUTTON_TEXT = "Ver horarios"
 # Body for the interactive message when the reply itself had to go out as text.
 SHORT_BODY = "Elige un horario:"
+# Appended when the list can't hold every slot the reply offered.
+MORE_SLOTS_NOTE = "Te muestro algunos; si buscas otra hora, dime cuál."
 
 # Prefix of a tapped option's id; the rest is the slot_id.
 SLOT_REPLY_PREFIX = "slot:"
@@ -101,12 +106,18 @@ def present(reply: str, offered: Iterable[OfferedSlot]) -> SlotReply:
     options = [by_id[i] for i in markers_in(reply) if i in by_id]
     written = _rewrite(reply, by_id, keep=True)
 
-    if not options or len(options) > MAX_LIST_ROWS:
-        # Nothing to tap, or too much for a list: everything goes out as text.
+    if not options:
         return SlotReply(text=written, history_text=written)
 
+    text = _rewrite(reply, by_id, keep=False)
+    if len(options) > MAX_LIST_ROWS:
+        # A whole free day doesn't fit: show a spread of it. The history keeps
+        # every slot, so "¿y a las 3:40?" is still one the model offered.
+        options = _spread(options, MAX_LIST_ROWS)
+        text = f"{text}\n\n{MORE_SLOTS_NOTE}".strip()
+
     return SlotReply(
-        text=_rewrite(reply, by_id, keep=False),
+        text=text,
         history_text=written,
         kind="buttons" if len(options) <= MAX_BUTTONS else "list",
         options=options,
@@ -148,20 +159,40 @@ def _rewrite(reply: str, by_id: dict[str, OfferedSlot], keep: bool) -> str:
         if not keep:
             return ""
         slots = [by_id[i] for i in markers_in(match.group(0)) if i in by_id]
-        return _in_words(slots)
+        return _in_words(slots, context=reply)
 
     text = _MARKER_RUN_RE.sub(replace, reply)
     return _tidy(text)
 
 
-def _in_words(slots: list[OfferedSlot]) -> str:
-    """'jueves 24 de septiembre: 4:00 PM y 5:00 PM; viernes 25 de septiembre: 10:00 AM'."""
+def _in_words(slots: list[OfferedSlot], context: str = "") -> str:
+    """'jueves 24 de septiembre: 4:00 PM y 5:00 PM; viernes 25 de septiembre: 10:00 AM'.
+
+    Slots of a single day that `context` (the reply) already names are just
+    their times: "El lunes 9 de noviembre tengo 9:00 AM y 9:40 AM", not "El
+    lunes 9 de noviembre tengo lunes 9 de noviembre: …".
+    """
     days: list[tuple[str, list[str]]] = []
     for s in slots:
         if not days or days[-1][0] != s.date_label:
             days.append((s.date_label, []))
         days[-1][1].append(s.time_label)
+    if len(days) == 1 and _fold(days[0][0]) in _fold(context):
+        return _join(days[0][1])
     return "; ".join(f"{label}: {_join(times)}" for label, times in days)
+
+
+def _spread(options: list[OfferedSlot], k: int) -> list[OfferedSlot]:
+    """`k` of `options` evenly spread, first and last included, order kept."""
+    n = len(options)
+    return [options[round(i * (n - 1) / (k - 1))] for i in range(k)]
+
+
+def _fold(text: str) -> str:
+    return "".join(
+        c for c in unicodedata.normalize("NFD", text.lower())
+        if unicodedata.category(c) != "Mn"
+    )
 
 
 def _join(items: list[str]) -> str:

@@ -69,13 +69,39 @@ def test_four_slots_become_a_list_grouped_by_day():
     assert f"{THU}: 4:00 PM, 5:00 PM y 6:30 PM; {FRI}: 10:00 AM" in r.history_text
 
 
-def test_more_than_ten_slots_go_out_as_text():
-    many = [slot(f"2026-09-24T{h:02d}:00", THU, f"{h - 12 if h > 12 else h}:00 {'PM' if h >= 12 else 'AM'}")
-            for h in range(8, 19)]
-    reply = "Tengo: " + " ".join(f"[[{s.slot_id}]]" for s in many)
-    r = present(reply, many)
-    assert r.kind == "text" and r.text == r.history_text
-    assert "[[" not in r.text and "8:00 AM" in r.text
+MON = "lunes 9 de noviembre"
+# The real case: a whole free day, every 40 minutes — 12 slots.
+FULL_DAY = [
+    slot(f"2026-11-09T{h:02d}:{m:02d}", MON, f"{h % 12 or 12}:{m:02d} {'AM' if h < 12 else 'PM'}")
+    for h, m in [(9, 0), (9, 40), (10, 20), (11, 0), (11, 40), (12, 20),
+                 (13, 0), (13, 40), (14, 20), (15, 0), (15, 40), (16, 20)]
+]
+
+
+def test_a_whole_day_is_a_list_of_ten_spread_across_it():
+    reply = "El lunes 9 de noviembre hay estos horarios disponibles:\n\n" + " ".join(
+        f"[[{s.slot_id}]]" for s in FULL_DAY
+    )
+    r = present(reply, FULL_DAY)
+    assert r.kind == "list"
+    rows = [row["title"] for sec in r.sections() for row in sec["rows"]]
+    assert len(rows) == 10 and rows[0] == "9:00 AM" and rows[-1] == "4:20 PM"
+    assert r.text.endswith(slot_options.MORE_SLOTS_NOTE)
+    # The model still knows every slot it offered.
+    assert "9:40 AM" in r.history_text and "3:40 PM" in r.history_text
+
+
+def test_the_day_the_reply_already_names_is_not_repeated():
+    reply = "El lunes 9 de noviembre hay estos horarios disponibles: " + " ".join(
+        f"[[{s.slot_id}]]" for s in FULL_DAY[:2]
+    )
+    r = present(reply, FULL_DAY)
+    assert r.history_text == "El lunes 9 de noviembre hay estos horarios disponibles: 9:00 AM y 9:40 AM"
+
+
+def test_several_days_keep_their_dates():
+    r = present("Tengo: [[2026-09-24T16:00]] [[2026-09-25T10:00]]", OFFERED)
+    assert r.history_text == f"Tengo: {THU}: 4:00 PM; {FRI}: 10:00 AM"
 
 
 def test_a_marker_for_a_slot_no_tool_gave_is_dropped():
