@@ -88,6 +88,11 @@ celery_app.conf.update(
             "schedule": crontab(minute="*/5"),
             "options": {"queue": "celery"},
         },
+        "backfill-missing-calendar-events": {
+            "task": "app.modules.google_calendar.tasks.backfill_all_missing_events",
+            "schedule": crontab(minute=40),  # hourly: citas whose Google event never got created
+            "options": {"queue": "celery"},
+        },
         "send-follow-ups": {
             "task": "app.modules.conversation.tasks.send_follow_ups",
             "schedule": crontab(minute="*/15"),  # one nudge per quiet conversation

@@ -20,6 +20,21 @@ logger = get_logger(__name__)
 # How far ahead a full (token-less) sync looks for events.
 SYNC_HORIZON_DAYS = 60
 
+# Creating an event is retried (see create_calendar_event); a shorter timeout per
+# attempt keeps the worst case inside a WhatsApp turn.
+CREATE_TIMEOUT_SECONDS = 8
+
+
+def calendar_event_id_for(appointment_id) -> str:
+    """The Google event id an appointment's event is created with.
+
+    Google lets the client choose the id (lowercase base32hex, 5–1024 chars);
+    a UUID's hex qualifies. Choosing it makes creation idempotent: a retry after
+    a timeout that DID create the event gets 409 instead of a second event, and
+    the audit's repair can't duplicate an event the first attempt left behind.
+    """
+    return UUID(str(appointment_id)).hex
+
 
 async def get_freebusy(
     office_id: UUID,
@@ -201,9 +216,15 @@ async def create_calendar_event(
     db: AsyncSession,
     color_id: str = "9",  # 9=Blueberry(blue/scheduled), 10=Basil(green/confirmed)
     all_day: bool = False,
+    event_id: Optional[str] = None,
 ) -> str:
     """
     Create an event in Google Calendar.
+
+    Transient failures (timeouts, dropped connections, 429, 5xx) are retried
+    with backoff. Pass `event_id` (calendar_event_id_for) whenever the event
+    belongs to an appointment: then a retry — or a later repair — that finds
+    the event already there (409) is a success, never a duplicate.
 
     Args:
         office_id: Office ID
@@ -212,6 +233,7 @@ async def create_calendar_event(
         end_time: End time
         description: Event description
         db: Database session
+        event_id: The id to create the event with (idempotent creation)
 
     Returns:
         Google Calendar event ID
@@ -232,6 +254,8 @@ async def create_calendar_event(
             "description": description or "",
             "colorId": color_id,
         }
+        if event_id:
+            event["id"] = event_id
         if all_day:
             # Google all-day events use `date` (no time) and an EXCLUSIVE end date,
             # so the last blocked day must be represented as end_date + 1.
@@ -243,20 +267,30 @@ async def create_calendar_event(
             event["start"] = {"dateTime": start_time.isoformat(), "timeZone": "America/Mexico_City"}
             event["end"] = {"dateTime": end_time.isoformat(), "timeZone": "America/Mexico_City"}
 
-        async with httpx.AsyncClient(timeout=15) as client:
+        async with httpx.AsyncClient(timeout=CREATE_TIMEOUT_SECONDS) as client:
             url = f"https://www.googleapis.com/calendar/v3/calendars/{calendar_id}/events"
-            response = await client.post(
-                url, json=event, headers={"Authorization": f"Bearer {access_token}"},
+            response = await _request_with_retry(
+                client, "POST", url,
+                json=event, headers={"Authorization": f"Bearer {access_token}"},
             )
             if response.status_code == 401:
                 access_token = await get_valid_google_token(office_id, db, force_refresh=True)
-                response = await client.post(
-                    url, json=event, headers={"Authorization": f"Bearer {access_token}"},
+                response = await _request_with_retry(
+                    client, "POST", url,
+                    json=event, headers={"Authorization": f"Bearer {access_token}"},
                 )
             if response.status_code in (401, 403):
                 raise GoogleCalendarAuthError(
                     f"Google rejected the calendar credentials ({response.status_code})"
                 )
+            if response.status_code == 409 and event_id:
+                # An earlier attempt created it (its answer was lost): done.
+                logger.info(
+                    "google_event_already_exists",
+                    office_id=str(office_id),
+                    google_event_id=event_id,
+                )
+                return event_id
 
             if response.status_code not in [200, 201]:
                 logger.error(

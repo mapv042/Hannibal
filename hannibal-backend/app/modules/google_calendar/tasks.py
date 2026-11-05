@@ -112,3 +112,48 @@ def backfill_calendar_events(office_id: str) -> None:
     """After a reconnect: write to Google the citas booked while disconnected."""
     result = run_task(_backfill_calendar_events_async(office_id))
     logger.info("gcal_backfill_task_done", office_id=office_id, **result)
+
+
+async def _backfill_all_missing_events_async() -> dict:
+    """Every connected office: create the events booking and the audit couldn't."""
+    import redis.asyncio as aioredis
+
+    from app.config import settings
+    from app.modules.google_calendar.connection import backfill_missing_events, is_disconnected
+
+    totals = {"created": 0, "failed": 0}
+    redis_client = aioredis.from_url(settings.redis_url, decode_responses=True)
+    try:
+        async with get_async_session_maker()() as db:
+            office_ids = (
+                await db.execute(
+                    select(Office.id).where(
+                        Office.is_active.is_(True), Office.google_calendar_token.is_not(None)
+                    )
+                )
+            ).scalars().all()
+            for office_id in office_ids:
+                # Disconnected: the reconnect backfills; asking now only fails.
+                if await is_disconnected(redis_client, office_id):
+                    continue
+                try:
+                    result = await backfill_missing_events(
+                        db, office_id, note="Agendada por el asistente"
+                    )
+                except Exception as e:  # one office failing must not stop the rest
+                    await db.rollback()
+                    logger.error("gcal_backfill_office_failed", office_id=str(office_id), error=str(e))
+                    continue
+                totals["created"] += result["created"]
+                totals["failed"] += result["failed"]
+    finally:
+        await redis_client.close()
+    return totals
+
+
+@shared_task(name="app.modules.google_calendar.tasks.backfill_all_missing_events")
+def backfill_all_missing_events() -> None:
+    """Hourly safety net: upcoming citas still without a Google event get one."""
+    result = run_task(_backfill_all_missing_events_async())
+    if result["created"] or result["failed"]:
+        logger.info("gcal_backfill_sweep_done", **result)

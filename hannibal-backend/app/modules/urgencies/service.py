@@ -25,7 +25,7 @@ from app.db.models import (
     Patient,
     UrgencyRequest,
 )
-from app.modules.google_calendar.service import create_calendar_event
+from app.modules.google_calendar.service import calendar_event_id_for, create_calendar_event
 from app.modules.scheduling.availability import get_upcoming_slots
 from app.modules.whatsapp.window import (
     doctor_service_window_open,
@@ -323,6 +323,8 @@ async def _create_urgent_appointment(
     )
     end_dt = start_dt + timedelta(minutes=duration_min)
 
+    # Chosen first so the event is created idempotently (see booking.py).
+    appointment_id = uuid.uuid4()
     google_event_id = None
     if office.google_calendar_token:
         try:
@@ -338,12 +340,13 @@ async def _create_urgent_appointment(
                 ),
                 db=db,
                 color_id=GCAL_COLOR_URGENT,
+                event_id=calendar_event_id_for(appointment_id),
             )
         except Exception as e:
             logger.error("urgency_create_gcal_failed", error=str(e))
 
     appointment = Appointment(
-        id=uuid.uuid4(),
+        id=appointment_id,
         created_at=now_mx(),  # app clock, as the reminder sweep compares against it
         office_id=office.id,
         patient_id=patient.id,

@@ -177,6 +177,36 @@ async def _repair_cancelled_event(
     return repaired
 
 
+async def _repair_missing_event(
+    db: AsyncSession, office: Office, appointment: Appointment
+) -> bool:
+    """Create the event a booking failed to create. Returns True when it exists now.
+
+    book_appointment retries Google, but a failure that outlasts the retries
+    still leaves a cita the doctor can't see. Creating it here is safe: the
+    event id derives from the appointment id, so this can't duplicate an event
+    the booking created after all. Only for a cita that never got an event — one
+    whose event the doctor deleted is the doctor's call (inbound sync), not ours.
+    """
+    from app.modules.google_calendar.connection import create_appointment_event
+
+    patient = await db.get(Patient, appointment.patient_id)
+    try:
+        await create_appointment_event(db, appointment, patient, "Agendada por el asistente")
+        await db.flush()
+        event = await get_calendar_event(office.id, appointment.google_event_id, db)
+    except Exception as e:
+        logger.warning(
+            "audit_repair_failed", appointment_id=str(appointment.id), error=str(e)
+        )
+        return False
+    repaired = event_blocks_slot(event)
+    logger.info(
+        "audit_repair_attempted", appointment_id=str(appointment.id), repaired=repaired
+    )
+    return repaired
+
+
 def _check_row(appointment: Appointment, expectation: dict) -> Optional[Divergence]:
     """Compare the stored row against what the action believed it wrote."""
     expected_status = expectation.get("status")
@@ -265,15 +295,21 @@ async def verify_appointment_write(
         # the missing events. One alert per cita would just be noise.
         logger.info("audit_calendar_skipped_disconnected", appointment_id=str(appointment_id))
     elif divergence is None:
+        never_had_event = appointment.google_event_id is None
         divergence = await _check_calendar(
             db, office, appointment, expected_present=action != "cancel"
         )
-        if (
+        repaired = False
+        if divergence is not None and action == "cancel" and divergence.kind == KIND_CALENDAR_STALE:
+            repaired = await _repair_cancelled_event(db, office, appointment)
+        elif (
             divergence is not None
-            and action == "cancel"
-            and divergence.kind == KIND_CALENDAR_STALE
-            and await _repair_cancelled_event(db, office, appointment)
+            and action != "cancel"
+            and divergence.kind == KIND_CALENDAR_MISSING
+            and never_had_event
         ):
+            repaired = await _repair_missing_event(db, office, appointment)
+        if repaired:
             logger.warning(
                 "audit_write_repaired", appointment_id=str(appointment_id), action=action
             )

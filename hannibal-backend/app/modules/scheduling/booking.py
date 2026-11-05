@@ -22,7 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Appointment, Office
 from app.core.exceptions import GoogleCalendarAuthError
-from app.modules.google_calendar.service import create_calendar_event
+from app.modules.google_calendar.service import calendar_event_id_for, create_calendar_event
 from app.modules.scheduling.availability import (
     OVERRIDABLE_CONFLICTS,
     check_slot_bookable,
@@ -122,7 +122,14 @@ async def book_appointment(
         if not locked:
             return BookingOutcome(error=LOCKED_SLOT_MESSAGE)
 
-    # Google Calendar event (best-effort: a GCal hiccup must not block the booking)
+    # The row's id is chosen first: the Google event is created with an id
+    # derived from it, so retries and the audit's repair can't duplicate it.
+    appointment_id = uuid.uuid4()
+
+    # Google Calendar event (best-effort: a GCal hiccup must not block the
+    # booking). Transient failures are retried inside create_calendar_event;
+    # one that still fails leaves the row without an event, and the write audit
+    # creates it ~20s later (audit/service._repair_missing_event).
     google_event_id = existing_google_event_id
     from app.modules.google_calendar import connection
 
@@ -140,6 +147,7 @@ async def book_appointment(
                 description=gcal_description,
                 db=db,
                 color_id=gcal_color_id,
+                event_id=calendar_event_id_for(appointment_id),
             )
         except GoogleCalendarAuthError as e:
             connection.report_auth_failure(office.id, e)
@@ -147,7 +155,7 @@ async def book_appointment(
             logger.error("booking_gcal_failed", office_id=str(office.id), error=str(e))
 
     appointment = Appointment(
-        id=uuid.uuid4(),
+        id=appointment_id,
         # On the app's clock, like the reminder sweep that compares against it
         # (the DB default would use real time even under the simulator).
         created_at=now_mx(),

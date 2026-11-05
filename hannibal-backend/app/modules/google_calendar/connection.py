@@ -144,17 +144,50 @@ async def mark_reconnected(redis_client: aioredis.Redis, office_id: UUID) -> Non
             logger.warning("gcal_reconnect_flag_clear_failed", error=str(e))
 
 
-async def backfill_missing_events(db: AsyncSession, office_id: UUID) -> dict:
+async def create_appointment_event(db: AsyncSession, appointment, patient, note: str) -> str:
+    """Create the Google event of an appointment that has none, and store its id.
+
+    Idempotent: the event id derives from the appointment id
+    (calendar_event_id_for), so running this twice — the audit's repair and the
+    hourly backfill racing, or a retry after a lost answer — yields one event.
+    """
+    from app.core.constants import GCAL_COLOR_URGENT
+    from app.modules.google_calendar.service import calendar_event_id_for, create_calendar_event
+    from app.utils.phone import display_or_raw
+
+    name = (patient.name if patient else None) or "Paciente"
+    phone = f"Teléfono: {display_or_raw(patient.phone)}\n" if patient and patient.phone else ""
+    if appointment.type == "urgent":
+        title, color = f"URGENCIA: {name}", GCAL_COLOR_URGENT
+    else:
+        title, color = f"Cita: {name}", "10" if appointment.status == "confirmed" else "9"
+    appointment.google_event_id = await create_calendar_event(
+        office_id=appointment.office_id,
+        title=title,
+        start_time=appointment.start_datetime,
+        end_time=appointment.end_datetime,
+        description=f"Motivo: {appointment.consultation_reason or 'Consulta'}\n{phone}{note}",
+        db=db,
+        color_id=color,
+        event_id=calendar_event_id_for(appointment.id),
+    )
+    return appointment.google_event_id
+
+
+async def backfill_missing_events(
+    db: AsyncSession,
+    office_id: UUID,
+    note: str = "Agendada mientras Google Calendar estaba desconectado",
+) -> dict:
     """Write to Google the upcoming appointments that have no event yet.
 
-    These are the citas booked while the calendar was disconnected. Only
-    future scheduled/confirmed ones: the past doesn't need to reach the
-    doctor's calendar retroactively.
+    After a reconnect these are the citas booked while the calendar was
+    disconnected; on the hourly sweep, any whose creation failed at booking time
+    and that the audit couldn't repair. Only future scheduled/confirmed ones:
+    the past doesn't need to reach the doctor's calendar retroactively.
     """
     from app.db.models import Appointment, Patient
-    from app.modules.google_calendar.service import create_calendar_event
     from app.utils.dates import now_mx
-    from app.utils.phone import display_or_raw
 
     rows = (await db.execute(
         select(Appointment, Patient)
@@ -170,25 +203,13 @@ async def backfill_missing_events(db: AsyncSession, office_id: UUID) -> dict:
 
     created = failed = 0
     for appt, patient in rows:
-        name = (patient.name if patient else None) or "Paciente"
-        phone = f"Teléfono: {display_or_raw(patient.phone)}\n" if patient and patient.phone else ""
         try:
-            appt.google_event_id = await create_calendar_event(
-                office_id=office_id,
-                title=f"Cita: {name}",
-                start_time=appt.start_datetime,
-                end_time=appt.end_datetime,
-                description=(
-                    f"Motivo: {appt.consultation_reason or 'Consulta'}\n{phone}"
-                    "Agendada mientras Google Calendar estaba desconectado"
-                ),
-                db=db,
-                color_id="10" if appt.status == "confirmed" else "9",
-            )
+            await create_appointment_event(db, appt, patient, note)
             created += 1
         except Exception as e:
             failed += 1
             logger.warning("gcal_backfill_event_failed", appointment_id=str(appt.id), error=str(e))
     await db.commit()
-    logger.info("gcal_backfill_done", office_id=str(office_id), created=created, failed=failed)
+    if rows:
+        logger.info("gcal_backfill_done", office_id=str(office_id), created=created, failed=failed)
     return {"created": created, "failed": failed}
