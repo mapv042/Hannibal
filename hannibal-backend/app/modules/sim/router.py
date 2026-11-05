@@ -490,6 +490,9 @@ async def sim_fixture_appointment(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=outcome.error)
     outcome.appointment.status = body.status
     await db.commit()
+    from app.modules.google_calendar import outbox
+
+    await outbox.apply_pending(db)  # the event, as for any committed booking
     # A fixture is not a turn: its lock must not block the scenario's booking.
     from app.modules.scheduling.availability import release_slot_lock
     await release_slot_lock(office.id, start, redis_client)

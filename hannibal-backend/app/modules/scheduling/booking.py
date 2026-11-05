@@ -2,12 +2,16 @@
 
 Every path that creates an appointment goes through book_appointment(), so the
 guarantees live in exactly one place: slot validation, the anti-race Redis
-lock, the Google Calendar event and availability-cache invalidation. Reminders
+lock, the Google Calendar event and availability-cache invalidation. The event
+is not written here: it is deferred (google_calendar/outbox.py) and created
+after the caller commits, so a booking that rolls back leaves nothing in the
+doctor's calendar. Reminders
 are not scheduled here: the periodic sweep in app.modules.reminders.tasks
 derives them from the row this function writes.
 
 Callers keep their own transaction semantics (the tool handlers commit at end of
-turn; the dashboard service commits itself) — this function only flushes.
+turn; the dashboard service commits itself) — this function only flushes, and
+every caller runs outbox.apply_pending(db) after its commit.
 """
 
 from __future__ import annotations
@@ -21,8 +25,7 @@ import redis.asyncio as aioredis
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Appointment, Office
-from app.core.exceptions import GoogleCalendarAuthError
-from app.modules.google_calendar.service import calendar_event_id_for, create_calendar_event
+from app.modules.google_calendar import outbox
 from app.modules.scheduling.availability import (
     OVERRIDABLE_CONFLICTS,
     check_slot_bookable,
@@ -122,37 +125,10 @@ async def book_appointment(
         if not locked:
             return BookingOutcome(error=LOCKED_SLOT_MESSAGE)
 
-    # The row's id is chosen first: the Google event is created with an id
-    # derived from it, so retries and the audit's repair can't duplicate it.
     appointment_id = uuid.uuid4()
-
-    # Google Calendar event (best-effort: a GCal hiccup must not block the
-    # booking). Transient failures are retried inside create_calendar_event;
-    # one that still fails leaves the row without an event, and the write audit
-    # creates it ~20s later (audit/service._repair_missing_event).
+    # An adopted event (the doctor dragged it here in Google) is already where
+    # the cita goes; any other gets one created after the caller's commit.
     google_event_id = existing_google_event_id
-    from app.modules.google_calendar import connection
-
-    if (
-        google_event_id is None
-        and office.google_calendar_token
-        and not connection.should_skip_google(office.id)
-    ):
-        try:
-            google_event_id = await create_calendar_event(
-                office_id=office.id,
-                title=gcal_title,
-                start_time=start_dt,
-                end_time=end_dt,
-                description=gcal_description,
-                db=db,
-                color_id=gcal_color_id,
-                event_id=calendar_event_id_for(appointment_id),
-            )
-        except GoogleCalendarAuthError as e:
-            connection.report_auth_failure(office.id, e)
-        except Exception as e:
-            logger.error("booking_gcal_failed", office_id=str(office.id), error=str(e))
 
     appointment = Appointment(
         id=appointment_id,
@@ -177,6 +153,12 @@ async def book_appointment(
     )
     db.add(appointment)
     await db.flush()
+
+    if google_event_id is None and office.google_calendar_token:
+        outbox.defer(
+            db, appointment_id,
+            title=gcal_title, description=gcal_description, color_id=gcal_color_id,
+        )
 
     if redis_client is not None:
         try:

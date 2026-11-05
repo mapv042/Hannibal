@@ -48,7 +48,8 @@ def calls(monkeypatch):
     monkeypatch.setattr(ic, "book_appointment", fake_book)
     monkeypatch.setattr(ic, "release_slot_lock", fake_release)
     monkeypatch.setattr(
-        ic, "enqueue_write_audit", lambda appt_id, action, **kw: recorded["audit"].append(action)
+        ic, "outbox",
+        SimpleNamespace(defer_audit=lambda db, appt_id, action, **kw: recorded["audit"].append(action)),
     )
     return recorded
 

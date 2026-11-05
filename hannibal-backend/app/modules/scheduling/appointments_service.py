@@ -23,11 +23,8 @@ from app.modules.scheduling.availability import (
 from app.modules.scheduling.booking import book_appointment
 from app.core.exceptions import NotFoundError, SlotNotAvailableError
 from app.modules.audit.tasks import enqueue_write_audit
-from app.modules.google_calendar.service import update_calendar_event
-from app.modules.google_calendar.sync import (
-    calendar_cancellation_note,
-    cancel_appointment_in_calendar,
-)
+from app.modules.google_calendar import outbox
+from app.modules.google_calendar.sync import calendar_cancellation_note
 from app.modules.scheduling.tasks import (
     enqueue_patient_cancellation_notice,
     enqueue_patient_reschedule_notice,
@@ -93,6 +90,7 @@ async def create_appointment(
 
     appointment = outcome.appointment
     await db.commit()
+    await outbox.apply_pending(db)  # the Google event, now that the row is committed
     await db.refresh(appointment)
 
     logger.info(
@@ -138,25 +136,18 @@ async def cancel_appointment(
     appointment.cancelled_by = cancelled_by
     appointment.cancellation_reason = reason
 
-    # Free the slot on the doctor's calendar too. Best-effort: the cancellation
-    # itself must go through, and the write audit below catches a calendar left
-    # holding the slot.
-    try:
-        await cancel_appointment_in_calendar(
-            appointment_id, office_id, db,
-            note=calendar_cancellation_note(
-                "el paciente (registrado desde el dashboard)"
-                if cancelled_by == "patient"
-                else "el consultorio (desde el dashboard)",
-                reason=reason,
-            ),
-        )
-    except Exception as e:
-        logger.error(
-            "dashboard_cancel_gcal_failed",
-            appointment_id=str(appointment_id),
-            error=str(e),
-        )
+    # Free the slot on the doctor's calendar too — after the commit below
+    # (outbox), so a failed request never shows a live cita as cancelled. The
+    # write audit catches a calendar left holding the slot.
+    outbox.defer(
+        db, appointment_id,
+        note=calendar_cancellation_note(
+            "el paciente (registrado desde el dashboard)"
+            if cancelled_by == "patient"
+            else "el consultorio (desde el dashboard)",
+            reason=reason,
+        ),
+    )
 
     # Invalidate cache
     await invalidate_availability_cache(
@@ -164,6 +155,7 @@ async def cancel_appointment(
     )
 
     await db.commit()
+    await outbox.apply_pending(db)
     await db.refresh(appointment)
 
     # Rule 9: a cancellation is never silent. The WhatsApp flows already tell
@@ -253,24 +245,11 @@ async def reschedule_appointment(
         )
 
         # Move the event on the doctor's calendar so it doesn't keep holding the
-        # old slot. Best-effort — the write audit catches a stale event.
-        if appointment.google_event_id:
-            try:
-                await update_calendar_event(
-                    office_id=office_id,
-                    google_event_id=appointment.google_event_id,
-                    start_time=appointment.start_datetime,
-                    end_time=appointment.end_datetime,
-                    db=db,
-                )
-            except Exception as e:
-                logger.error(
-                    "dashboard_reschedule_gcal_failed",
-                    appointment_id=str(appointment_id),
-                    error=str(e),
-                )
+        # old slot — after the commit (outbox). The write audit catches a stale event.
+        outbox.defer(db, appointment_id, move=True)
 
         await db.commit()
+        await outbox.apply_pending(db)
         await db.refresh(appointment)
 
         # Rule 9: the patient has to hear that their cita moved.

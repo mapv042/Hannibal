@@ -44,10 +44,11 @@ def cancellation(monkeypatch):
     monkeypatch.setattr(tools, "_load_actionable_appointment", load)
     monkeypatch.setattr(tools, "_invalidate_avail", noop)
     monkeypatch.setattr(tools, "_release_slot", noop)
-    monkeypatch.setattr(tools, "cancel_appointment_in_calendar", noop)
+    monkeypatch.setattr(
+        tools, "outbox", SimpleNamespace(defer=lambda *a, **k: None, defer_audit=lambda *a, **k: None)
+    )
     monkeypatch.setattr(tools, "find_pending_doctor_cancellation", noop)
     monkeypatch.setattr(tools, "enqueue_cancellation_notification", lambda *a: None)
-    monkeypatch.setattr(tools, "enqueue_write_audit", lambda *a, **k: None)
     state = ConversationState()
 
     def ctx(turn_started_at):

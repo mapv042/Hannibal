@@ -27,10 +27,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.constants import BookedVia
 from app.db.models import Appointment, Office, Patient
 from app.modules.ai.tool_helpers import format_appointment_dt, localize_mx
-from app.modules.audit.tasks import enqueue_write_audit
 from app.modules.scheduling.availability import release_slot_lock
 from app.modules.scheduling.booking import book_appointment
 from app.utils.dates import now_mx
+from app.modules.google_calendar import outbox
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -138,7 +138,7 @@ async def _cancel_from_calendar(
     # The event is gone; nothing left for the audit to "repair".
     appointment.google_event_id = None
     await _release(office.id, appointment.start_datetime, redis_client)
-    enqueue_write_audit(appointment.id, "cancel", status="cancelled")
+    outbox.defer_audit(db, appointment.id, "cancel", status="cancelled")
 
     logger.info(
         "gcal_deletion_cancelled_appointment",
@@ -217,14 +217,14 @@ async def _move_from_calendar(
     appointment.google_event_id = None
     await _release(office.id, appointment.start_datetime, redis_client)
 
-    enqueue_write_audit(
-        new_appointment.id,
+    outbox.defer_audit(
+        db, new_appointment.id,
         "reschedule",
         start_datetime=new_start,
         status=new_appointment.status,
         patient_id=new_appointment.patient_id,
     )
-    enqueue_write_audit(appointment.id, "cancel", status="cancelled")
+    outbox.defer_audit(db, appointment.id, "cancel", status="cancelled")
 
     logger.info(
         "gcal_move_rescheduled_appointment",

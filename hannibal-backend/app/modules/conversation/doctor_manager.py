@@ -9,6 +9,7 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 import redis.asyncio as redis
 
+from app.modules.google_calendar import outbox
 from app.utils.dates import now_mx
 from app.utils.logger import get_logger
 from app.core.exceptions import AIServiceError, ConversationError
@@ -161,6 +162,10 @@ class DoctorConversationManager(BaseToolConversationManager):
             if len(history) > MAX_HISTORY_TURNS:
                 history = history[-MAX_HISTORY_TURNS:]
 
+            # Commit before the doctor reads about it: "listo, cancelé la de las
+            # 4" must never go out over a write that then failed to commit.
+            await db.commit()
+
             # Send response to doctor
             try:
                 await self.meta_client.send_text_message(
@@ -172,10 +177,12 @@ class DoctorConversationManager(BaseToolConversationManager):
             except Exception as e:
                 logger.error("doctor_send_failed", error=str(e))
 
-            await db.commit()
             # Only after the commit: the state records writes as done.
             await self._save_history(office.id, history)
             await self._save_state(office.id, state)
+
+            # Google Calendar follows what was committed (events, cancellations).
+            await outbox.apply_pending(db)
 
             logger.info("doctor_message_processed", office_id=str(office.id))
 

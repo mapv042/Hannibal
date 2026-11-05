@@ -37,6 +37,7 @@ from app.modules.scheduling.calendar_file import calendar_link
 from app.modules.waitlist import service as waitlist
 from app.modules.conversation.base_manager import BaseToolConversationManager
 from app.modules.conversation import follow_up, slot_options
+from app.modules.google_calendar import outbox
 from app.modules.conversation.slot_options import SlotReply
 from app.modules.conversation.session_store import SessionStore
 from app.modules.conversation.schemas import SessionContext
@@ -287,10 +288,15 @@ class ConversationManager(BaseToolConversationManager):
             if len(session.claude_history) > MAX_HISTORY_TURNS:
                 session.claude_history = session.claude_history[-MAX_HISTORY_TURNS:]
 
-            # 8. Send response. Tool side effects (bookings, cancellations) are
-            # already in this transaction, so the assistant turn stays in the
-            # history either way — but a failed send is recorded as "failed",
-            # never as sent.
+            # 8. Commit what the tools wrote BEFORE the patient reads about it:
+            # "quedó agendada" must never go out over a booking that then failed
+            # to commit. Google Calendar follows after the reply (step 12).
+            session.last_message_at = now_mx().isoformat()
+            conversation_obj.last_message_at = now_mx()
+            await db.commit()
+
+            # 9. Send response. A failed send is recorded as "failed", never as
+            # sent; the assistant turn stays in the history either way.
             sent_message_id: Optional[str] = None
             send_failed = False
             try:
@@ -299,7 +305,7 @@ class ConversationManager(BaseToolConversationManager):
                 send_failed = True
                 logger.error("failed_to_send_response", error=str(e), whatsapp_id=whatsapp_id)
 
-            # 9. Save outgoing message with its real delivery outcome
+            # 10. Save outgoing message with its real delivery outcome
             await self._save_outgoing_message(
                 db,
                 conversation_obj.id,
@@ -308,16 +314,12 @@ class ConversationManager(BaseToolConversationManager):
                 delivery_status="failed" if send_failed else "sent",
             )
 
-            # 9b. prepare_booking found no consent to the privacy notice: ask
+            # 10a. prepare_booking found no consent to the privacy notice: ask
             # with the fixed question and buttons, right after the reply.
             if tool_ctx.privacy_consent_requested and not send_failed:
                 await self._send_privacy_question(db, office, session, conversation_obj, whatsapp_id)
 
-            # 10. Update conversation state
-            session.last_message_at = now_mx().isoformat()
-            conversation_obj.last_message_at = now_mx()
-
-            # 10a. Left with slots or a summary in hand: one follow-up later if
+            # 10b. Left with slots or a summary in hand: one follow-up later if
             # the patient goes quiet. Anything else clears a pending one.
             if not send_failed:
                 try:
@@ -329,8 +331,8 @@ class ConversationManager(BaseToolConversationManager):
 
             await db.commit()
 
-            # 10b. Every cita this turn booked gets its add-to-calendar button —
-            # after the commit, so the link already resolves when it's tapped.
+            # 10c. Every cita this turn booked gets its add-to-calendar button —
+            # the row is committed, so the link resolves when it's tapped.
             if tool_ctx.booked_appointment_ids and not send_failed:
                 await self._send_calendar_links(
                     db, office, session, conversation_obj, whatsapp_id,
@@ -339,6 +341,10 @@ class ConversationManager(BaseToolConversationManager):
 
             # 11. Save session
             await self.session_store.save_session(whatsapp_id, office_id, session)
+
+            # 12. Google Calendar follows what was committed: new events,
+            # "[CANCELADA]" on cancelled ones. The patient doesn't wait for it.
+            await outbox.apply_pending(db)
 
             logger.info(
                 "message_processed_v2",

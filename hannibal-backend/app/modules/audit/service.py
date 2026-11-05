@@ -26,6 +26,7 @@ import redis.asyncio as aioredis
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.constants import MX_TIMEZONE
+from app.core.exceptions import GoogleCalendarAuthError
 from app.db.models import Appointment, Office, Patient
 from app.modules.audit import templates
 from app.modules.google_calendar.service import get_calendar_event, mark_event_cancelled
@@ -165,6 +166,11 @@ async def _repair_cancelled_event(
     try:
         await mark_event_cancelled(office.id, appointment.google_event_id, db)
         event = await get_calendar_event(office.id, appointment.google_event_id, db)
+    except GoogleCalendarAuthError as e:
+        from app.modules.google_calendar import connection
+
+        connection.report_auth_failure(office.id, e)
+        return False
     except Exception as e:
         logger.warning(
             "audit_repair_failed", appointment_id=str(appointment.id), error=str(e)
@@ -195,6 +201,11 @@ async def _repair_missing_event(
         await create_appointment_event(db, appointment, patient, "Agendada por el asistente")
         await db.flush()
         event = await get_calendar_event(office.id, appointment.google_event_id, db)
+    except GoogleCalendarAuthError as e:
+        from app.modules.google_calendar import connection
+
+        connection.report_auth_failure(office.id, e)
+        return False
     except Exception as e:
         logger.warning(
             "audit_repair_failed", appointment_id=str(appointment.id), error=str(e)

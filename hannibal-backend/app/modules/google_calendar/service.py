@@ -432,21 +432,33 @@ async def mark_event_cancelled(
         office = await db.get(Office, office_id)
         calendar_id = office.google_calendar_id or "primary"
 
+        event_url = f"https://www.googleapis.com/calendar/v3/calendars/{calendar_id}/events/{google_event_id}"
         async with httpx.AsyncClient(timeout=15) as client:
             # First get the current event to preserve title
             get_response = await _request_with_retry(
-                client,
-                "GET",
-                f"https://www.googleapis.com/calendar/v3/calendars/{calendar_id}/events/{google_event_id}",
-                headers={"Authorization": f"Bearer {access_token}"},
+                client, "GET", event_url, headers={"Authorization": f"Bearer {access_token}"},
             )
-
-            if get_response.status_code != 200:
+            if get_response.status_code == 401:
+                access_token = await get_valid_google_token(office_id, db, force_refresh=True)
+                get_response = await _request_with_retry(
+                    client, "GET", event_url, headers={"Authorization": f"Bearer {access_token}"},
+                )
+            if get_response.status_code in (401, 403):
+                # Not "the event is gone": the office's credentials are. The
+                # caller reports it (connection.report_auth_failure).
+                raise GoogleCalendarAuthError(
+                    f"Google rejected the calendar credentials ({get_response.status_code})"
+                )
+            if get_response.status_code in (404, 410):
                 logger.warning(
                     "google_event_not_found_for_cancel",
                     google_event_id=google_event_id,
                 )
                 return
+            if get_response.status_code != 200:
+                raise GoogleCalendarError(
+                    f"Could not read the event to cancel it ({get_response.status_code})"
+                )
 
             event = get_response.json()
             original_title = event.get("summary", "Cita")
@@ -463,12 +475,13 @@ async def mark_event_cancelled(
             if note and note not in description:  # idempotent: a retry adds nothing
                 patch["description"] = f"{description}\n\n{note}".strip()
             response = await _request_with_retry(
-                client,
-                "PATCH",
-                f"https://www.googleapis.com/calendar/v3/calendars/{calendar_id}/events/{google_event_id}",
-                json=patch,
-                headers={"Authorization": f"Bearer {access_token}"},
+                client, "PATCH", event_url,
+                json=patch, headers={"Authorization": f"Bearer {access_token}"},
             )
+            if response.status_code in (401, 403):
+                raise GoogleCalendarAuthError(
+                    f"Google rejected the calendar credentials ({response.status_code})"
+                )
 
             if response.status_code not in [200, 204]:
                 logger.error(

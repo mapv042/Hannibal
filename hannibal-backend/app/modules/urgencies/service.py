@@ -25,7 +25,7 @@ from app.db.models import (
     Patient,
     UrgencyRequest,
 )
-from app.modules.google_calendar.service import calendar_event_id_for, create_calendar_event
+from app.modules.google_calendar import outbox
 from app.modules.scheduling.availability import get_upcoming_slots
 from app.modules.whatsapp.window import (
     doctor_service_window_open,
@@ -323,28 +323,7 @@ async def _create_urgent_appointment(
     )
     end_dt = start_dt + timedelta(minutes=duration_min)
 
-    # Chosen first so the event is created idempotently (see booking.py).
     appointment_id = uuid.uuid4()
-    google_event_id = None
-    if office.google_calendar_token:
-        try:
-            google_event_id = await create_calendar_event(
-                office_id=office.id,
-                title=f"URGENCIA: {patient.name}",
-                start_time=start_dt,
-                end_time=end_dt,
-                description=(
-                    f"Motivo: {reason}\n"
-                    + (f"Teléfono: {display_or_raw(patient.phone)}\n" if patient.phone else "")
-                    + "Cita urgente aprobada por el doctor"
-                ),
-                db=db,
-                color_id=GCAL_COLOR_URGENT,
-                event_id=calendar_event_id_for(appointment_id),
-            )
-        except Exception as e:
-            logger.error("urgency_create_gcal_failed", error=str(e))
-
     appointment = Appointment(
         id=appointment_id,
         created_at=now_mx(),  # app clock, as the reminder sweep compares against it
@@ -356,11 +335,22 @@ async def _create_urgent_appointment(
         type="urgent",
         consultation_reason=reason,
         status="scheduled",
-        google_event_id=google_event_id,
         booked_via=BookedVia.URGENCY.value,
     )
     db.add(appointment)
     await db.flush()
+    # The Google event follows after the doctor's turn commits (outbox).
+    if office.google_calendar_token:
+        outbox.defer(
+            db, appointment_id,
+            title=f"URGENCIA: {patient.name}",
+            description=(
+                f"Motivo: {reason}\n"
+                + (f"Teléfono: {display_or_raw(patient.phone)}\n" if patient.phone else "")
+                + "Cita urgente aprobada por el doctor"
+            ),
+            color_id=GCAL_COLOR_URGENT,
+        )
     return appointment
 
 

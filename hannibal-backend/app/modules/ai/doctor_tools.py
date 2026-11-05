@@ -32,11 +32,10 @@ from app.modules.scheduling.availability import (
     release_slot_lock,
 )
 from app.modules.scheduling.booking import book_appointment
-from app.modules.audit.tasks import enqueue_write_audit
 from app.modules.notifications.tasks import enqueue_reschedule_notification
+from app.modules.google_calendar import outbox
 from app.modules.google_calendar.sync import (
     calendar_cancellation_note,
-    cancel_appointment_in_calendar,
     sync_time_block,
 )
 from app.modules.whatsapp.coexistence import pause_bot, resume_bot, check_pause
@@ -700,10 +699,13 @@ async def execute_doctor_tool(
     if not handler:
         return {"error": f"Herramienta desconocida: {tool_name}"}
 
+    # Google writes and audits the handler queues roll back with its SAVEPOINT.
+    queued = outbox.checkpoint(ctx.db)
     try:
         async with ctx.db.begin_nested():
             return await handler(arguments, ctx)
     except Exception as e:
+        outbox.restore(ctx.db, queued)
         # Log the detail; return a generic message (internal errors must not
         # leak into the doctor-facing reply the LLM composes).
         logger.error("doctor_tool_execution_error", tool=tool_name, error=str(e), exc_info=True)
@@ -848,16 +850,11 @@ async def _handle_cancel_appointment(args: dict, ctx: DoctorToolContext) -> dict
     dt = localize_mx(appointment.start_datetime)
     formatted = format_appointment_dt(appointment.start_datetime)
 
-    # Google Calendar first — if it fails, don't touch the DB
-    if ctx.office.google_calendar_token:
-        try:
-            await cancel_appointment_in_calendar(
-                appt_id, ctx.office.id, ctx.db,
-                note=calendar_cancellation_note("el doctor", reason=args.get("reason")),
-            )
-        except Exception as e:
-            logger.error("doctor_cancel_gcal_failed", error=str(e))
-            return {"error": "No se pudo cancelar en Google Calendar. La cita no fue modificada. Intenta de nuevo."}
+    # Google Calendar after the turn commits (outbox): the cancellation stands on
+    # its own, and a Google failure then is repaired by the write audit.
+    outbox.defer(
+        ctx.db, appt_id, note=calendar_cancellation_note("el doctor", reason=args.get("reason"))
+    )
 
     appointment.status = "cancelled"
     appointment.cancelled_by = "doctor"
@@ -867,7 +864,7 @@ async def _handle_cancel_appointment(args: dict, ctx: DoctorToolContext) -> dict
     await _release_slot(ctx, appointment.start_datetime)
 
     # Rule 12: confirm the slot really came free on both systems of record.
-    enqueue_write_audit(appointment.id, "cancel", status="cancelled")
+    outbox.defer_audit(ctx.db, appointment.id, "cancel", status="cancelled")
 
     logger.info("doctor_cancelled_appointment", appointment_id=appt_id_str)
 
@@ -1770,8 +1767,8 @@ async def _handle_create_appointment(args: dict, ctx: DoctorToolContext) -> dict
     appointment = outcome.appointment
 
     # Rule 12: the doctor booked this by hand — verify it reached the calendar.
-    enqueue_write_audit(
-        appointment.id,
+    outbox.defer_audit(
+        ctx.db, appointment.id,
         "book",
         start_datetime=start_dt,
         status="scheduled",
@@ -1860,15 +1857,8 @@ async def _handle_reschedule_appointment(args: dict, ctx: DoctorToolContext) -> 
         return _doctor_booking_error(outcome)
     new_appointment = outcome.appointment
 
-    # Cancel old appointment in Google Calendar
-    if ctx.office.google_calendar_token:
-        try:
-            await cancel_appointment_in_calendar(
-                appt_id, ctx.office.id, ctx.db,
-                note=calendar_cancellation_note("el doctor", moved_to=new_start),
-            )
-        except Exception as e:
-            logger.error("doctor_reschedule_cancel_gcal_failed", error=str(e))
+    # Old event marked "[CANCELADA]" after the turn commits (outbox).
+    outbox.defer(ctx.db, appt_id, note=calendar_cancellation_note("el doctor", moved_to=new_start))
 
     appointment.status = "cancelled"
     appointment.cancelled_by = "doctor"
@@ -1879,14 +1869,14 @@ async def _handle_reschedule_appointment(args: dict, ctx: DoctorToolContext) -> 
     enqueue_reschedule_notification(new_appointment.id)
 
     # Rule 12: verify both halves landed — new slot present, old slot released.
-    enqueue_write_audit(
-        new_appointment.id,
+    outbox.defer_audit(
+        ctx.db, new_appointment.id,
         "reschedule",
         start_datetime=new_start,
         status="scheduled",
         patient_id=new_appointment.patient_id,
     )
-    enqueue_write_audit(appointment.id, "cancel", status="cancelled")
+    outbox.defer_audit(ctx.db, appointment.id, "cancel", status="cancelled")
 
     new_day_name = DAYS_ES[new_start.weekday()]
     new_formatted = format_appointment_dt(new_start)

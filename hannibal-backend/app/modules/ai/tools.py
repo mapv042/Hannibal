@@ -35,10 +35,8 @@ from app.modules.conversation.state import (
     PendingCancellation,
 )
 from app.modules.google_calendar.service import update_event_color
-from app.modules.google_calendar.sync import (
-    calendar_cancellation_note,
-    cancel_appointment_in_calendar,
-)
+from app.modules.google_calendar import outbox
+from app.modules.google_calendar.sync import calendar_cancellation_note
 from app.modules.scheduling.availability import (
     invalidate_availability_cache,
     release_slot_lock,
@@ -54,7 +52,6 @@ from app.modules.notifications.tasks import (
     enqueue_cancellation_notification,
     enqueue_reschedule_notification,
 )
-from app.modules.audit.tasks import enqueue_write_audit
 from app.utils.dates import long_date_label, now_mx
 from app.utils.logger import get_logger
 from app.utils.text import sanitize_for_prompt
@@ -609,10 +606,13 @@ async def execute_tool(
     if not handler:
         return {"error": f"Herramienta desconocida: {tool_name}"}
 
+    # Google writes and audits the handler queues roll back with its SAVEPOINT.
+    queued = outbox.checkpoint(ctx.db)
     try:
         async with ctx.db.begin_nested():
             return await handler(arguments, ctx)
     except Exception as e:
+        outbox.restore(ctx.db, queued)
         # Log the detail for developers; return a generic message so internal
         # errors (DB/driver text, etc.) never reach the patient via the LLM.
         logger.error("tool_execution_error", tool=tool_name, error=str(e), exc_info=True)
@@ -1043,8 +1043,8 @@ async def _execute_booking(ctx: ToolContext, draft: BookingDraft, start_dt: date
     # Rule 12: check afterwards that the booking really landed where we told the
     # patient it did — including the Google Calendar event, whose failure
     # book_appointment deliberately swallows.
-    enqueue_write_audit(
-        appointment.id,
+    outbox.defer_audit(
+        ctx.db, appointment.id,
         "book",
         start_datetime=start_dt,
         status="scheduled",
@@ -1127,13 +1127,11 @@ async def _execute_reschedule(ctx: ToolContext, appointment_id: str, new_start: 
     appointment.cancelled_by = "patient"
     appointment.cancellation_reason = "Reagendada por el paciente"
 
-    try:
-        await cancel_appointment_in_calendar(
-            appt_id, ctx.office.id, ctx.db,
-            note=calendar_cancellation_note("el paciente", moved_to=new_start),
-        )
-    except Exception as e:
-        logger.warning("tool_reschedule_cancel_gcal_failed", error=str(e))
+    # Marked "[CANCELADA]" in Google after the turn commits (outbox): if the
+    # turn fails, the old cita stays active in both places.
+    outbox.defer(
+        ctx.db, appt_id, note=calendar_cancellation_note("el paciente", moved_to=new_start)
+    )
 
     await _invalidate_avail(ctx, old_date)
     await _release_slot(ctx, appointment.start_datetime)
@@ -1145,14 +1143,14 @@ async def _execute_reschedule(ctx: ToolContext, appointment_id: str, new_start: 
 
     # Rule 12: audit both halves — the new appointment must exist on the
     # calendar and the old one must have stopped occupying its slot.
-    enqueue_write_audit(
-        new_appointment.id,
+    outbox.defer_audit(
+        ctx.db, new_appointment.id,
         "reschedule",
         start_datetime=new_start,
         status="scheduled",
         patient_id=new_appointment.patient_id,
     )
-    enqueue_write_audit(appointment.id, "cancel", status="cancelled")
+    outbox.defer_audit(ctx.db, appointment.id, "cancel", status="cancelled")
 
     new_label = format_appointment_dt(new_start)
     ctx.state.known_appointments = [
@@ -1303,19 +1301,13 @@ async def _handle_cancel_appointment(args: dict, ctx: ToolContext) -> dict:
     # Notify the doctor of the patient cancellation (configurable per office).
     enqueue_cancellation_notification(appointment.id)
 
-    # Google Calendar
-    try:
-        await cancel_appointment_in_calendar(
-            appt_id, ctx.office.id, ctx.db,
-            note=calendar_cancellation_note("el paciente", reason=reason),
-        )
-    except Exception as e:
-        logger.warning("tool_cancel_gcal_failed", error=str(e))
+    # Google Calendar, after the turn commits (outbox).
+    outbox.defer(ctx.db, appt_id, note=calendar_cancellation_note("el paciente", reason=reason))
 
     # Rule 12: a cancellation that leaves the calendar event standing is worse
     # than a failed cancellation — the slot looks taken and the patient thinks
     # they're free.
-    enqueue_write_audit(appointment.id, "cancel", status="cancelled")
+    outbox.defer_audit(ctx.db, appointment.id, "cancel", status="cancelled")
 
     # Rule 13: if the doctor had cancelled a cita and asked this patient to
     # rebook, and they cancelled instead, the doctor has to hear how it actually

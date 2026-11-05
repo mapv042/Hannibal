@@ -24,7 +24,7 @@ from app.modules.google_calendar.inbound_changes import (
     apply_calendar_change,
 )
 from app.modules.scheduling.availability import invalidate_availability_cache
-from app.core.exceptions import GoogleCalendarError
+from app.core.exceptions import GoogleCalendarAuthError, GoogleCalendarError
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -219,6 +219,13 @@ async def cancel_appointment_in_calendar(
             google_event_id=google_event_id,
         )
 
+    except GoogleCalendarAuthError as e:
+        # Same as a booking or an availability check: flag the calendar as
+        # disconnected so the doctor is told to reconnect, instead of losing it
+        # in a log line.
+        from app.modules.google_calendar import connection
+
+        connection.report_auth_failure(office_id, e)
     except Exception as e:
         logger.error(
             "error_cancel_appointment_in_calendar",
@@ -537,6 +544,10 @@ async def import_calendar_changes(
         # Persist the new sync token; keep the old one if Google didn't send one.
         office.google_sync_token = next_token or office.google_sync_token
         await db.commit()
+        # The audits of what the changes wrote, now that it is committed.
+        from app.modules.google_calendar import outbox
+
+        await outbox.apply_pending(db)
 
         for d in affected_dates:
             await invalidate_availability_cache(office_id, d, redis_client)
