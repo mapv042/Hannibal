@@ -465,7 +465,7 @@ async def test_google_rejection_keeps_scheduling_and_reconnect_backfills(env, mo
         raise GoogleCalendarAuthError("invalid_grant")
 
     reported = []
-    monkeypatch.setattr(availability, "get_freebusy", rejected)
+    monkeypatch.setattr(availability, "list_busy_events", rejected)
     monkeypatch.setattr(booking, "create_calendar_event", rejected)
     monkeypatch.setattr(connection, "dispatch", lambda task, args, **kw: reported.append(args))
     connection.clear_local_skip(office_id)

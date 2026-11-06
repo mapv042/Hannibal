@@ -26,9 +26,13 @@ from app.modules.ai.tool_helpers import (
     ended_appointment_error,
 )
 from app.modules.conversation.state import ConversationState
+from app.core.exceptions import GoogleCalendarError
 from app.modules.scheduling.availability import (
+    BUSY_GOOGLE,
+    GOOGLE_MIRROR_ORIGIN,
     OVERRIDABLE_CONFLICTS,
     invalidate_availability_cache,
+    read_google_calendar,
     release_slot_lock,
 )
 from app.modules.scheduling.booking import book_appointment
@@ -66,8 +70,11 @@ DOCTOR_TOOL_DEFINITIONS = [
     {
         "name": "get_appointments_by_date",
         "description": (
-            "Obtiene todas las citas del consultorio para una fecha o rango de fechas. "
-            "Si no se especifica fecha, usa la fecha de hoy. "
+            "Consulta la agenda del doctor para una fecha o rango de fechas: las citas de "
+            "pacientes, los eventos de su Google Calendar (sus compromisos propios; Google "
+            "Calendar manda: si tiene un evento a esa hora, esa hora está ocupada) y los "
+            "bloqueos. Úsala cuando el doctor pregunte qué tiene agendado o si tiene algo "
+            "un día. Si no se especifica fecha, usa la fecha de hoy. "
             "Para consultar una semana completa, usa date como fecha de inicio y end_date como fecha de fin."
         ),
         "input_schema": {
@@ -411,8 +418,9 @@ DOCTOR_TOOL_DEFINITIONS = [
                     "description": (
                         "Usa true SOLO cuando el doctor ya vio el conflicto de horario y confirmó "
                         "explícitamente que quiere sobreagendar de todos modos. Solo sirve para "
-                        "encimar otra cita: un horario bloqueado o fuera del horario de atención "
-                        "se rechaza igual, aunque mandes true."
+                        "encimar otra cita: un horario bloqueado, ocupado por un evento de su "
+                        "Google Calendar o fuera del horario de atención se rechaza igual, "
+                        "aunque mandes true."
                     ),
                 },
                 "create_new_patient": {
@@ -473,8 +481,9 @@ DOCTOR_TOOL_DEFINITIONS = [
                     "description": (
                         "Usa true SOLO cuando el doctor ya vio el conflicto de horario y confirmó "
                         "explícitamente que quiere sobreagendar de todos modos. Solo sirve para "
-                        "encimar otra cita: un horario bloqueado o fuera del horario de atención "
-                        "se rechaza igual, aunque mandes true."
+                        "encimar otra cita: un horario bloqueado, ocupado por un evento de su "
+                        "Google Calendar o fuera del horario de atención se rechaza igual, "
+                        "aunque mandes true."
                     ),
                 },
             },
@@ -623,10 +632,13 @@ def _doctor_booking_error(outcome) -> dict:
     """Wrap a BookingOutcome failure for the doctor flow.
 
     An overlap with another appointment gets the allow_conflict escape hatch
-    (the doctor may deliberately overbook after confirming). A time block or a
-    slot outside working hours does not: retrying with allow_conflict=true
-    fails identically, so offering it would just loop.
+    (the doctor may deliberately overbook after confirming). A time block, an
+    event of the doctor's in Google Calendar or a slot outside working hours
+    does not: retrying with allow_conflict=true fails identically, so offering
+    it would just loop. The conflict names what the slot collides with, so the
+    doctor can square it with what they see on their calendar.
     """
+    detail = {"conflicts_with": outcome.conflict_detail} if outcome.conflict_detail else {}
     if outcome.conflict and outcome.conflict_kind in OVERRIDABLE_CONFLICTS:
         return {
             "error": f"No se agendó: {outcome.error}",
@@ -637,9 +649,22 @@ def _doctor_booking_error(outcome) -> dict:
                 "herramienta con allow_conflict=true. No lo asumas."
             ),
         }
+    if outcome.conflict and outcome.conflict_kind == BUSY_GOOGLE:
+        return {
+            "error": f"No se agendó: {outcome.error}",
+            **detail,
+            "next_step": (
+                "Su Google Calendar manda: tiene un evento a esa hora (conflicts_with) y "
+                "no se puede agendar encima, ni con allow_conflict. Díselo con el nombre "
+                "y la hora del evento. Si quiere esa hora, tiene que mover o borrar el "
+                "evento en su Google Calendar; si no, ofrécele otro horario con "
+                "get_available_slots."
+            ),
+        }
     if outcome.conflict:
         return {
             "error": f"No se agendó: {outcome.error}",
+            **detail,
             "next_step": (
                 "Este conflicto no se puede sobreagendar: el doctor tiene que "
                 "quitar el bloqueo o ampliar su horario primero. Explícaselo y "
@@ -754,22 +779,10 @@ async def _handle_get_appointments(args: dict, ctx: DoctorToolContext) -> dict:
     appointments = result.scalars().all()
 
     is_range = start_date != end_date
-
-    if not appointments:
-        if is_range:
-            return {
-                "start_date": start_date.isoformat(),
-                "end_date": end_date.isoformat(),
-                "appointments": [],
-                "message": f"No hay citas del {long_date_label(start_date)} al {long_date_label(end_date)}.",
-            }
-        day_name = DAYS_ES[start_date.weekday()]
-        return {
-            "date": start_date.isoformat(),
-            "day_name": day_name,
-            "appointments": [],
-            "message": f"No hay citas el {long_date_label(start_date)}.",
-        }
+    span = (
+        f"del {long_date_label(start_date)} al {long_date_label(end_date)}"
+        if is_range else f"el {long_date_label(start_date)}"
+    )
 
     appt_list = []
     for appt in appointments:
@@ -798,7 +811,40 @@ async def _handle_get_appointments(args: dict, ctx: DoctorToolContext) -> dict:
             entry["already_happened"] = True
         appt_list.append(entry)
 
-    result_dict = {"total": len(appt_list), "appointments": appt_list}
+    # The doctor's calendar is more than our citas: what they put in Google
+    # Calendar themselves occupies their time too, and Google is the source of
+    # truth for it. Answering "no tienes nada" from the appointments table
+    # alone, and then refusing to book over the event Google has, is the
+    # contradiction this closes.
+    calendar = await _calendar_commitments(ctx, time_min, time_max)
+    calendar_events = calendar["events"]
+    blocks = calendar["blocks"]
+
+    result_dict: dict = {"total": len(appt_list), "appointments": appt_list}
+    if calendar_events:
+        result_dict["google_calendar_events"] = calendar_events
+    if blocks:
+        result_dict["blocks"] = blocks
+    if calendar.get("note"):
+        result_dict["calendar_note"] = calendar["note"]
+
+    if not appt_list and not calendar_events and not blocks:
+        result_dict["message"] = (
+            f"No hay citas {span}."
+            if calendar.get("note")
+            else f"No hay citas ni eventos en el calendario {span}."
+        )
+    elif not appt_list:
+        result_dict["message"] = (
+            f"No hay citas de pacientes {span}, pero el doctor sí tiene compromisos en su "
+            "calendario (google_calendar_events / blocks): esas horas están ocupadas."
+        )
+    elif calendar_events or blocks:
+        result_dict["message"] = (
+            "Además de las citas, el doctor tiene compromisos en su calendario "
+            "(google_calendar_events / blocks): esas horas están ocupadas."
+        )
+
     if any(e.get("already_happened") for e in appt_list):
         result_dict["note"] = (
             "Las citas con already_happened ya ocurrieron: no las ofrezcas para cancelar "
@@ -811,6 +857,81 @@ async def _handle_get_appointments(args: dict, ctx: DoctorToolContext) -> dict:
         result_dict["date"] = start_date.isoformat()
         result_dict["day_name"] = DAYS_ES[start_date.weekday()]
     return result_dict
+
+
+def _calendar_event_label(start: datetime, end: datetime, all_day: bool) -> str:
+    """When a calendar commitment is, as the doctor would say it."""
+    start = localize_mx(start)
+    end = localize_mx(end)
+    if all_day:
+        last_day = (end - timedelta(days=1)).date()  # Google's end date is exclusive
+        if last_day > start.date():
+            return f"Del {long_date_label(start.date())} al {long_date_label(last_day)} (todo el día)"
+        return f"{long_date_label(start.date())} (todo el día)"
+    if start.date() != end.date():
+        return (
+            f"Del {long_date_label(start.date())}, {time_label(start)}, "
+            f"al {long_date_label(end.date())}, {time_label(end)}"
+        )
+    return f"{long_date_label(start.date())} de {time_label(start)} a {time_label(end)}"
+
+
+async def _calendar_commitments(
+    ctx: DoctorToolContext, time_min: datetime, time_max: datetime
+) -> dict:
+    """The doctor's own commitments in a range: Google events + blocks.
+
+    Google events are read live (the source of truth). Blocks made in the
+    system (vacations, holidays) come from the TimeBlock table; the copies the
+    inbound sync makes of Google events are listed only when Google itself
+    could not be read — then they are the best record there is, and the note
+    says the calendar wasn't checked live.
+    """
+    note = None
+    events: list[dict] = []
+    google_ok = False
+    try:
+        view = await read_google_calendar(ctx.office.id, time_min, time_max, ctx.db)
+        google_ok = view.status == "ok"
+        if view.status == "disconnected":
+            note = (
+                "No pude leer su Google Calendar: Google rechazó la conexión y hay que "
+                "reconectarlo. Aquí solo hay citas y bloqueos del sistema: no afirmes que "
+                "el día está libre."
+            )
+        events = [
+            {
+                "label": _calendar_event_label(e.start, e.end, e.all_day),
+                "title": e.summary,
+            }
+            for e in view.external
+        ]
+    except GoogleCalendarError as e:
+        logger.warning("doctor_agenda_google_failed", office_id=str(ctx.office.id), error=str(e))
+        note = (
+            "No pude consultar su Google Calendar en este momento (falla técnica). Aquí solo "
+            "hay citas y bloqueos del sistema: no afirmes que el día está libre."
+        )
+
+    block_filter = [
+        TimeBlock.office_id == ctx.office.id,
+        TimeBlock.start_date <= time_max,
+        TimeBlock.end_date >= time_min,
+    ]
+    if google_ok:
+        block_filter.append(TimeBlock.origin != GOOGLE_MIRROR_ORIGIN)
+    rows = (
+        await ctx.db.execute(select(TimeBlock).where(*block_filter).order_by(TimeBlock.start_date))
+    ).scalars().all()
+    blocks = [
+        {
+            "label": _format_block(b),
+            "reason": b.reason or "Sin motivo",
+            "origin": b.origin,
+        }
+        for b in rows
+    ]
+    return {"events": events, "blocks": blocks, "note": note}
 
 
 def _doctor_ended_error(appointment: Appointment) -> Optional[dict]:

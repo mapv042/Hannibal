@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.core.constants import MX_TIMEZONE
+from app.db.models import Appointment
 from app.modules.ai import doctor_tools as dt
 from app.modules.ai import tool_helpers
 from app.modules.ai import tools
@@ -100,7 +101,9 @@ class _DoctorDB:
         return self.appointments.get(key) or self.patient
 
     async def execute(self, stmt):
-        rows = list(self.appointments.values())
+        # Only appointments live here: the TimeBlock query finds none.
+        entity = stmt.column_descriptions[0]["entity"]
+        rows = list(self.appointments.values()) if entity is Appointment else []
         return SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: rows))
 
 
@@ -122,6 +125,11 @@ async def test_doctor_cannot_cancel_or_move_a_past_appointment(handler, args):
 
 async def test_doctor_listing_flags_appointments_that_already_happened(monkeypatch):
     monkeypatch.setattr(dt, "now_mx", lambda: NOW)
+
+    async def no_calendar(*a):
+        return SimpleNamespace(status="not_connected", external=[], own_active=[])
+
+    monkeypatch.setattr(dt, "read_google_calendar", no_calendar)
     office = SimpleNamespace(id=uuid.uuid4())
     morning = _appointment(office.id, NOW.replace(hour=9, minute=40))
     evening = _appointment(office.id, NOW.replace(hour=18))

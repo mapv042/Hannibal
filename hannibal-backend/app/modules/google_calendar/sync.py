@@ -18,6 +18,7 @@ from app.modules.google_calendar.service import (
     delete_calendar_event,
     list_events_incremental,
     mark_event_cancelled,
+    parse_event_time as _parse_gcal_datetime,
 )
 from app.modules.google_calendar.inbound_changes import (
     appointment_for_event,
@@ -34,20 +35,6 @@ logger = get_logger(__name__)
 # simulator's cleanup recognises.
 BLOCK_TITLE_PREFIX = "Bloqueado: "
 BLOCK_EVENT_DESCRIPTION = "Bloqueo creado desde ArgosAI"
-
-
-def _parse_gcal_datetime(node: dict) -> tuple[datetime, bool]:
-    """Parse a Google event start/end node into a tz-aware MX datetime.
-
-    All-day events use {"date": "YYYY-MM-DD"} (the end date is exclusive, i.e.
-    the day after the last blocked day); timed events use {"dateTime": ...}.
-    Returns (datetime, is_all_day).
-    """
-    if node.get("date"):
-        d = date.fromisoformat(node["date"])
-        return datetime(d.year, d.month, d.day, tzinfo=MX_TIMEZONE), True
-    dt = datetime.fromisoformat(node["dateTime"].replace("Z", "+00:00"))
-    return dt.astimezone(MX_TIMEZONE), False
 
 
 async def sync_appointment(
@@ -432,13 +419,13 @@ async def import_calendar_changes(
     Triggered by a watch-channel push (the push only says "something changed",
     so we fetch the delta via the incremental events list). External events are
     mirrored as ``TimeBlock(origin="google_calendar")`` so they show on the
-    dashboard and are subtracted from availability; deletions / "free"
-    (transparent) events remove the mirror block. Events Hannibal itself created
-    (tracked in ``GoogleCalendarEvent``) are skipped to avoid a feedback loop.
+    dashboard; deletions / "free" (transparent) events remove the mirror block.
+    Events Hannibal itself created (tracked in ``GoogleCalendarEvent``) are
+    skipped to avoid a feedback loop.
 
-    Booking safety against these events is already guaranteed by the live
-    freebusy check in the availability engine; this keeps the cache fresh and
-    the dashboard accurate.
+    Availability does not depend on these copies: it reads Google live (the
+    source of truth) and uses them only when Google's credentials are rejected.
+    This keeps the dashboard cache fresh and the dashboard accurate.
     """
     try:
         office = await db.get(Office, office_id)

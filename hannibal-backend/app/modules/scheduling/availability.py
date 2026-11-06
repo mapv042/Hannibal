@@ -14,17 +14,20 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.models import (
     AvailabilitySchedule,
     Appointment,
+    GoogleCalendarEvent,
     TimeBlock,
     Office,
 )
 from app.modules.scheduling.schemas import AvailableSlot
-from app.modules.google_calendar.service import get_freebusy
+from app.modules.google_calendar.service import CalendarEvent, list_busy_events
 from app.core.constants import MX_TIMEZONE
 from app.core.exceptions import GoogleCalendarAuthError, GoogleCalendarError
-from app.utils.dates import now_mx
+from app.utils.dates import now_mx, time_label
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+ACTIVE_STATUSES = ("scheduled", "confirmed")
 
 
 class DayAvailability(NamedTuple):
@@ -40,40 +43,182 @@ class DayAvailability(NamedTuple):
 
 
 # What a busy interval came from. The distinction exists so a deliberate
-# doctor overbook can pass through an appointment overlap without also
-# steamrolling a time block:
-#   - "appointment": another appointment. Soft — the doctor may overbook it.
-#   - "google": a raw Google freebusy period. Also soft, because our own
-#     appointments are mirrored into that calendar and there is no way to tell
-#     a mirror of the appointment we're overbooking from a separate commitment.
-#     Blocks the doctor synced FROM Google are stored as TimeBlock rows and stay
-#     hard, so nothing the doctor explicitly blocked is lost by this.
+# doctor overbook can stack a patient on top of another cita without also
+# steamrolling something the doctor's calendar says is taken:
+#   - "appointment": another of our citas (from the appointments table, or the
+#     event in Google that mirrors one of our active citas). Soft — the doctor
+#     may overbook it.
+#   - "google": an event on the doctor's Google Calendar that is NOT one of our
+#     citas (a personal commitment, a meeting, a trip). Hard: Google Calendar
+#     is the source of truth for the doctor's time — if it says the hour is
+#     taken, nobody books it, from either channel or the dashboard.
 #   - "time_block": vacations, lunch, anything the doctor blocked. Hard.
 BUSY_APPOINTMENT = "appointment"
 BUSY_GOOGLE = "google"
 BUSY_TIME_BLOCK = "time_block"
 
 # Conflict kinds a deliberate overbook (allow_conflict) is allowed to ignore.
-OVERRIDABLE_CONFLICTS = frozenset({BUSY_APPOINTMENT, BUSY_GOOGLE})
+OVERRIDABLE_CONFLICTS = frozenset({BUSY_APPOINTMENT})
+
+# TimeBlock origin of the events copied from Google by the inbound sync.
+GOOGLE_MIRROR_ORIGIN = "google_calendar"
 
 
 class BusyRange(NamedTuple):
-    """A tz-aware busy interval and what produced it."""
+    """A tz-aware busy interval and what produced it.
+
+    `label` says what it is in words the doctor recognises ("«Junta» en tu
+    Google Calendar"); only the doctor's flow shows it — patients never see
+    what the doctor's time is taken by.
+    """
 
     start: datetime
     end: datetime
     kind: str
+    label: Optional[str] = None
 
 
 class SlotConflict(NamedTuple):
     """Why a slot can't be booked.
 
     `kind` is one of the BUSY_* constants plus "outside_hours"/"no_schedule";
-    `message` is the Spanish text meant to reach the patient or doctor.
+    `message` is the Spanish text meant to reach the patient or doctor;
+    `detail` (doctor-facing only) names what the slot collides with.
     """
 
     kind: str
     message: str
+    detail: Optional[str] = None
+
+
+class GoogleView(NamedTuple):
+    """What the doctor's Google Calendar says about a time range.
+
+    `status`:
+      - "ok": read live; `external` and `own_active` are authoritative.
+      - "not_connected": the office has no calendar connected.
+      - "disconnected": Google rejects the office's credentials — scheduling
+        falls back to the system's own agenda (see connection.py).
+    `external`: events that are not one of our citas (the doctor's own).
+    `own_active`: events that mirror one of our active citas, wherever Google
+      has them now (the doctor may have dragged one before the sync caught up).
+    """
+
+    status: str
+    external: List[CalendarEvent]
+    own_active: List[CalendarEvent]
+
+
+def _maybe_uuid(value: str) -> Optional[UUID]:
+    try:
+        return UUID(hex=value) if len(value) == 32 else None
+    except ValueError:
+        return None
+
+
+async def _classify_events(
+    office_id: UUID,
+    events: List[CalendarEvent],
+    db: AsyncSession,
+) -> Tuple[List[CalendarEvent], List[CalendarEvent]]:
+    """Split Google events into the doctor's own commitments and our citas.
+
+    An event is one of our citas when an appointment of this office carries its
+    id (`google_event_id`) or was created with it (`calendar_event_id_for`, the
+    appointment id's hex). Events of citas no longer active (cancelled, moved,
+    past) are dropped: they are stale mirrors the audit repairs, not the
+    doctor's time. Blocks the system itself wrote to Google are dropped too:
+    their TimeBlock row already counts.
+    """
+    if not events:
+        return [], []
+    ids = [e.id for e in events]
+    uuid_ids = [u for u in (_maybe_uuid(i) for i in ids) if u is not None]
+
+    conditions = [Appointment.google_event_id.in_(ids)]
+    if uuid_ids:
+        conditions.append(Appointment.id.in_(uuid_ids))
+    appointments = (await db.execute(
+        select(Appointment).where(
+            and_(Appointment.office_id == office_id, or_(*conditions))
+        )
+    )).scalars().all()
+    status_by_event: dict[str, str] = {}
+    for a in appointments:
+        for event_id in (a.google_event_id, a.id.hex):
+            if event_id:
+                # An active row wins over a cancelled one sharing the event
+                # (a move in Google hands the event to the new row).
+                if status_by_event.get(event_id) not in ACTIVE_STATUSES:
+                    status_by_event[event_id] = a.status
+
+    own_blocks = set((await db.execute(
+        select(GoogleCalendarEvent.google_event_id).where(
+            and_(
+                GoogleCalendarEvent.office_id == office_id,
+                GoogleCalendarEvent.google_event_id.in_(ids),
+                GoogleCalendarEvent.appointment_id.is_(None),
+            )
+        )
+    )).scalars().all())
+
+    external: List[CalendarEvent] = []
+    own_active: List[CalendarEvent] = []
+    for e in events:
+        status = status_by_event.get(e.id)
+        if status is not None:
+            if status in ACTIVE_STATUSES:
+                own_active.append(e)
+            continue
+        if e.id in own_blocks:
+            continue
+        external.append(e)
+    return external, own_active
+
+
+async def read_google_calendar(
+    office_id: UUID,
+    time_min: datetime,
+    time_max: datetime,
+    db: AsyncSession,
+) -> GoogleView:
+    """Read the doctor's Google Calendar for a range — the source of truth.
+
+    Rejected credentials degrade to "disconnected" (and the doctor is told to
+    reconnect); any other failure raises GoogleCalendarError, because "I
+    couldn't check" must never read as "it's free".
+    """
+    office = await db.get(Office, office_id)
+    if not office or not office.google_calendar_token:
+        return GoogleView("not_connected", [], [])
+
+    from app.modules.google_calendar import connection
+
+    if connection.should_skip_google(office_id):
+        logger.info("google_calendar_skipped_disconnected", office_id=str(office_id))
+        return GoogleView("disconnected", [], [])
+    try:
+        events = await list_busy_events(
+            office_id=office_id, time_min=time_min, time_max=time_max, db=db,
+        )
+    except GoogleCalendarAuthError as e:
+        # Google rejected the credentials: keep scheduling on the system's own
+        # agenda and tell the doctor to reconnect. A transient failure
+        # (timeout, 5xx) is a GoogleCalendarError and propagates.
+        connection.report_auth_failure(office_id, e)
+        return GoogleView("disconnected", [], [])
+    external, own_active = await _classify_events(office_id, events, db)
+    return GoogleView("ok", external, own_active)
+
+
+def google_event_label(event: CalendarEvent) -> str:
+    """How a Google event is named to the doctor: «Junta» de 1:00 PM a 2:00 PM."""
+    if event.all_day:
+        return f"«{event.summary}» (todo el día) en tu Google Calendar"
+    return (
+        f"«{event.summary}» de {time_label(event.start)} a {time_label(event.end)} "
+        "en tu Google Calendar"
+    )
 
 
 async def _collect_busy_ranges(
@@ -84,12 +229,35 @@ async def _collect_busy_ranges(
     *,
     google_required: bool,
 ) -> List[BusyRange]:
-    """All tz-aware busy intervals for a day: appointments + blocks + Google.
+    """All tz-aware busy intervals for a day: Google + appointments + blocks.
 
-    Single source of truth for the naive/aware normalization that previously
-    lived (and diverged) in three different places.
+    Google Calendar comes first and is authoritative: every event that occupies
+    time there blocks the slot. When it was read live, the TimeBlock copies the
+    inbound sync made of Google events are skipped — Google itself already said
+    what is busy, and a stale copy of an event the doctor deleted must not keep
+    the hour taken. Those copies only count when Google can't be read (the
+    credentials were rejected), as the best record of the doctor's calendar.
     """
     busy: List[BusyRange] = []
+
+    google = await read_google_calendar(office_id, day_start, day_end, db)
+    if google.status == "not_connected" and google_required:
+        # Dashboard/engine path requires a connected calendar before scheduling.
+        raise GoogleCalendarError(
+            "Google Calendar is not configured for this office. "
+            "Please connect Google Calendar before scheduling."
+        )
+    for e in google.external:
+        busy.append(BusyRange(e.start, e.end, BUSY_GOOGLE, google_event_label(e)))
+    for e in google.own_active:
+        busy.append(BusyRange(e.start, e.end, BUSY_APPOINTMENT))
+    if google.status == "ok":
+        logger.info(
+            "google_calendar_applied",
+            office_id=str(office_id),
+            external=len(google.external),
+            own=len(google.own_active),
+        )
 
     # Existing appointments (scheduled/confirmed)
     appointments = (await db.execute(
@@ -98,7 +266,7 @@ async def _collect_busy_ranges(
                 Appointment.office_id == office_id,
                 Appointment.start_datetime >= day_start,
                 Appointment.start_datetime <= day_end,
-                Appointment.status.in_(["scheduled", "confirmed"]),
+                Appointment.status.in_(ACTIVE_STATUSES),
             )
         )
     )).scalars().all()
@@ -113,16 +281,16 @@ async def _collect_busy_ranges(
             a_end = a_end.replace(tzinfo=MX_TIMEZONE)
         busy.append(BusyRange(a_start, a_end, BUSY_APPOINTMENT))
 
-    # Time blocks overlapping the day (vacations, manual blocks, GCal-synced)
-    blocks = (await db.execute(
-        select(TimeBlock).where(
-            and_(
-                TimeBlock.office_id == office_id,
-                TimeBlock.start_date <= day_end,
-                TimeBlock.end_date >= day_start,
-            )
-        )
-    )).scalars().all()
+    # Time blocks overlapping the day (vacations, manual blocks, holidays; the
+    # copies of Google events only when Google itself couldn't be read)
+    block_filter = [
+        TimeBlock.office_id == office_id,
+        TimeBlock.start_date <= day_end,
+        TimeBlock.end_date >= day_start,
+    ]
+    if google.status == "ok":
+        block_filter.append(TimeBlock.origin != GOOGLE_MIRROR_ORIGIN)
+    blocks = (await db.execute(select(TimeBlock).where(and_(*block_filter)))).scalars().all()
     for b in blocks:
         b_start = b.start_date
         b_end = b.end_date
@@ -130,37 +298,7 @@ async def _collect_busy_ranges(
             b_start = b_start.replace(tzinfo=MX_TIMEZONE)
         if b_end.tzinfo is None:
             b_end = b_end.replace(tzinfo=MX_TIMEZONE)
-        busy.append(BusyRange(b_start, b_end, BUSY_TIME_BLOCK))
-
-    # Google Calendar busy periods
-    office = await db.get(Office, office_id)
-    if office and office.google_calendar_token:
-        from app.modules.google_calendar import connection
-
-        busy_periods = []
-        if connection.should_skip_google(office_id):
-            logger.info("google_freebusy_skipped_disconnected", office_id=str(office_id))
-        else:
-            try:
-                busy_periods = await get_freebusy(
-                    office_id=office_id, time_min=day_start, time_max=day_end, db=db,
-                )
-            except GoogleCalendarAuthError as e:
-                # Google rejected the credentials: keep scheduling on the
-                # system's own agenda and tell the doctor to reconnect. A
-                # transient failure (timeout, 5xx) still raises below.
-                connection.report_auth_failure(office_id, e)
-        for period in busy_periods:
-            g_start = datetime.fromisoformat(period["start"].replace("Z", "+00:00")).astimezone(MX_TIMEZONE)
-            g_end = datetime.fromisoformat(period["end"].replace("Z", "+00:00")).astimezone(MX_TIMEZONE)
-            busy.append(BusyRange(g_start, g_end, BUSY_GOOGLE))
-        logger.info("google_freebusy_applied", office_id=str(office_id), busy_count=len(busy_periods))
-    elif google_required:
-        # Dashboard/engine path requires a connected calendar before scheduling.
-        raise GoogleCalendarError(
-            "Google Calendar is not configured for this office. "
-            "Please connect Google Calendar before scheduling."
-        )
+        busy.append(BusyRange(b_start, b_end, BUSY_TIME_BLOCK, b.reason or None))
 
     return busy
 
@@ -253,7 +391,7 @@ async def compute_day_availability(
         overlapping = [b for b in busy if not (end <= b.start or start >= b.end)]
         if overlapping:
             kinds = {b.kind for b in overlapping}
-            for kind in (BUSY_TIME_BLOCK, BUSY_APPOINTMENT, BUSY_GOOGLE):
+            for kind in (BUSY_TIME_BLOCK, BUSY_GOOGLE, BUSY_APPOINTMENT):
                 if kind in kinds:
                     removed[kind] += 1
                     break
@@ -293,16 +431,17 @@ async def check_slot_bookable(
     """Validate that a concrete slot can be booked right now.
 
     Checks that the slot falls inside the office's working hours for that
-    weekday and that it doesn't overlap existing appointments, time blocks, or
-    Google Calendar busy periods. Google Calendar is best-effort (not required).
+    weekday and that nothing on the doctor's Google Calendar (the source of
+    truth), no other appointment and no time block overlaps it. An office
+    without a connected calendar is checked against the system's own agenda.
 
     Returns None when bookable, or a SlotConflict when not. The `kind` lets a
     caller decide what a deliberate overbook may ignore (see
-    OVERRIDABLE_CONFLICTS); `message` is the Spanish text for the user.
+    OVERRIDABLE_CONFLICTS); `message` is the Spanish text for the user;
+    `detail` names the colliding event for the doctor.
 
-    Appointment overlaps are reported in preference to Google ones: when both
-    match, the appointment is the concrete, actionable conflict and the Google
-    period is usually just its mirror.
+    Hard conflicts (a block, an event of the doctor's in Google) are reported
+    before another cita, so a deliberate overbook can never slip past them.
     """
     date_ = start_dt.astimezone(MX_TIMEZONE).date()
 
@@ -346,22 +485,23 @@ async def check_slot_bookable(
     if not overlapping:
         return None
 
-    # A hard block outranks everything: report it even if an appointment also
-    # overlaps, so a deliberate overbook can't slip past it.
+    # Hard conflicts outrank another cita: report them even if an appointment
+    # also overlaps, so a deliberate overbook can't slip past them.
     for b in overlapping:
         if b.kind == BUSY_TIME_BLOCK:
             return SlotConflict(
                 BUSY_TIME_BLOCK,
                 "Ese horario está bloqueado en la agenda del doctor.",
+                f"Bloqueo: {b.label}" if b.label else None,
             )
     for b in overlapping:
-        if b.kind == BUSY_APPOINTMENT:
+        if b.kind == BUSY_GOOGLE:
             return SlotConflict(
-                BUSY_APPOINTMENT, "El horario ya está ocupado por otra cita."
+                BUSY_GOOGLE,
+                "Ese horario está ocupado en el calendario del doctor.",
+                b.label,
             )
-    return SlotConflict(
-        BUSY_GOOGLE, "Ese horario está ocupado en el calendario del doctor."
-    )
+    return SlotConflict(BUSY_APPOINTMENT, "El horario ya está ocupado por otra cita.")
 
 
 async def get_available_slots(

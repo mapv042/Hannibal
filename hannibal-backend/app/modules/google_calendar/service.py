@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 from uuid import UUID
-from datetime import datetime, timedelta
-from typing import Optional
+from datetime import date, datetime, timedelta
+from typing import NamedTuple, Optional
 import httpx
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -34,6 +34,152 @@ def calendar_event_id_for(appointment_id) -> str:
     the audit's repair can't duplicate an event the first attempt left behind.
     """
     return UUID(str(appointment_id)).hex
+
+
+def parse_event_time(node: dict) -> tuple[datetime, bool]:
+    """Parse a Google event start/end node into a tz-aware MX datetime.
+
+    All-day events use {"date": "YYYY-MM-DD"} (the end date is exclusive, i.e.
+    the day after the last blocked day); timed events use {"dateTime": ...}.
+    Returns (datetime, is_all_day).
+    """
+    if node.get("date"):
+        d = date.fromisoformat(node["date"])
+        return datetime(d.year, d.month, d.day, tzinfo=MX_TIMEZONE), True
+    dt = datetime.fromisoformat(node["dateTime"].replace("Z", "+00:00"))
+    return dt.astimezone(MX_TIMEZONE), False
+
+
+class CalendarEvent(NamedTuple):
+    """An event on the doctor's Google Calendar that occupies its time."""
+
+    id: str
+    summary: str
+    start: datetime
+    end: datetime
+    all_day: bool
+
+
+def _occupies_time(event: dict) -> bool:
+    """Whether Google itself counts this event as busy (what freeBusy reports).
+
+    A cancelled event, one marked "Disponible" (transparent), a working-location
+    marker or an invitation the doctor declined leave the time free.
+    """
+    if event.get("status") == "cancelled":
+        return False
+    if event.get("transparency") == "transparent":
+        return False
+    if event.get("eventType") == "workingLocation":
+        return False
+    for attendee in event.get("attendees") or []:
+        if attendee.get("self") and attendee.get("responseStatus") == "declined":
+            return False
+    return bool(event.get("start")) and bool(event.get("end"))
+
+
+async def list_busy_events(
+    office_id: UUID,
+    time_min: datetime,
+    time_max: datetime,
+    db: AsyncSession,
+) -> list[CalendarEvent]:
+    """The events that occupy time on the doctor's calendar in [time_min, time_max).
+
+    Google Calendar is the source of truth for the doctor's time: this is the
+    live read every availability check and the doctor's agenda go through. It
+    lists events (not freeBusy) so each busy period carries its id — which is
+    how our own citas' events are told apart from the doctor's own commitments
+    — and its title, so the doctor can be told what a slot collides with.
+
+    Raises GoogleCalendarAuthError when Google rejects the credentials and
+    GoogleCalendarError on any other failure ("couldn't check" is never
+    reported as "free").
+    """
+    try:
+        access_token = await get_valid_google_token(office_id, db)
+
+        from app.db.models import Office
+        office = await db.get(Office, office_id)
+        calendar_id = office.google_calendar_id or "primary"
+        url = f"https://www.googleapis.com/calendar/v3/calendars/{calendar_id}/events"
+        params = {
+            "timeMin": time_min.isoformat(),
+            "timeMax": time_max.isoformat(),
+            "singleEvents": "true",
+            "orderBy": "startTime",
+            "showDeleted": "false",
+            "maxResults": "250",
+            "timeZone": "America/Mexico_City",
+        }
+
+        raw: list[dict] = []
+        async with httpx.AsyncClient(timeout=15) as client:
+            page_token: Optional[str] = None
+            refreshed = False
+            while True:
+                page_params = dict(params)
+                if page_token:
+                    page_params["pageToken"] = page_token
+                response = await client.get(
+                    url, params=page_params,
+                    headers={"Authorization": f"Bearer {access_token}"},
+                )
+                if response.status_code == 401 and not refreshed:
+                    # The token we believed valid isn't (revoked, or its stored
+                    # expiry was wrong): get a fresh one once before giving up.
+                    logger.warning("google_events_401_refreshing", office_id=str(office_id))
+                    access_token = await get_valid_google_token(office_id, db, force_refresh=True)
+                    refreshed = True
+                    continue
+                if response.status_code in (401, 403):
+                    raise GoogleCalendarAuthError(
+                        f"Google rejected the calendar credentials ({response.status_code})"
+                    )
+                if response.status_code != 200:
+                    logger.error(
+                        "google_busy_events_failed",
+                        status_code=response.status_code,
+                        response=response.text,
+                    )
+                    raise GoogleCalendarError(
+                        f"Google Calendar events query failed (status {response.status_code})"
+                    )
+                data = response.json()
+                raw.extend(data.get("items", []))
+                page_token = data.get("nextPageToken")
+                if not page_token:
+                    break
+
+        events: list[CalendarEvent] = []
+        for item in raw:
+            if not item.get("id") or not _occupies_time(item):
+                continue
+            start, all_day = parse_event_time(item["start"])
+            end, _ = parse_event_time(item["end"])
+            if end <= start:
+                continue
+            events.append(CalendarEvent(
+                id=item["id"],
+                summary=(item.get("summary") or "").strip() or "Evento sin título",
+                start=start,
+                end=end,
+                all_day=all_day,
+            ))
+
+        logger.info(
+            "google_busy_events_listed",
+            office_id=str(office_id),
+            listed=len(raw),
+            busy=len(events),
+        )
+        return events
+
+    except GoogleCalendarError:
+        raise
+    except Exception as e:
+        logger.error("error_list_busy_events", office_id=str(office_id), error=str(e))
+        raise GoogleCalendarError(f"Failed to query Google Calendar: {e}")
 
 
 async def get_freebusy(

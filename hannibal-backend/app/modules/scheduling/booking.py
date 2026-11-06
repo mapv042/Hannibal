@@ -27,6 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.models import Appointment, Office
 from app.modules.google_calendar import outbox
 from app.modules.scheduling.availability import (
+    BUSY_GOOGLE,
     OVERRIDABLE_CONFLICTS,
     check_slot_bookable,
     invalidate_availability_cache,
@@ -58,6 +59,8 @@ class BookingOutcome:
     # SlotConflict.kind when `conflict` is set. Lets the doctor flow offer the
     # allow_conflict override only for the conflicts it can actually override.
     conflict_kind: Optional[str] = None
+    # SlotConflict.detail: what the slot collides with, for the doctor only.
+    conflict_detail: Optional[str] = None
 
 
 async def book_appointment(
@@ -83,8 +86,10 @@ async def book_appointment(
     """Validate, lock and create an appointment (plus GCal event and cache).
 
     `allow_conflict` tolerates only an overlap with another appointment (a
-    deliberate doctor overbook). Time blocks and the office's working hours are
-    never overridden — see OVERRIDABLE_CONFLICTS.
+    deliberate doctor overbook). Time blocks, the doctor's own events in Google
+    Calendar and the office's working hours are never overridden — see
+    OVERRIDABLE_CONFLICTS. The one exception is a cita the doctor moved in
+    Google (`existing_google_event_id`): Google is where they put it.
 
     `booked_by_patient_id` is who asked for the appointment; it defaults to the
     patient it's for. It's what lets a parent later cancel the appointment they
@@ -111,13 +116,21 @@ async def book_appointment(
 
     # Validation always runs. `allow_conflict` is a deliberate overbook, not a
     # blanket override: it lets the doctor stack a patient on top of another
-    # appointment, but a time block (vacation, lunch) and the working-hours
-    # window stay hard — those are the doctor's own explicit constraints, and
+    # appointment, but a time block (vacation, lunch), an event of the doctor's
+    # in Google Calendar and the working-hours window stay hard — those are the doctor's own explicit constraints, and
     # silently paving over them is what Rule 11 forbids.
     conflict = await check_slot_bookable(office.id, start_dt, end_dt, db)
-    if conflict and not (allow_conflict and conflict.kind in OVERRIDABLE_CONFLICTS):
+    overridable = OVERRIDABLE_CONFLICTS
+    if existing_google_event_id is not None:
+        # The doctor dragged the event there in Google Calendar, the source of
+        # truth: whatever else Google has at that hour is the doctor's own call.
+        overridable = overridable | {BUSY_GOOGLE}
+    if conflict and not (allow_conflict and conflict.kind in overridable):
         return BookingOutcome(
-            error=conflict.message, conflict=True, conflict_kind=conflict.kind
+            error=conflict.message,
+            conflict=True,
+            conflict_kind=conflict.kind,
+            conflict_detail=conflict.detail,
         )
 
     if redis_client is not None:
