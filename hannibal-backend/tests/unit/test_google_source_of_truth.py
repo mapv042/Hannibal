@@ -242,7 +242,7 @@ class BookingDB:
 
 
 def _conflict(monkeypatch, conflict):
-    async def check(*a):
+    async def check(*a, **kw):
         return conflict
 
     monkeypatch.setattr(booking, "check_slot_bookable", check)

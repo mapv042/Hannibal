@@ -33,6 +33,7 @@ answering.
 
 from __future__ import annotations
 
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Optional
@@ -310,15 +311,27 @@ async def _compose(db, office, patient_id, session, context, now) -> Optional[Fo
     hello = await _greeting(db, patient_id)
     duration, _ = await resolve_appointment_duration(db, office, patient_id)
 
+    draft = session.state.draft
+    # A pending move: the cita being moved doesn't occupy its new time.
+    moving_id = None
+    if draft is not None and draft.replaces_appointment_id:
+        try:
+            moving_id = uuid.UUID(draft.replaces_appointment_id)
+        except ValueError:
+            moving_id = None
+
     free: list[str] = []
     for slot_id in context.get("slot_ids") or []:
         start = parse_slot_id(slot_id)
         if isinstance(start, dict) or start <= now:
             continue
-        if await check_slot_bookable(office.id, start, start + timedelta(minutes=duration), db) is None:
+        conflict = await check_slot_bookable(
+            office.id, start, start + timedelta(minutes=duration), db,
+            ignore_appointment_id=moving_id,
+        )
+        if conflict is None:
             free.append(slot_id)
 
-    draft = session.state.draft
     if context.get("kind") == "draft" and draft is not None and draft.slot_id in free:
         if draft.replaces_appointment_id:
             what = f"el cambio de {'su' if formal else 'tu'} cita al {draft.label}"

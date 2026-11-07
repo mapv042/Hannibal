@@ -243,7 +243,7 @@ def world(monkeypatch, facts):
     async def duration(db, office, patient_id):
         return 30, "first_visit"
 
-    async def bookable(office_id, start, end, db):
+    async def bookable(office_id, start, end, db, **kw):
         return "taken" if start.strftime("%Y-%m-%dT%H:%M") in w.taken_slots else None
 
     async def greeting(db, patient_id):

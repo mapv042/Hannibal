@@ -373,6 +373,14 @@ DOCTOR_TOOL_DEFINITIONS = [
                     "items": {"type": "string"},
                     "description": "Fechas exactas YYYY-MM-DD (1 a 7), si ya las tienes.",
                 },
+                "replaces_appointment_id": {
+                    "type": "string",
+                    "description": (
+                        "Solo si buscas horario para mover una cita: su ID (de "
+                        "get_appointments_by_date). Así los horarios cercanos a esa cita "
+                        "también aparecen como libres para ella."
+                    ),
+                },
             },
             "required": [],
         },
@@ -1730,8 +1738,20 @@ async def _handle_get_available_slots(args: dict, ctx: DoctorToolContext) -> dic
     dates, part_of_day, early = resolve_requested_days(args)
     if early is not None:
         return early
+    # A move: the cita's own time doesn't take slots away from it.
+    moving_id = None
+    moving_str = (args.get("replaces_appointment_id") or "").strip()
+    if moving_str:
+        try:
+            moving = await ctx.db.get(Appointment, uuid.UUID(moving_str))
+        except ValueError:
+            moving = None
+        if not moving or moving.office_id != ctx.office.id:
+            return {"error": "No se encontro la cita que se quiere mover."}
+        moving_id = moving.id
     result = await availability_for_dates(
-        ctx.office.id, dates, ctx.db, part_of_day=part_of_day
+        ctx.office.id, dates, ctx.db, part_of_day=part_of_day,
+        ignore_appointment_id=moving_id,
     )
     if "error" not in result:
         ctx.state.remember_slots(offered_slots_from(result))

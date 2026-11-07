@@ -119,7 +119,11 @@ async def book_appointment(
     # appointment, but a time block (vacation, lunch), an event of the doctor's
     # in Google Calendar and the working-hours window stay hard — those are the doctor's own explicit constraints, and
     # silently paving over them is what Rule 11 forbids.
-    conflict = await check_slot_bookable(office.id, start_dt, end_dt, db)
+    # A reschedule's old cita is cancelled in this same transaction: it can't be
+    # what the new time collides with (10:00 → 10:30 used to clash with itself).
+    conflict = await check_slot_bookable(
+        office.id, start_dt, end_dt, db, ignore_appointment_id=rescheduled_from,
+    )
     overridable = OVERRIDABLE_CONFLICTS
     if existing_google_event_id is not None:
         # The doctor dragged the event there in Google Calendar, the source of

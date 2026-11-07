@@ -212,8 +212,10 @@ async def reschedule_appointment(
     try:
         # Re-validate the new slot under the lock before moving the appointment
         new_end_time = new_start_time + timedelta(minutes=appointment.duration_minutes)
+        # The row moves in place: its current time is not a conflict.
         conflict = await check_slot_bookable(
-            office_id, new_start_time, new_end_time, db
+            office_id, new_start_time, new_end_time, db,
+            ignore_appointment_id=appointment.id,
         )
         if conflict:
             raise SlotNotAvailableError(conflict.message)

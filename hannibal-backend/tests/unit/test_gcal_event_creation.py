@@ -129,7 +129,7 @@ class BookingDB:
 
 
 async def test_booking_does_not_touch_google_before_the_commit(monkeypatch):
-    async def bookable(*a):
+    async def bookable(*a, **kw):
         return None
 
     async def no_google(**kw):
@@ -151,7 +151,7 @@ async def test_booking_does_not_touch_google_before_the_commit(monkeypatch):
 
 
 async def test_an_adopted_event_is_not_recreated(monkeypatch):
-    async def bookable(*a):
+    async def bookable(*a, **kw):
         return None
 
     monkeypatch.setattr(booking, "check_slot_bookable", bookable)

@@ -292,6 +292,7 @@ async def _day_payload(
     db: AsyncSession,
     slot_minutes: Optional[int],
     part_of_day: Optional[str],
+    ignore_appointment_id: Optional[UUID] = None,
 ) -> dict:
     """One day's availability, in the shape both flows' tools return."""
     date_label = long_date_label(target_date, today)
@@ -305,6 +306,7 @@ async def _day_payload(
             office_id, target_date, db,
             slot_minutes=slot_minutes,
             only_future=True,
+            ignore_appointment_id=ignore_appointment_id,
         )
     except Exception as e:
         logger.warning(
@@ -344,14 +346,18 @@ async def slots_on_day(
     db: AsyncSession,
     *,
     slot_minutes: Optional[int] = None,
+    ignore_appointment_id: Optional[UUID] = None,
 ) -> list[dict]:
     """The bookable slots of one day, in the tools' {slot_id, label, period} shape.
 
     What get_available_slots offers and what prepare_booking accepts are the
     same list by construction. Raises CalendarUnavailable on a calendar failure.
+    `ignore_appointment_id`: the cita being moved, whose own time is free for it.
     """
     today = now_mx().date()
-    day = await _day_payload(office_id, target_date, today, db, slot_minutes, None)
+    day = await _day_payload(
+        office_id, target_date, today, db, slot_minutes, None, ignore_appointment_id
+    )
     return day["slots"]
 
 
@@ -362,6 +368,7 @@ async def availability_for_dates(
     *,
     slot_minutes: Optional[int] = None,
     part_of_day: Optional[str] = None,
+    ignore_appointment_id: Optional[UUID] = None,
 ) -> dict:
     """Availability payload for one or several dates (shared by both flows).
 
@@ -383,6 +390,9 @@ async def availability_for_dates(
             resolve_appointment_duration) so what's offered is what's booked.
             None keeps each schedule's configured duration.
         part_of_day: "mañana" or "tarde" to keep only that half of the day.
+        ignore_appointment_id: the cita being moved. Its own time doesn't take
+            slots away from it, so 10:30 is offered for a 10:00 cita that
+            moves half an hour.
     """
     today = now_mx().date()
     parsed: list[date_cls] = []
@@ -407,14 +417,20 @@ async def availability_for_dates(
             if target_date < today:
                 continue
             days.append(
-                await _day_payload(office_id, target_date, today, db, slot_minutes, part_of_day)
+                await _day_payload(
+                    office_id, target_date, today, db, slot_minutes, part_of_day,
+                    ignore_appointment_id,
+                )
             )
 
         payload: dict = {"days": days}
         if not any(d["slots"] for d in days):
             cursor = max(parsed) + timedelta(days=1)
             for _ in range(NEXT_AVAILABLE_SEARCH_DAYS):
-                day = await _day_payload(office_id, cursor, today, db, slot_minutes, part_of_day)
+                day = await _day_payload(
+                    office_id, cursor, today, db, slot_minutes, part_of_day,
+                    ignore_appointment_id,
+                )
                 if day["slots"]:
                     payload["next_available"] = day
                     break

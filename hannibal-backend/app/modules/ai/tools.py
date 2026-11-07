@@ -113,6 +113,14 @@ TOOL_DEFINITIONS = [
                         "y no lo dijo ya dentro de `when`."
                     ),
                 },
+                "replaces_appointment_id": {
+                    "type": "string",
+                    "description": (
+                        "Solo para reagendar: ID de la cita que se mueve (de "
+                        "get_patient_appointments o del ESTADO DE LA CONVERSACIÓN). Así los "
+                        "horarios cercanos a esa cita también aparecen como libres para ella."
+                    ),
+                },
             },
             "required": [],
         },
@@ -634,12 +642,21 @@ async def _handle_get_available_slots(args: dict, ctx: ToolContext) -> dict:
     duration_min, _ = await resolve_appointment_duration(
         ctx.db, ctx.office, ctx.patient_id
     )
+    # A move: the cita's own time doesn't take slots away from it, so moving
+    # 10:00 → 10:30 is offered (and later accepted by prepare_booking).
+    moving_id = None
+    if (args.get("replaces_appointment_id") or "").strip():
+        moving, error = await _load_changeable_appointment(args["replaces_appointment_id"].strip(), ctx)
+        if error:
+            return error
+        moving_id = moving.id
     result = await availability_for_dates(
         ctx.office.id,
         dates,
         ctx.db,
         slot_minutes=duration_min,
         part_of_day=part_of_day,
+        ignore_appointment_id=moving_id,
     )
     if "error" not in result:
         ctx.state.remember_slots(offered_slots_from(result))
@@ -839,7 +856,9 @@ async def _handle_prepare_booking(args: dict, ctx: ToolContext) -> dict:
         offered = []
         for length in sorted(grid_lengths):
             offered += await slots_on_day(
-                ctx.office.id, start_dt.date(), ctx.db, slot_minutes=length
+                ctx.office.id, start_dt.date(), ctx.db, slot_minutes=length,
+                # A move may land on an hour that overlaps where it is now.
+                ignore_appointment_id=exclude_id,
             )
         offered = list({s["slot_id"]: s for s in offered}.values())
     except Exception as e:

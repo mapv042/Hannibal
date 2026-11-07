@@ -120,6 +120,7 @@ async def _classify_events(
     office_id: UUID,
     events: List[CalendarEvent],
     db: AsyncSession,
+    ignore_appointment_id: Optional[UUID] = None,
 ) -> Tuple[List[CalendarEvent], List[CalendarEvent]]:
     """Split Google events into the doctor's own commitments and our citas.
 
@@ -128,7 +129,8 @@ async def _classify_events(
     appointment id's hex). Events of citas no longer active (cancelled, moved,
     past) are dropped: they are stale mirrors the audit repairs, not the
     doctor's time. Blocks the system itself wrote to Google are dropped too:
-    their TimeBlock row already counts.
+    their TimeBlock row already counts. So is the event of
+    `ignore_appointment_id`, the cita being moved (see check_slot_bookable).
     """
     if not events:
         return [], []
@@ -144,9 +146,12 @@ async def _classify_events(
         )
     )).scalars().all()
     status_by_event: dict[str, str] = {}
+    moving: set[str] = set()
     for a in appointments:
         for event_id in (a.google_event_id, a.id.hex):
             if event_id:
+                if ignore_appointment_id is not None and a.id == ignore_appointment_id:
+                    moving.add(event_id)
                 # An active row wins over a cancelled one sharing the event
                 # (a move in Google hands the event to the new row).
                 if status_by_event.get(event_id) not in ACTIVE_STATUSES:
@@ -165,6 +170,8 @@ async def _classify_events(
     external: List[CalendarEvent] = []
     own_active: List[CalendarEvent] = []
     for e in events:
+        if e.id in moving:
+            continue
         status = status_by_event.get(e.id)
         if status is not None:
             if status in ACTIVE_STATUSES:
@@ -181,6 +188,7 @@ async def read_google_calendar(
     time_min: datetime,
     time_max: datetime,
     db: AsyncSession,
+    ignore_appointment_id: Optional[UUID] = None,
 ) -> GoogleView:
     """Read the doctor's Google Calendar for a range — the source of truth.
 
@@ -207,7 +215,9 @@ async def read_google_calendar(
         # (timeout, 5xx) is a GoogleCalendarError and propagates.
         connection.report_auth_failure(office_id, e)
         return GoogleView("disconnected", [], [])
-    external, own_active = await _classify_events(office_id, events, db)
+    external, own_active = await _classify_events(
+        office_id, events, db, ignore_appointment_id
+    )
     return GoogleView("ok", external, own_active)
 
 
@@ -228,6 +238,7 @@ async def _collect_busy_ranges(
     db: AsyncSession,
     *,
     google_required: bool,
+    ignore_appointment_id: Optional[UUID] = None,
 ) -> List[BusyRange]:
     """All tz-aware busy intervals for a day: Google + appointments + blocks.
 
@@ -237,10 +248,16 @@ async def _collect_busy_ranges(
     what is busy, and a stale copy of an event the doctor deleted must not keep
     the hour taken. Those copies only count when Google can't be read (the
     credentials were rejected), as the best record of the doctor's calendar.
+
+    `ignore_appointment_id` leaves out one cita — and its event in Google —
+    the one being moved: it is cancelled in the same transaction that books
+    its new time, so it can't be what that new time collides with.
     """
     busy: List[BusyRange] = []
 
-    google = await read_google_calendar(office_id, day_start, day_end, db)
+    google = await read_google_calendar(
+        office_id, day_start, day_end, db, ignore_appointment_id
+    )
     if google.status == "not_connected" and google_required:
         # Dashboard/engine path requires a connected calendar before scheduling.
         raise GoogleCalendarError(
@@ -271,6 +288,8 @@ async def _collect_busy_ranges(
         )
     )).scalars().all()
     for a in appointments:
+        if ignore_appointment_id is not None and a.id == ignore_appointment_id:
+            continue
         a_start = a.start_datetime
         a_end = a.end_datetime
         if a_start.tzinfo is None:
@@ -312,6 +331,7 @@ async def compute_day_availability(
     redis_client: Optional[aioredis.Redis] = None,
     only_future: bool = False,
     google_required: bool = False,
+    ignore_appointment_id: Optional[UUID] = None,
 ) -> DayAvailability:
     """Single availability engine shared by the dashboard and both WhatsApp bots.
 
@@ -325,7 +345,13 @@ async def compute_day_availability(
         only_future: drop slots that already started (use for "today").
         google_required: raise GoogleCalendarError when no calendar is connected
             (dashboard behavior); the bots pass False and simply skip it.
+        ignore_appointment_id: the cita being moved — its own time (and its
+            Google event) doesn't take slots away from it, so a move can land
+            on an hour that overlaps where it is now. Bypasses the cache, which
+            holds the office-wide view.
     """
+    if ignore_appointment_id is not None:
+        redis_client = None
     # Schedules for that weekday (DB convention: Sun=0..Sat=6)
     db_day_of_week = (date_.weekday() + 1) % 7
     schedules = (await db.execute(
@@ -376,7 +402,11 @@ async def compute_day_availability(
 
     day_start = datetime.combine(date_, time.min, tzinfo=MX_TIMEZONE)
     day_end = datetime.combine(date_, time.max, tzinfo=MX_TIMEZONE)
-    busy = await _collect_busy_ranges(office_id, day_start, day_end, db, google_required=google_required)
+    busy = await _collect_busy_ranges(
+        office_id, day_start, day_end, db,
+        google_required=google_required,
+        ignore_appointment_id=ignore_appointment_id,
+    )
 
     now = now_mx()
     available: List[AvailableSlot] = []
@@ -427,6 +457,8 @@ async def check_slot_bookable(
     start_dt: datetime,
     end_dt: datetime,
     db: AsyncSession,
+    *,
+    ignore_appointment_id: Optional[UUID] = None,
 ) -> Optional[SlotConflict]:
     """Validate that a concrete slot can be booked right now.
 
@@ -442,6 +474,10 @@ async def check_slot_bookable(
 
     Hard conflicts (a block, an event of the doctor's in Google) are reported
     before another cita, so a deliberate overbook can never slip past them.
+
+    `ignore_appointment_id` is the cita a reschedule replaces: moving 10:00 →
+    10:30 must not collide with itself (it is cancelled in the same
+    transaction that books the new time).
     """
     date_ = start_dt.astimezone(MX_TIMEZONE).date()
 
@@ -476,7 +512,9 @@ async def check_slot_bookable(
     day_start = datetime.combine(date_, time.min, tzinfo=MX_TIMEZONE)
     day_end = datetime.combine(date_, time.max, tzinfo=MX_TIMEZONE)
     busy = await _collect_busy_ranges(
-        office_id, day_start, day_end, db, google_required=False,
+        office_id, day_start, day_end, db,
+        google_required=False,
+        ignore_appointment_id=ignore_appointment_id,
     )
 
     overlapping = [
